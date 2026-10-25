@@ -1,0 +1,94 @@
+diff -ru a/include/libkyrka/libkyrka.h b/include/libkyrka/libkyrka.h
+--- a/include/libkyrka/libkyrka.h	2026-10-20 10:56:51.199070345 +0200
++++ b/include/libkyrka/libkyrka.h	2026-10-20 10:56:51.237070822 +0200
+@@ -160,14 +160,29 @@
+ #define KYRKA_PACKET_SHROUD_PEER	2
+ 
+ /*
++ * The type of data a packet carries, this is the next protocol value
++ * in the encrypted tail and matches sanctum its packet types.
++ *
++ * KYRKA_PACKET_TYPE_IP is regular traffic, KYRKA_PACKET_TYPE_GRACE is a
++ * grace (see docs/graces.md in sanctum) such as heartbeats.
++ */
++#define KYRKA_PACKET_TYPE_IP		0x00
++#define KYRKA_PACKET_TYPE_GRACE		0xfc
++
++/*
+  * A packet that can be used as input to kyrka_purgatory_input()
+  * or kyrka_heaven_input().
+  *
+  * A packet is also handed to the ifc callbacks.
++ *
++ * The type is set to KYRKA_PACKET_TYPE_IP by kyrka_packet_databuf() and
++ * kyrka_packet_recvbuf(), the heaven callback gets the type that was
++ * carried by the decrypted packet.
+  */
+ struct kyrka_packet {
+ 	size_t		length;
+ 	u_int32_t	shroud;
++	u_int32_t	type;
+ 	u_int8_t	data[KYRKA_PACKET_MAX_LEN];
+ };
+ 
+diff -ru a/src/heaven.c b/src/heaven.c
+--- a/src/heaven.c	2026-10-20 10:56:51.206070433 +0200
++++ b/src/heaven.c	2026-10-20 10:56:51.237070822 +0200
+@@ -74,6 +74,12 @@
+ 		return (-1);
+ 	}
+ 
++	if (pkt->type != KYRKA_PACKET_TYPE_IP &&
++	    pkt->type != KYRKA_PACKET_TYPE_GRACE) {
++		ctx->last_error = KYRKA_ERROR_PARAMETER;
++		return (-1);
++	}
++
+ 	if (ctx->purgatory.send == NULL) {
+ 		ctx->last_error = KYRKA_ERROR_NO_CALLBACK;
+ 		return (-1);
+@@ -131,7 +137,7 @@
+ 	hdr->flock.src = htobe64(ctx->cathedral.flock_src);
+ 	hdr->flock.dst = htobe64(ctx->cathedral.flock_dst);
+ 
+-	tail->next = 0;
++	tail->next = pkt->type;
+ 	tail->reserved = 0;
+ 	pkt->length += sizeof(*tail);
+ 
+diff -ru a/src/packet.c b/src/packet.c
+--- a/src/packet.c	2026-10-20 10:56:51.218070583 +0200
++++ b/src/packet.c	2026-10-20 10:56:51.237070822 +0200
+@@ -35,6 +35,7 @@
+ 	}
+ 
+ 	*len = KYRKA_PACKET_DATA_LEN;
++	pkt->type = KYRKA_PACKET_TYPE_IP;
+ 
+ 	return (kyrka_packet_data(pkt));
+ }
+@@ -54,6 +55,7 @@
+ 	}
+ 
+ 	*len = KYRKA_PACKET_DATA_LEN;
++	pkt->type = KYRKA_PACKET_TYPE_IP;
+ 
+ 	if (ctx->flags & KYRKA_FLAG_USE_SHROUD)
+ 		return (kyrka_packet_start(pkt));
+diff -ru a/src/purgatory.c b/src/purgatory.c
+--- a/src/purgatory.c	2026-10-20 10:56:51.212070508 +0200
++++ b/src/purgatory.c	2026-10-20 10:56:51.237070822 +0200
+@@ -174,9 +174,12 @@
+ 	if (tail->reserved != 0)
+ 		return (0);
+ 
+-	if (tail->next != 0)
++	if (tail->next != KYRKA_PACKET_TYPE_IP &&
++	    tail->next != KYRKA_PACKET_TYPE_GRACE)
+ 		return (0);
+ 
++	pkt->type = tail->next;
++
+ 	ctx->rx.pkt++;
+ 	ctx->heaven.send(pkt, pn, ctx->heaven.udata);
+ 

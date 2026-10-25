@@ -1,0 +1,334 @@
+package se.sanctorum.vigil
+
+import android.app.Notification
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.PendingIntent
+import android.app.Person
+import android.content.BroadcastReceiver
+import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
+import android.util.Log
+import org.json.JSONArray
+import org.json.JSONObject
+
+object Chats {
+    private data class Receipt(
+        val chat: String,
+        val ref: Long,
+        val kind: String,
+        val acked: Int = 0,
+        val pending: Int = 0
+    )
+
+    private var vault: ChatVault? = null
+    private var session = 0L
+    private var screen: BroadcastReceiver? = null
+    private data class Shown(val text: String, val time: Long, val name: String, val key: String)
+
+    private val shown = mutableMapOf<String, MutableList<Shown>>()
+    private val unseen = mutableMapOf<String, Int>()
+    private val receipts = mutableListOf<Receipt>()
+
+    var version = 0L
+        private set
+    var foreground = false
+    var opened = ""
+        private set
+    var requested = ""
+
+    fun vault(context: Context): ChatVault =
+        vault ?: ChatVault(context.applicationContext).also { vault = it }
+
+    fun attach(service: VigilVpnService) {
+        service.getSystemService(NotificationManager::class.java).createNotificationChannel(
+            NotificationChannel(CHANNEL, "Messages", NotificationManager.IMPORTANCE_HIGH)
+        )
+
+        val receiver = object : BroadcastReceiver() {
+            override fun onReceive(context: Context, intent: Intent) {
+                vault?.lock()
+            }
+        }
+
+        service.registerReceiver(receiver, IntentFilter(Intent.ACTION_SCREEN_OFF))
+        screen = receiver
+        session = 0
+    }
+
+    fun detach(service: VigilVpnService) {
+        screen?.let { service.unregisterReceiver(it) }
+        screen = null
+    }
+
+    fun poll(service: VigilVpnService, status: JSONObject?) {
+        val chat = status?.optJSONObject("chat") ?: return
+        val vault = vault(service)
+
+        if (chat.optLong("session") != session) {
+            try {
+                Vigil.chatNick(nick(service))
+                Vigil.chatGroup(group(service))
+
+                val outbox = vault.outboxList()
+                for (i in 0 until outbox.length()) {
+                    val entry = outbox.getJSONObject(i)
+                    val chat = entry.getString("peer")
+
+                    if (!entry.has("data")) {
+                        Vigil.chatSend(chat.toInt(16), entry.getLong("ref"), entry.getString("text").toByteArray())
+                        continue
+                    }
+
+                    val data = vault.data(chat, entry.getString("data")) ?: continue
+
+                    try {
+                        Vigil.chatDataSend(
+                            chat.toInt(16), entry.getLong("ref"), ChatVault.kind(entry.getString("media")),
+                            entry.getString("name").toByteArray(), data
+                        )
+                    } finally {
+                        data.fill(0)
+                    }
+                }
+
+                session = chat.optLong("session")
+            } catch (e: Exception) {
+                Log.w(TAG, "failed to hand over the outbox", e)
+            }
+        }
+
+        val pending = receipts.toList()
+        receipts.clear()
+
+        for (receipt in pending) receipt(vault, receipt)
+
+        val events = JSONArray(String(Vigil.chatEvents(), Charsets.UTF_8))
+
+        for (i in 0 until events.length()) {
+            val event = events.getJSONObject(i)
+            val peer = event.getString("peer").toInt(16)
+            val id = event.optString("group").ifEmpty { null }
+                ?.let { ChatVault.groupChat(it.toInt(16)) } ?: Calls.hex(peer)
+
+            try {
+                when (event.getString("type")) {
+                    "message" -> {
+                        val text = event.getString("text")
+                        val time = System.currentTimeMillis()
+
+                        val nick = event.optString("nick")
+
+                        vault.deliver(id, peer, nick, text, time)
+                        Vigil.chatStored(event.getLong("token"))
+
+                        if (!foreground || opened != id) {
+                            unseen[id] = (unseen[id] ?: 0) + 1
+                            notify(service, id, peer, nick, text, time)
+                        }
+                    }
+                    "data" -> {
+                        val time = System.currentTimeMillis()
+                        val nick = event.optString("nick")
+                        val name = event.getString("name")
+                        val media = event.getString("kind")
+                        val token = event.getLong("token")
+                        val data = Vigil.chatDataTake(token, event.getInt("size"))
+                            ?: throw IllegalStateException("data $token is gone")
+
+                        try {
+                            vault.deliver(id, peer, nick, "", time, data = data, media = media, name = name)
+                        } finally {
+                            data.fill(0)
+                        }
+
+                        Vigil.chatStored(token)
+
+                        if (!foreground || opened != id) {
+                            unseen[id] = (unseen[id] ?: 0) + 1
+                            notify(service, id, peer, nick, if (media == "image") "Image" else "File: $name", time)
+                        }
+                    }
+                    "joined", "left" -> vault.deliver(
+                        id, peer, event.optString("nick"), "", System.currentTimeMillis(),
+                        event.getString("type")
+                    )
+                    "sent", "delivered" ->
+                        receipt(vault, Receipt(id, event.getLong("ref"), event.getString("type")))
+                    "acks" -> receipt(
+                        vault,
+                        Receipt(
+                            id, event.getLong("ref"), "acks",
+                            event.getInt("acked"), event.getInt("pending")
+                        )
+                    )
+                }
+                version++
+            } catch (e: Exception) {
+                Log.e(TAG, "failed to store a chat event", e)
+            }
+        }
+    }
+
+    private fun receipt(vault: ChatVault, receipt: Receipt) {
+        try {
+            vault.receipt(receipt.chat, receipt.ref, receipt.kind, receipt.acked, receipt.pending)
+            version++
+        } catch (e: Exception) {
+            Log.w(TAG, "failed to store a receipt, trying again", e)
+            receipts.add(receipt)
+        }
+    }
+
+    fun open(context: Context, id: String, on: Boolean) {
+        peer(opened)?.let { if (opened != id) Vigil.chatOpen(it, false) }
+
+        opened = if (on) id else ""
+
+        peer(id)?.let { Vigil.chatOpen(it, on) }
+        if (on) seen(context, id)
+    }
+
+    fun typing(id: String, on: Boolean) {
+        if (ChatVault.group(id) != null) {
+            Vigil.chatGroupTyping(on)
+        } else {
+            peer(id)?.let { Vigil.chatTyping(it, on) }
+        }
+    }
+
+    fun seen(context: Context, id: String) {
+        unseen.remove(id)
+        dismiss(context, id)
+    }
+
+    fun background(context: Context) {
+        foreground = false
+
+        if (opened != "") {
+            peer(opened)?.let { Vigil.chatOpen(it, false) }
+            typing(opened, false)
+            opened = ""
+        }
+
+        vault?.lock()
+    }
+
+    fun json(context: Context): JSONObject {
+        val pending = requested
+        requested = ""
+
+        val group = group(context)
+
+        return JSONObject()
+            .put("version", version)
+            .put("unseen", unseen.values.sum())
+            .put("hardware", vault(context).hardware)
+            .put("open", pending.ifEmpty { JSONObject.NULL })
+            .put("group", if (group != 0) ChatVault.groupChat(group) else JSONObject.NULL)
+    }
+
+    fun changed() {
+        version++
+    }
+
+    fun nick(context: Context): String = prefs(context).getString("nick", "") ?: ""
+
+    fun preview(context: Context): Boolean = prefs(context).getBoolean("preview", true)
+
+    fun group(context: Context): Int = prefs(context).getInt("group", 0)
+
+    fun join(context: Context, group: Int) {
+        require(group in 0..0xffff) { "A group is 1 to 4 hex digits." }
+
+        prefs(context).edit().putInt("group", group).apply()
+        Vigil.chatGroup(group)
+        changed()
+    }
+
+    fun settings(context: Context, nick: String?, preview: Boolean?): JSONObject {
+        if (nick != null) {
+            if (!Vigil.chatNick(nick)) throw IllegalArgumentException("A name is 2 to 16 letters or digits.")
+            prefs(context).edit().putString("nick", nick).apply()
+        }
+
+        if (preview != null) prefs(context).edit().putBoolean("preview", preview).apply()
+
+        return JSONObject().put("nick", nick(context)).put("preview", preview(context))
+    }
+
+    private fun peer(id: String): Int? =
+        if (id.length == 2) id.toInt(16).takeIf { it in 1..0xfe } else null
+
+    private fun notify(
+        service: VigilVpnService, id: String, peer: Int, nick: String, text: String, time: Long
+    ) {
+        val named = PeerNames.load(service).has(Calls.hex(peer))
+        val name = if (named || nick.isEmpty()) Calls.name(peer) else nick
+        val messages = shown.getOrPut(id) { mutableListOf() }
+
+        messages.add(Shown(if (preview(service)) text else "New message", time, name, Calls.hex(peer)))
+        while (messages.size > SHOWN_MAX) messages.removeAt(0)
+
+        val group = ChatVault.group(id) != null
+        val me = Person.Builder().setName("You").build()
+        val style = Notification.MessagingStyle(me)
+
+        if (group) style.setConversationTitle(PeerNames.chat(service, id)).setGroupConversation(true)
+
+        for (message in messages) {
+            val sender = Person.Builder().setName(message.name).setKey(message.key).build()
+            style.addMessage(message.text, message.time, sender)
+        }
+
+        val builder = Notification.Builder(service, CHANNEL)
+            .setSmallIcon(R.drawable.ic_notification)
+            .setCategory(Notification.CATEGORY_MESSAGE)
+            .setStyle(style)
+            .setAutoCancel(true)
+            .setVisibility(Notification.VISIBILITY_PRIVATE)
+            .setPublicVersion(
+                Notification.Builder(service, CHANNEL)
+                    .setSmallIcon(R.drawable.ic_notification)
+                    .setContentTitle("Vigil")
+                    .setContentText("New message")
+                    .build()
+            )
+
+        service.packageManager.getLaunchIntentForPackage(service.packageName)?.let {
+            builder.setContentIntent(
+                PendingIntent.getActivity(
+                    service, notification(id),
+                    it.setAction(ACTION_CHAT)
+                        .putExtra(EXTRA_CHAT, id)
+                        .addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP),
+                    PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+                )
+            )
+        }
+
+        service.getSystemService(NotificationManager::class.java)
+            .notify(notification(id), builder.build())
+    }
+
+    private fun dismiss(context: Context, id: String) {
+        shown.remove(id)
+        context.getSystemService(NotificationManager::class.java).cancel(notification(id))
+    }
+
+    private fun notification(id: String): Int =
+        ChatVault.group(id)?.let { GROUP_NOTIFICATION_BASE + it } ?: (NOTIFICATION_BASE + id.toInt(16))
+
+    private fun prefs(context: Context) =
+        context.getSharedPreferences("chats", Context.MODE_PRIVATE)
+
+    const val ACTION_CHAT = "se.sanctorum.vigil.CHAT"
+    const val EXTRA_CHAT = "chat"
+
+    private const val TAG = "vigil"
+    private const val CHANNEL = "messages"
+    private const val NOTIFICATION_BASE = 0x1000
+    private const val GROUP_NOTIFICATION_BASE = 0x10000
+    private const val SHOWN_MAX = 6
+}

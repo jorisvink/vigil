@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- The bg and bg-2 colours from sanctum.css -->
+    <color name="vigil_bg">#0b0c0e</color>
+    <color name="vigil_bg2">#111317</color>
+</resources>

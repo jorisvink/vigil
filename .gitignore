@@ -1,0 +1,12 @@
+obj/
+build/
+libvigil.a
+tests/config_test
+tests/inet_test
+tests/tunnel_test
+tests/pong
+tests/vigild
+tests/grace_test
+tests/caller
+tests/chatter
+tests/video_test

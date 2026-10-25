@@ -1,0 +1,211 @@
+#!/bin/sh
+#
+# vigil-config - create the configuration that goes inside of a vigil
+# QR code from regular sanctum key files.
+#
+# usage:
+#   vigil-config tunnel -i <instance> -p <host:port> -s <secret> \
+#       -t <ip/mask> [common options]
+#
+#   vigil-config cathedral -i <instance> -c <host:port> -f <flock> \
+#       -x <spi> -k <kek> -I <cathedral_id> -C <cathedral_secret> \
+#       -K <cathedral_cosk> -t <ip/mask> [common options]
+#
+#   vigil-config liturgy -i <instance> -c <host:port> -f <flock> \
+#       -x <id> -k <kek> -I <cathedral_id> -C <cathedral_secret> \
+#       -K <cathedral_cosk> -P <prefix> [-g <group>] [-H] [common options]
+#
+#   vigil-config tier6 -i <instance> -c <host:port> -f <flock> \
+#       -x <kek-id> -k <kek> -I <cs-id> -C <cs> -K <cosk> \
+#       [-t <ip/mask>] [common options]
+#
+#   vigil-config gospel -i <instance> -c <host:port> -f <flock> \
+#       -x <id> -k <kek> -I <cathedral_id> -C <cathedral_secret> \
+#       -K <cathedral_cosk> [-g <group>] [common options]
+#
+# common options:
+#   -r <net/mask>   route via the tunnel (may be repeated, not in liturgy,
+#                   tier6 or gospel)
+#   -d <ip>         dns server (may be repeated, not in gospel)
+#   -m <mtu>        mtu
+#   -n <port>       cathedral nat port (default: cathedral port + 1)
+#   -S              enable shroud
+#   -N              disable p2p
+#   -R              disable cathedral remembrance (not in gospel)
+#   -6              do not block ipv6
+#   -q              print the QR code to the terminal instead
+#   -o <file.png>   write the QR code as a png instead
+#
+# The key options take paths to the raw key files, exactly like the
+# kek, secret, cathedral_secret and cathedral_cosk options in sanctum.
+#
+# The output holds key material in the clear, treat it (and the QR code)
+# with the same care as the key files themselves.
+
+set -e
+
+usage() {
+	sed -n '3,43p' "$0" | sed 's/^# \{0,1\}//'
+	exit 1
+}
+
+die() {
+	echo "vigil-config: $*" >&2
+	exit 1
+}
+
+hexkey() {
+	[ -r "$1" ] || die "cannot read $1"
+	len=`wc -c < "$1" | tr -d ' '`
+	[ "$len" -eq "$2" ] || die "$1 should be $2 bytes, not $len"
+	od -An -tx1 -v "$1" | tr -d ' \n'
+}
+
+[ $# -ge 1 ] || usage
+
+mode=$1
+shift
+
+case $mode in
+tunnel|cathedral|liturgy|tier6|gospel)
+	;;
+*)
+	usage
+	;;
+esac
+
+instance= peer= secret= tunnel= cathedral= flock= spi= kek= csid=
+cs= cosk= prefix= group= natport= mtu= routes= dns= flags= output=
+
+while getopts "i:p:s:t:c:f:x:k:I:C:K:P:g:n:m:r:d:SNR6Hqo:" ch; do
+	case $ch in
+	i) instance=$OPTARG ;;
+	p) peer=$OPTARG ;;
+	s) secret=$OPTARG ;;
+	t) tunnel=$OPTARG ;;
+	c) cathedral=$OPTARG ;;
+	f) flock=$OPTARG ;;
+	x) spi=$OPTARG ;;
+	k) kek=$OPTARG ;;
+	I) csid=$OPTARG ;;
+	C) cs=$OPTARG ;;
+	K) cosk=$OPTARG ;;
+	P) prefix=$OPTARG ;;
+	g) group=$OPTARG ;;
+	n) natport=$OPTARG ;;
+	m) mtu=$OPTARG ;;
+	r) routes="$routes $OPTARG" ;;
+	d) dns="$dns $OPTARG" ;;
+	S) flags="$flags shroud" ;;
+	N) flags="$flags nop2p" ;;
+	R) flags="$flags norem" ;;
+	6) flags="$flags ipv6" ;;
+	H) flags="$flags hidden" ;;
+	q) output=terminal ;;
+	o) output=$OPTARG ;;
+	*) usage ;;
+	esac
+done
+
+[ -n "$instance" ] || die "no instance given (-i)"
+
+config() {
+	echo "vigil 1"
+	echo "instance $instance"
+
+	case $mode in
+	tunnel)
+		[ -n "$peer" ] || die "no peer given (-p)"
+		[ -n "$secret" ] || die "no secret given (-s)"
+		[ -n "$tunnel" ] || die "no tunnel given (-t)"
+		echo "tunnel $tunnel"
+		echo "peer $peer"
+		echo "secret `hexkey "$secret" 32`"
+		;;
+	cathedral|liturgy|tier6|gospel)
+		[ -n "$cathedral" ] || die "no cathedral given (-c)"
+		[ -n "$flock" ] || die "no flock given (-f)"
+		[ -n "$spi" ] || die "no spi given (-x)"
+		[ -n "$kek" ] || die "no kek given (-k)"
+		[ -n "$csid" ] || die "no cathedral_id given (-I)"
+		[ -n "$cs" ] || die "no cathedral_secret given (-C)"
+		[ -n "$cosk" ] || die "no cathedral_cosk given (-K)"
+
+		if [ "$mode" = "liturgy" ]; then
+			[ -n "$prefix" ] || die "no liturgy_prefix given (-P)"
+			[ -z "$routes" ] || die "routes (-r) are not used in" \
+			    "liturgy, each peer is routed via the prefix (-P)"
+			echo "mode liturgy"
+			echo "liturgy_prefix $prefix"
+			[ -z "$group" ] || echo "liturgy_group $group"
+			case "$flags" in
+			*hidden*) echo "liturgy_discoverable no" ;;
+			esac
+		elif [ "$mode" = "gospel" ]; then
+			[ -z "$routes" ] || die "routes (-r) are not used for gospel"
+			[ -z "$dns" ] || die "dns (-d) is not used for gospel"
+			case "$flags" in
+			*norem*) die "remembrance (-R) is always on for gospel" ;;
+			esac
+			echo "mode gospel"
+			[ -z "$group" ] || echo "liturgy_group $group"
+		elif [ "$mode" = "tier6" ]; then
+			[ -z "$routes" ] || die "routes (-r) are not used with" \
+			    "tier6, the tunnel network is routed"
+			echo "mode liturgy"
+			echo "tier6 yes"
+			[ -z "$tunnel" ] || echo "tunnel $tunnel"
+		else
+			[ -n "$tunnel" ] || die "no tunnel given (-t)"
+			echo "tunnel $tunnel"
+		fi
+
+		echo "spi $spi"
+		echo "kek `hexkey "$kek" 32`"
+		echo "cathedral $cathedral"
+		echo "cathedral_id $csid"
+		echo "cathedral_flock $flock"
+		echo "cathedral_secret `hexkey "$cs" 32`"
+		echo "cathedral_cosk `hexkey "$cosk" 64`"
+		[ -z "$natport" ] || echo "cathedral_nat_port $natport"
+
+		case "$flags" in
+		*nop2p*) echo "p2p no" ;;
+		esac
+		case "$flags" in
+		*norem*) echo "cathedral_remembrance no" ;;
+		esac
+		;;
+	esac
+
+	[ -z "$mtu" ] || echo "mtu $mtu"
+
+	for r in $routes; do
+		echo "route $r"
+	done
+
+	for d in $dns; do
+		echo "dns $d"
+	done
+
+	case "$flags" in
+	*shroud*) echo "shroud yes" ;;
+	esac
+	case "$flags" in
+	*ipv6*) echo "block_ipv6 no" ;;
+	esac
+}
+
+case $output in
+"")
+	config
+	;;
+terminal)
+	command -v qrencode > /dev/null || die "qrencode is required for -q"
+	config | qrencode -t ansiutf8
+	;;
+*)
+	command -v qrencode > /dev/null || die "qrencode is required for -o"
+	config | qrencode -s 8 -m 4 -o "$output"
+	;;
+esac
