@@ -20,8 +20,12 @@
 
 #include "vigil.h"
 
-/* The maximum number of descriptors we watch, peers + chats + tun + misc. */
-#define IO_MAX		((KYRKA_PEERS_PER_FLOCK * 2) + 8)
+/*
+ * The max number of sockets, this should be large enough to accommodate
+ * worst case scenario (liturgy on tunnel side + gospel liturgy at full
+ * capacity + the discovery and signaling things).
+ */
+#define IO_MAX			1028
 
 /* The number of scheduled events. */
 static int			count = 0;
