@@ -14,14 +14,14 @@ enum TunnelKeychain {
         var description: String { "keychain error \(status)" }
     }
 
-    static func store(id: String, config: String) throws -> Data {
+    static func store(id: String, config: [UInt8]) throws -> Data {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
             kSecAttrAccount as String: id,
             kSecAttrAccessGroup as String: group,
             kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly,
-            kSecValueData as String: Data(config.utf8),
+            kSecValueData as String: Data(config),
             kSecReturnPersistentRef as String: true,
         ]
 
@@ -71,9 +71,11 @@ enum TunnelKeychain {
         return [UInt8](data)
     }
 
-    static func wipe(_ bytes: inout [UInt8]) {
-        for idx in bytes.indices {
-            bytes[idx] = 0
+    /// memset_s() so the compiler cannot drop the writes.
+    static func wipe<T>(_ bytes: inout [T]) {
+        bytes.withUnsafeMutableBytes { raw in
+            guard let base = raw.baseAddress else { return }
+            _ = memset_s(base, raw.count, 0, raw.count)
         }
     }
 

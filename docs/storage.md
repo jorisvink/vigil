@@ -81,6 +81,10 @@ layer copies the bytes into C memory and wipes that copy too. On iOS the
 byte arrays loaded from the keychain are overwritten with zeros once the
 core has them.
 
+Copies made by strings, garbage collectors, the Flutter engine and the
+system keystores are not erased. See [erasure.md](erasure.md) for what
+remains in memory and how this was measured.
+
 While a tunnel runs, the keys live inside libkyrka contexts. Only one
 thread may use these contexts at a time. The core enforces this with a
 lock.

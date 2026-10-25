@@ -273,9 +273,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         let len = vigil_chat_events(&buf, buf.count)
         let data = Data(bytes: buf, count: len)
 
-        for idx in buf.indices {
-            buf[idx] = 0
-        }
+        TunnelKeychain.wipe(&buf)
 
         guard len > 0,
               let events = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]],
@@ -329,10 +327,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
                                       time: Int64(Date().timeIntervalSince1970 * 1000),
                                       data: Data(bytes[0..<taken]), media: media, name: name)
                     vigil_chat_stored(token)
-
-                    for idx in bytes.indices {
-                        bytes[idx] = 0
-                    }
+                    TunnelKeychain.wipe(&bytes)
 
                     if defaults.string(forKey: "chatOpen") != chat {
                         unseen[chat, default: 0] += 1
@@ -421,7 +416,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
     }
 
     private func notifyChat(_ chat: String, _ peer: UInt8, _ nick: String, _ text: String) {
-        let preview = ChatVault.defaults.object(forKey: "chatPreview") as? Bool ?? true
+        let preview = ChatVault.defaults.object(forKey: "chatPreview") as? Bool ?? false
         let content = UNMutableNotificationContent()
         let body = preview ? text : "New message"
         let named = ChatVault.names()[ChatVault.hex(peer)] != nil

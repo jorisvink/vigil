@@ -939,7 +939,9 @@ android_bytes_free(char *buf, size_t len)
 {
 	PRECOND(buf != NULL);
 
-	nyfe_mem_zero(buf, len);
+	if (len > 0)
+		nyfe_mem_zero(buf, len);
+
 	free(buf);
 }
 

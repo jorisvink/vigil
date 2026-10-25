@@ -259,8 +259,16 @@ class _PastePageState extends State<PastePage> {
 
   Future<void> _clipboard() async {
     final data = await Clipboard.getData(Clipboard.kTextPlain);
-    if (data?.text != null) {
-      _text.text = data!.text!;
+    final text = data?.text;
+
+    if (text == null) {
+      return;
+    }
+
+    _text.text = text;
+
+    if (text.trimLeft().startsWith('vigil ')) {
+      await Clipboard.setData(const ClipboardData(text: ''));
     }
   }
 
@@ -305,6 +313,7 @@ class _PastePageState extends State<PastePage> {
             maxLines: 20,
             autocorrect: false,
             enableSuggestions: false,
+            enableIMEPersonalizedLearning: false,
             keyboardType: TextInputType.multiline,
             style: Styles.pre,
             cursorColor: Palette.amber,

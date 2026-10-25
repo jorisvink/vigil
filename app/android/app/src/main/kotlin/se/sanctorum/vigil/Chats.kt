@@ -235,7 +235,7 @@ object Chats {
 
     fun nick(context: Context): String = prefs(context).getString("nick", "") ?: ""
 
-    fun preview(context: Context): Boolean = prefs(context).getBoolean("preview", true)
+    fun preview(context: Context): Boolean = prefs(context).getBoolean("preview", false)
 
     fun group(context: Context): Int = prefs(context).getInt("group", 0)
 

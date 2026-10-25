@@ -39,12 +39,14 @@ because only the app can use the microphone and camera.
    libkyrka turns them into session keys.
 2. [storage.md](storage.md) describes where configurations are kept on
    the phone and how keys are handled in memory.
-3. [tunnels.md](tunnels.md) describes the tunnel modes and how packets
+3. [erasure.md](erasure.md) describes how keys are erased from memory
+   and which copies remain.
+4. [tunnels.md](tunnels.md) describes the tunnel modes and how packets
    flow through them.
-4. [gospel.md](gospel.md) describes how calls and messages work.
-5. [vault.md](vault.md) describes the chat vault, which keeps message
+5. [gospel.md](gospel.md) describes how calls and messages work.
+6. [vault.md](vault.md) describes the chat vault, which keeps message
    history encrypted on the phone.
-6. [limitations.md](limitations.md) lists what Vigil does not protect
+7. [limitations.md](limitations.md) lists what Vigil does not protect
    against.
 
 ## Who you trust

@@ -17,7 +17,7 @@ import UserNotifications
 import Vigil
 
 final class VigilPlugin: NSObject, FlutterPlugin, UIDocumentPickerDelegate,
-                         QLPreviewControllerDataSource {
+                         QLPreviewControllerDataSource, QLPreviewControllerDelegate {
     private static let channel = "se.sanctorum.vigil/core"
     private static let provider = "se.sanctorum.vigil.PacketTunnel"
     private static let tunnelsKey = "tunnels"
@@ -46,8 +46,42 @@ final class VigilPlugin: NSObject, FlutterPlugin, UIDocumentPickerDelegate,
             ) { [weak plugin] _ in plugin?.background() }
         }
 
+        NotificationCenter.default.addObserver(
+            forName: UIScene.willDeactivateNotification, object: nil, queue: .main
+        ) { note in cover(note.object as? UIWindowScene, on: true) }
+
+        NotificationCenter.default.addObserver(
+            forName: UIScene.didActivateNotification, object: nil, queue: .main
+        ) { note in cover(note.object as? UIWindowScene, on: false) }
+
+        try? FileManager.default.removeItem(at: openFolder)
         try? ChatVault.shared.prepare()
     }
+
+    private static var openFolder: URL {
+        FileManager.default.temporaryDirectory.appendingPathComponent("open")
+    }
+
+    private static func cover(_ scene: UIWindowScene?, on: Bool) {
+        for window in scene?.windows ?? [] {
+            let cover = window.viewWithTag(coverTag)
+
+            if !on {
+                cover?.removeFromSuperview()
+                continue
+            }
+
+            guard cover == nil else { continue }
+
+            let view = UIView(frame: window.bounds)
+            view.tag = coverTag
+            view.backgroundColor = UIColor(red: 0x0b / 255, green: 0x0c / 255, blue: 0x0e / 255, alpha: 1)
+            view.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+            window.addSubview(view)
+        }
+    }
+
+    private static let coverTag = 0x76676c
 
     private func background() {
         ChatVault.shared.lock()
@@ -70,11 +104,20 @@ final class VigilPlugin: NSObject, FlutterPlugin, UIDocumentPickerDelegate,
         case "list":
             result(json(tunnels().map { ["id": $0.id, "summary": $0.summary] }))
         case "check":
-            result(check(call.arguments as? String ?? "").1)
+            var config = Self.bytes(call.arguments)
+            defer { TunnelKeychain.wipe(&config) }
+
+            result(check(config).1)
         case "import":
-            importTunnel(call.arguments as? String ?? "", result: result)
+            var config = Self.bytes(call.arguments)
+            defer { TunnelKeychain.wipe(&config) }
+
+            importTunnel(config, result: result)
         case "handoff":
-            result(Handoff.take() ?? "")
+            var config = Handoff.take() ?? []
+            defer { TunnelKeychain.wipe(&config) }
+
+            result(FlutterStandardTypedData(bytes: Data(config)))
         case "edit":
             let args = call.arguments as? [String: Any] ?? [:]
             edit(args["id"] as? String ?? "", edits: args["edits"] as? String ?? "", result: result)
@@ -247,14 +290,15 @@ final class VigilPlugin: NSObject, FlutterPlugin, UIDocumentPickerDelegate,
         UserDefaults.standard.set(list, forKey: Self.tunnelsKey)
     }
 
-    private func check(_ config: String) -> (Bool, String) {
-        var bytes = [UInt8](config.utf8)
-        defer { TunnelKeychain.wipe(&bytes) }
-
-        return check(bytes)
+    /// The caller must wipe the returned configuration.
+    private static func bytes(_ arguments: Any?) -> [UInt8] {
+        guard let typed = arguments as? FlutterStandardTypedData else { return [] }
+        return [UInt8](typed.data)
     }
 
     private func check(_ config: [UInt8]) -> (Bool, String) {
+        guard !config.isEmpty else { return (false, "{\"error\":\"no data\"}") }
+
         var out = [CChar](repeating: 0, count: 4096)
         let outlen = out.count
 
@@ -266,7 +310,7 @@ final class VigilPlugin: NSObject, FlutterPlugin, UIDocumentPickerDelegate,
         return (ok, String(cString: out))
     }
 
-    private func importTunnel(_ config: String, result: @escaping FlutterResult) {
+    private func importTunnel(_ config: [UInt8], result: @escaping FlutterResult) {
         let (ok, summary) = check(config)
 
         guard ok else {
@@ -309,7 +353,7 @@ final class VigilPlugin: NSObject, FlutterPlugin, UIDocumentPickerDelegate,
 
         var out = [CChar](repeating: 0, count: Int(VIGIL_CONFIG_MAX) + 1)
         var err = [CChar](repeating: 0, count: 128)
-        defer { for i in out.indices { out[i] = 0 } }
+        defer { TunnelKeychain.wipe(&out) }
 
         var config: [UInt8]
 
@@ -640,7 +684,7 @@ final class VigilPlugin: NSObject, FlutterPlugin, UIDocumentPickerDelegate,
             throw ChatVault.Failure(description: "That file is gone.")
         }
 
-        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("open")
+        let folder = Self.openFolder
         try? FileManager.default.removeItem(at: folder)
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
 
@@ -656,6 +700,7 @@ final class VigilPlugin: NSObject, FlutterPlugin, UIDocumentPickerDelegate,
 
         let controller = QLPreviewController()
         controller.dataSource = self
+        controller.delegate = self
         top.present(controller, animated: true)
     }
 
@@ -721,6 +766,11 @@ final class VigilPlugin: NSObject, FlutterPlugin, UIDocumentPickerDelegate,
 
     func previewController(_ controller: QLPreviewController, previewItemAt index: Int) -> QLPreviewItem {
         preview ?? OpenItem(url: FileManager.default.temporaryDirectory, title: "")
+    }
+
+    func previewControllerDidDismiss(_ controller: QLPreviewController) {
+        preview = nil
+        try? FileManager.default.removeItem(at: Self.openFolder)
     }
 
     private static func top() -> UIViewController? {
@@ -950,7 +1000,7 @@ final class VigilPlugin: NSObject, FlutterPlugin, UIDocumentPickerDelegate,
 
             return json([
                 "nick": defaults.string(forKey: "chatNick") ?? "",
-                "preview": defaults.object(forKey: "chatPreview") as? Bool ?? true,
+                "preview": defaults.object(forKey: "chatPreview") as? Bool ?? false,
             ])
         }
     }
@@ -1036,7 +1086,8 @@ enum Handoff {
         ]
     }
 
-    static func take() -> String? {
+    /// The caller must wipe the returned configuration.
+    static func take() -> [UInt8]? {
         var q = query
         q[kSecReturnData as String] = true
         q[kSecReturnAttributes as String] = true
@@ -1054,7 +1105,7 @@ enum Handoff {
             return nil
         }
 
-        return String(data: data, encoding: .utf8)
+        return [UInt8](data)
     }
 }
 

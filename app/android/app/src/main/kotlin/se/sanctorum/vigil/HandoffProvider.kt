@@ -62,16 +62,17 @@ object Handoff {
         since = SystemClock.elapsedRealtime()
     }
 
+    /** The caller must wipe the returned configuration. */
     @Synchronized
-    fun take(): String? {
+    fun take(): ByteArray? {
         val data = config ?: return null
         config = null
 
-        try {
-            if (SystemClock.elapsedRealtime() - since > KEEP_MS) return null
-            return String(data, Charsets.UTF_8)
-        } finally {
+        if (SystemClock.elapsedRealtime() - since > KEEP_MS) {
             data.fill(0)
+            return null
         }
+
+        return data
     }
 }

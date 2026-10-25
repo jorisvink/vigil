@@ -27,6 +27,7 @@ object Files {
         MimeTypeMap.getSingleton().getMimeTypeFromExtension(name.substringAfterLast('.', "").lowercase())
             ?: "application/octet-stream"
 
+    @Synchronized
     fun share(context: Context, name: String, data: ByteArray): Uri {
         wipe(context)
 
@@ -47,6 +48,7 @@ object Files {
         return File(folder(context), id).takeIf { it.exists() }
     }
 
+    @Synchronized
     fun wipe(context: Context) {
         for (file in folder(context).listFiles() ?: emptyArray()) {
             FileOutputStream(file).use { it.write(ByteArray(file.length().toInt())) }

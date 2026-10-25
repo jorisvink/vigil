@@ -11,9 +11,10 @@ as that device. This includes anyone who saw or photographed the QR code.
 When you import a QR code from a picture, that picture stays in your
 photo library. Vigil does not remove it.
 
-The text of the QR code briefly passes through the user interface and
-the platform code as a string. Such strings cannot be reliably wiped from
-memory. Vigil wipes every copy it holds as raw bytes, but not these.
+The text of the QR code passes through the user interface as a string.
+Such strings cannot be wiped from memory, they stay until the app is
+restarted or the memory is reused. Vigil wipes every copy it holds as
+raw bytes, but not these. See [erasure.md](erasure.md).
 
 ## What a cathedral sees
 

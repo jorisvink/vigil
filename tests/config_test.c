@@ -455,6 +455,11 @@ main(void)
 	    "peer 1.2.3.4:5\nsecret " HEX32 "\n",
 	    "route 10.0.0.0/8\n",
 	    "no instance was configured");
+	test_edit("edit with no edits",
+	    "vigil 1\ninstance office\ntunnel 10.0.0.2/32\n"
+	    "peer 1.2.3.4:5\nsecret " HEX32 "\n",
+	    "",
+	    "no instance was configured");
 	test_edit("edit invalid instance",
 	    "vigil 1\ninstance office\ntunnel 10.0.0.2/32\n"
 	    "peer 1.2.3.4:5\nsecret " HEX32 "\n",

@@ -1621,7 +1621,9 @@ config_edit_copy(struct config_edit *ce, const char *data, size_t datalen,
 	ret = 0;
 
 cleanup:
-	nyfe_mem_zero(buf, datalen);
+	if (datalen > 0)
+		nyfe_mem_zero(buf, datalen);
+
 	free(buf);
 
 	return (ret);

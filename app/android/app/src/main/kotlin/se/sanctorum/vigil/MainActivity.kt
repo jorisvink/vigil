@@ -14,6 +14,7 @@ import android.os.Build
 import android.os.Bundle
 import android.util.Log
 import android.view.Surface
+import android.view.WindowManager
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.view.TextureRegistry
@@ -35,8 +36,12 @@ class MainActivity : FlutterActivity() {
     private var localTexture: TextureRegistry.SurfaceTextureEntry? = null
     private var locked = false
 
+    @Volatile
+    private var shared = false
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        window.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
         calling(intent)
     }
 
@@ -54,6 +59,15 @@ class MainActivity : FlutterActivity() {
     override fun onStop() {
         Chats.background(this)
         super.onStop()
+    }
+
+    override fun onRestart() {
+        super.onRestart()
+
+        if (shared) {
+            shared = false
+            Files.wipe(this)
+        }
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -76,9 +90,9 @@ class MainActivity : FlutterActivity() {
         try {
             when (call.method) {
                 "list" -> result.success(store.list().toString())
-                "check" -> result.success(store.check(call.arguments as String))
-                "import" -> result.success(store.import(call.arguments as String).toString())
-                "handoff" -> result.success(Handoff.take() ?: "")
+                "check" -> wiped(call.arguments as ByteArray) { result.success(store.check(it)) }
+                "import" -> wiped(call.arguments as ByteArray) { result.success(store.import(it).toString()) }
+                "handoff" -> wiped(Handoff.take() ?: ByteArray(0)) { result.success(it) }
                 "edit" -> result.success(
                     store.edit(call.argument<String>("id")!!, call.argument<String>("edits")!!)
                         .toString()
@@ -329,6 +343,14 @@ class MainActivity : FlutterActivity() {
             result.error("invalid", e.message, null)
         } catch (e: Exception) {
             result.error("failed", e.message ?: e.toString(), null)
+        }
+    }
+
+    private fun wiped(config: ByteArray, work: (ByteArray) -> Unit) {
+        try {
+            work(config)
+        } finally {
+            config.fill(0)
         }
     }
 
@@ -604,6 +626,7 @@ class MainActivity : FlutterActivity() {
         val uri = Files.share(this, name, data)
 
         data.fill(0)
+        shared = true
 
         val view = Intent(Intent.ACTION_VIEW)
             .setDataAndType(uri, Files.type(name))

@@ -59,35 +59,23 @@ class TunnelStore(context: Context) {
         return null
     }
 
-    fun check(config: String): String {
-        val plain = config.toByteArray(Charsets.UTF_8)
+    /** The caller must wipe the configuration. */
+    fun check(config: ByteArray): String = Vigil.check(config)
 
-        try {
-            return Vigil.check(plain)
-        } finally {
-            plain.fill(0)
+    /** The caller must wipe the configuration. */
+    fun import(config: ByteArray): JSONObject {
+        val summary = JSONObject(Vigil.check(config))
+
+        if (summary.has("error")) throw Invalid(summary.getString("error"))
+
+        if (summary.optString("mode") == "gospel" && voice() != null) {
+            throw Invalid("There is already a Gospel configuration, remove it first.")
         }
-    }
 
-    fun import(config: String): JSONObject {
-        val plain = config.toByteArray(Charsets.UTF_8)
+        val id = UUID.randomUUID().toString()
+        seal(id, config, summary)
 
-        try {
-            val summary = JSONObject(Vigil.check(plain))
-
-            if (summary.has("error")) throw Invalid(summary.getString("error"))
-
-            if (summary.optString("mode") == "gospel" && voice() != null) {
-                throw Invalid("There is already a Gospel configuration, remove it first.")
-            }
-
-            val id = UUID.randomUUID().toString()
-            seal(id, plain, summary)
-
-            return JSONObject().put("id", id).put("summary", summary)
-        } finally {
-            plain.fill(0)
-        }
+        return JSONObject().put("id", id).put("summary", summary)
     }
 
     fun edit(id: String, edits: String): JSONObject {

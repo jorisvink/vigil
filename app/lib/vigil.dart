@@ -363,7 +363,7 @@ class ChatSettings {
   final Map<String, dynamic> json;
 
   String get nick => json['nick'] as String? ?? '';
-  bool get preview => json['preview'] as bool? ?? true;
+  bool get preview => json['preview'] as bool? ?? false;
 }
 
 class Status {
@@ -573,7 +573,15 @@ class Vigil {
   }
 
   Future<Summary> check(String config) async {
-    final raw = await _channel.invokeMethod<String>('check', config);
+    final bytes = utf8.encode(config);
+    final String? raw;
+
+    try {
+      raw = await _channel.invokeMethod<String>('check', bytes);
+    } finally {
+      bytes.fillRange(0, bytes.length, 0);
+    }
+
     final json = jsonDecode(raw ?? '{}') as Map<String, dynamic>;
 
     if (json.containsKey('error')) {
@@ -584,12 +592,29 @@ class Vigil {
   }
 
   Future<String?> handoff() async {
-    final config = await _invoke('handoff', null);
-    return config.isEmpty ? null : config;
+    final bytes = await _channel.invokeMethod<Uint8List>('handoff');
+
+    if (bytes == null || bytes.isEmpty) {
+      return null;
+    }
+
+    try {
+      return utf8.decode(bytes, allowMalformed: true);
+    } finally {
+      bytes.fillRange(0, bytes.length, 0);
+    }
   }
 
   Future<Tunnel> store(String config) async {
-    final raw = await _invoke('import', config);
+    final bytes = utf8.encode(config);
+    final String raw;
+
+    try {
+      raw = await _invoke('import', bytes);
+    } finally {
+      bytes.fillRange(0, bytes.length, 0);
+    }
+
     final tunnel = Tunnel.fromJson(jsonDecode(raw) as Map<String, dynamic>);
     await reload();
     if (tunnel.summary.voice) {
