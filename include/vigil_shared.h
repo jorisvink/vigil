@@ -77,7 +77,7 @@
 #define VIGIL_CONFIG_MAX		4096
 
 /* The buffer vigil_status() needs at most, with all log lines escaped. */
-#define VIGIL_STATUS_MAX		(384 * 1024)
+#define VIGIL_STATUS_MAX		(512 * 1024)
 
 /* The buffer vigil_chat_events() needs at least. */
 #define VIGIL_CHAT_EVENTS_MAX		(64 * 1024)

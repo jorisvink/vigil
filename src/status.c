@@ -31,7 +31,7 @@
 #define STATUS_INTERVAL		250
 
 /* The maximum size of a rendered snapshot. */
-#define STATUS_MAX		(128 * 1024)
+#define STATUS_MAX		(256 * 1024)
 
 /*
  * A single log line with the wall clock time it was logged at.
