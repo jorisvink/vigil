@@ -73,7 +73,8 @@ static u_int64_t			next_resolve = 0;
 /* The remembrance we get back from our main cathedral. */
 static struct vigil_remembrance		remembrance;
 
-/* The next time we should update the cathedral. */
+/* The last and next time we should update the cathedral. */
+static u_int64_t			last_notify;
 static u_int64_t			next_notify;
 
 /* The peers we want to call, may be written from any thread. */
@@ -81,6 +82,9 @@ static volatile u_int8_t		wanted[KYRKA_PEERS_PER_FLOCK];
 
 /* The peers the cathedral told us want to call us. */
 static volatile u_int8_t		present[KYRKA_PEERS_PER_FLOCK];
+
+/* When the cathedral last pushed each peer to us. */
+static u_int64_t			pushed[KYRKA_PEERS_PER_FLOCK];
 
 /* The peers the cathedral told us are around to be called. */
 static volatile u_int8_t		online[KYRKA_PEERS_PER_FLOCK];
@@ -108,10 +112,12 @@ vigil_call_init(const char *datadir)
 	VERIFY(vigil->gospel != NULL);
 	VERIFY(vigil->gospel->mode == VIGIL_MODE_GOSPEL);
 
+	last_notify = 0;
 	next_notify = 0;
 	next_resolve = 0;
 
 	memset(sent, 0, sizeof(sent));
+	memset(pushed, 0, sizeof(pushed));
 	memset(&configured, 0, sizeof(configured));
 	memset(&remembrance, 0, sizeof(remembrance));
 
@@ -191,15 +197,29 @@ vigil_call_update(void)
 			resolved = 1;
 	}
 
+	for (idx = 1; idx < KYRKA_PEERS_PER_FLOCK; idx++) {
+		if (!vigil_atomic_read(&present[idx]))
+			continue;
+
+		if ((vigil->now - pushed[idx]) < VIGIL_CALL_PRESENT_EXPIRE)
+			continue;
+
+		vigil_atomic_write(&done[idx], 0);
+		vigil_atomic_write(&present[idx], 0);
+	}
+
 	for (idx = 0; idx < KYRKA_PEERS_PER_FLOCK; idx++)
 		peers[idx] = vigil_atomic_read(&wanted[idx]);
 
 	if (next_notify > 0 && vigil->now < next_notify) {
 		if (!memcmp(peers, sent, sizeof(peers)))
 			return;
+		if ((vigil->now - last_notify) < VIGIL_CALL_NOTIFY_MIN)
+			return;
 	}
 
 	memcpy(sent, peers, sizeof(sent));
+	last_notify = vigil->now;
 	next_notify = vigil->now + VIGIL_CALL_NOTIFY;
 
 	call_liturgy_check(&signaling);
@@ -518,6 +538,9 @@ call_liturgy_check(struct call_liturgy *lit)
 		if (vigil_call_cathedral_pick(&lit->cathedral) == -1)
 			return;
 
+		if (lit->signaling)
+			lit->cathedral.timeout = VIGIL_CALL_TIMEOUT_INIT;
+
 		vigil_log(LOG_INFO, "[calls]: liturgy %04x via %s",
 		    lit->group, vigil_address(&lit->cathedral.addr));
 		return;
@@ -542,6 +565,9 @@ call_liturgy_check(struct call_liturgy *lit)
 		lit->cathedral.last = vigil->now;
 		return;
 	}
+
+	if (lit->signaling)
+		lit->cathedral.timeout = VIGIL_CALL_TIMEOUT_INIT;
 
 	vigil_log(LOG_NOTICE, "[calls]: liturgy %04x switching to %s",
 	    lit->group, vigil_address(&lit->cathedral.addr));
@@ -664,8 +690,8 @@ call_kyrka_event(KYRKA *ctx, union kyrka_event *evt, void *udata)
 	lit = udata;
 	local = vigil->gospel->spi & 0xff;
 
-	switch (evt->type) {
-	case KYRKA_EVENT_LITURGY_RECEIVED:
+	if (evt->type == KYRKA_EVENT_LITURGY_RECEIVED ||
+	    evt->type == KYRKA_EVENT_REMEMBRANCE_RECEIVED) {
 		lit->cathedral.last = vigil->now;
 		lit->cathedral.timeout = VIGIL_CATHEDRAL_TIMEOUT;
 
@@ -675,7 +701,10 @@ call_kyrka_event(KYRKA *ctx, union kyrka_event *evt, void *udata)
 			    "[calls]: liturgy %04x cathedral %s is alive",
 			    lit->group, vigil_address(&lit->cathedral.addr));
 		}
+	}
 
+	switch (evt->type) {
+	case KYRKA_EVENT_LITURGY_RECEIVED:
 		for (idx = 1; idx < KYRKA_PEERS_PER_FLOCK; idx++) {
 			if (idx == local)
 				continue;
@@ -687,18 +716,24 @@ call_kyrka_event(KYRKA *ctx, union kyrka_event *evt, void *udata)
 				continue;
 			}
 
-			if (state == vigil_atomic_read(&present[idx]))
+			/*
+			 * The cathedral pushes us each peer that signals us
+			 * on its own, peers expire in vigil_call_update().
+			 */
+			if (state == 0)
 				continue;
 
-			if (state && !vigil_atomic_read(&wanted[idx])) {
+			pushed[idx] = vigil->now;
+
+			if (vigil_atomic_read(&present[idx]))
+				continue;
+
+			if (!vigil_atomic_read(&wanted[idx])) {
 				vigil_log(LOG_INFO,
 				    "[calls]: %02x is calling us", idx);
 			}
 
-			if (state == 0)
-				vigil_atomic_write(&done[idx], 0);
-
-			vigil_atomic_write(&present[idx], state);
+			vigil_atomic_write(&present[idx], 1);
 		}
 		break;
 	case KYRKA_EVENT_REMEMBRANCE_RECEIVED:

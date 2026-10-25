@@ -88,6 +88,18 @@
 /* The milliseconds between signaling liturgy updates. */
 #define VIGIL_CALL_NOTIFY		3000
 
+/* The milliseconds a cathedral wants at least between liturgy updates. */
+#define VIGIL_CALL_NOTIFY_MIN		1500
+
+/* The milliseconds a peer stays present after its last signaling push. */
+#define VIGIL_CALL_PRESENT_EXPIRE	(3 * VIGIL_CALL_NOTIFY)
+
+/*
+ * Milliseconds until we consider a signaling cathedral timed out, it only
+ * answers us with a remembrance every 15 seconds.
+ */
+#define VIGIL_CALL_TIMEOUT_INIT		(20 * 1000)
+
 /* The state of a peer in the signaling liturgy. */
 #define VIGIL_CALL_PEER_WANTED		(1 << 0)
 #define VIGIL_CALL_PEER_PRESENT		(1 << 1)

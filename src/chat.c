@@ -293,6 +293,7 @@ struct chat_tunnel {
 struct chat_peer {
 	u_int8_t		id;
 	u_int64_t		active;
+	u_int64_t		pushed;
 	int			member;
 	int			present;
 
@@ -313,6 +314,7 @@ struct chat_liturgy {
 	u_int64_t		last;
 	u_int16_t		group;
 	u_int64_t		notify;
+	u_int64_t		updated;
 
 	u_int64_t		rx;
 	u_int64_t		tx;
@@ -385,6 +387,7 @@ static void	chat_tunnel_poke(struct chat_tunnel *);
 static void	chat_tunnel_manage(struct chat_tunnel *);
 static void	chat_tunnel_rebind(struct chat_tunnel *);
 static int	chat_tunnel_ack(struct chat_tunnel *, u_int64_t);
+static int	chat_tunnel_online(struct chat_tunnel *);
 static void	chat_tunnel_check(struct chat_peer *, u_int16_t);
 static void	chat_tunnel_event(KYRKA *, union kyrka_event *, void *);
 static void	chat_tunnel_state(struct chat_tunnel *,
@@ -638,6 +641,13 @@ vigil_chat_update(void)
 	for (idx = 1; idx < KYRKA_PEERS_PER_FLOCK; idx++) {
 		if (idx == local)
 			continue;
+
+		if (peers[idx].present &&
+		    (vigil->now - peers[idx].pushed) >=
+		    VIGIL_CALL_PRESENT_EXPIRE) {
+			vigil_log(LOG_INFO, "[chat] %02x is gone", idx);
+			peers[idx].present = 0;
+		}
 
 		chat_tunnel_check(&peers[idx], VIGIL_CHAT_SIGNAL_GROUP);
 
@@ -1089,6 +1099,9 @@ chat_liturgy_init(struct chat_liturgy *lit, u_int16_t id)
 	cfg.flock_src = gospel->cathedral_flock | VIGIL_CHAT_GROUP_DOMAIN;
 	cfg.flock_dst = cfg.flock_src;
 
+	if (id == VIGIL_CHAT_SIGNAL_GROUP)
+		cfg.remembrance = 1;
+
 	if (kyrka_cathedral_config(lit->ctx, &cfg) == -1) {
 		fatal("failed to configure cathedral: %d",
 		    kyrka_last_error(lit->ctx));
@@ -1136,10 +1149,14 @@ chat_liturgy_signal(void)
 	for (idx = 0; idx < KYRKA_PEERS_PER_FLOCK; idx++)
 		want[idx] = chat_signal_check(&peers[idx]);
 
-	if (signaling.notify != 0 && vigil->now < signaling.notify &&
-	    !memcmp(want, sent, sizeof(want)))
-		return;
+	if (signaling.notify != 0 && vigil->now < signaling.notify) {
+		if (!memcmp(want, sent, sizeof(want)))
+			return;
+		if ((vigil->now - signaling.updated) < VIGIL_CALL_NOTIFY_MIN)
+			return;
+	}
 
+	signaling.updated = vigil->now;
 	signaling.notify = vigil->now + VIGIL_CALL_NOTIFY;
 	memcpy(sent, want, sizeof(sent));
 
@@ -1165,6 +1182,9 @@ chat_liturgy_cathedral_check(struct chat_liturgy *lit)
 	if (lit->cathedral.addr.sin_port == 0) {
 		if (vigil_call_cathedral_pick(&lit->cathedral) == -1)
 			return;
+
+		if (lit == &signaling)
+			lit->cathedral.timeout = VIGIL_CALL_TIMEOUT_INIT;
 
 		vigil_log(LOG_INFO, "[chat] liturgy %04x via %s", lit->group,
 		    vigil_address(&lit->cathedral.addr));
@@ -1194,6 +1214,9 @@ chat_liturgy_cathedral_check(struct chat_liturgy *lit)
 		lit->cathedral.last = vigil->now;
 		return;
 	}
+
+	if (lit == &signaling)
+		lit->cathedral.timeout = VIGIL_CALL_TIMEOUT_INIT;
 
 	vigil_log(LOG_NOTICE, "[chat] liturgy %04x switching to %s",
 	    lit->group, vigil_address(&lit->cathedral.addr));
@@ -1314,8 +1337,8 @@ chat_liturgy_event(KYRKA *ctx, union kyrka_event *evt, void *udata)
 	first = 0;
 	local = vigil->gospel->spi & 0xff;
 
-	switch (evt->type) {
-	case KYRKA_EVENT_LITURGY_RECEIVED:
+	if (evt->type == KYRKA_EVENT_LITURGY_RECEIVED ||
+	    evt->type == KYRKA_EVENT_REMEMBRANCE_RECEIVED) {
 		if (lit->last == 0) {
 			vigil_log(LOG_INFO, "[chat] liturgy %04x is alive",
 			    lit->group);
@@ -1326,20 +1349,29 @@ chat_liturgy_event(KYRKA *ctx, union kyrka_event *evt, void *udata)
 		lit->cathedral.last = vigil->now;
 		lit->cathedral.timeout = VIGIL_CATHEDRAL_TIMEOUT;
 		lit->cathedral.alive = 1;
+	}
 
+	switch (evt->type) {
+	case KYRKA_EVENT_LITURGY_RECEIVED:
 		for (idx = 1; idx < KYRKA_PEERS_PER_FLOCK; idx++) {
 			if (idx == local)
 				continue;
 
 			state = evt->liturgy.peers[idx] ? 1 : 0;
 
+			/*
+			 * The cathedral pushes us each peer that signals us
+			 * on its own, peers expire in vigil_chat_update().
+			 */
 			if (lit == &signaling) {
-				if (state != peers[idx].present) {
-					vigil_log(LOG_INFO, "[chat] %02x %s",
-					    idx, state ? "is around" :
-					    "is gone");
+				if (state == 0)
+					continue;
+				if (peers[idx].present == 0) {
+					vigil_log(LOG_INFO,
+					    "[chat] %02x is around", idx);
 				}
-				peers[idx].present = state;
+				peers[idx].present = 1;
+				peers[idx].pushed = vigil->now;
 			} else {
 				if (state != peers[idx].member) {
 					vigil_log(LOG_INFO, "[group] %02x %s",
@@ -1574,6 +1606,9 @@ chat_tallies_free(void)
  *
  * We want a tunnel for as long as the peer shows up in the liturgy for it,
  * each tunnel uses a cathedral picked at random from the ones we know.
+ *
+ * In the signaling group the peer only shows up while it signals us, so
+ * we keep a tunnel that is online for as long as we want the peer too.
  */
 static void
 chat_tunnel_check(struct chat_peer *peer, u_int16_t id)
@@ -1587,6 +1622,8 @@ chat_tunnel_check(struct chat_peer *peer, u_int16_t id)
 	if (id == VIGIL_CHAT_SIGNAL_GROUP) {
 		tun = peer->tunnel;
 		want = peer->present;
+		if (chat_tunnel_online(tun) && chat_signal_check(peer))
+			want = 1;
 	} else {
 		tun = peer->group;
 		want = peer->member;
@@ -1868,8 +1905,7 @@ chat_tunnel_state(struct chat_tunnel *tun, const char **link, int *online,
 	if (tun == NULL)
 		return;
 
-	if (tun->online != 0 && (vigil->now - tun->last_rx) < CHAT_RX_TIMEOUT)
-		*online = 1;
+	*online = chat_tunnel_online(tun);
 
 	if (!vigil_inet_match(&tun->addr, &tun->cathedral.addr))
 		*p2p = 1;
@@ -1880,6 +1916,21 @@ chat_tunnel_state(struct chat_tunnel *tun, const char **link, int *online,
 		*link = "p2p";
 	else
 		*link = "relay";
+}
+
+/*
+ * Returns 1 if the given tunnel heard from its peer recently.
+ */
+static int
+chat_tunnel_online(struct chat_tunnel *tun)
+{
+	if (tun == NULL)
+		return (0);
+
+	if (tun->online == 0)
+		return (0);
+
+	return ((vigil->now - tun->last_rx) < CHAT_RX_TIMEOUT);
 }
 
 /*
@@ -2574,6 +2625,9 @@ chat_text_recv(struct chat_tunnel *tun, u_int64_t id, u_int8_t *data,
 /*
  * Returns 1 if we want the given peer in the signaling liturgy, this is the
  * case if we hold messages for it, its chat is open or we talked recently.
+ *
+ * We also signal a peer that signals us until our tunnel with it is up,
+ * the cathedral does not tell it we are around otherwise.
  */
 static int
 chat_signal_check(struct chat_peer *peer)
@@ -2590,6 +2644,9 @@ chat_signal_check(struct chat_peer *peer)
 		return (1);
 
 	if (peer->active != 0 && (vigil->now - peer->active) < CHAT_IDLE)
+		return (1);
+
+	if (peer->present && !chat_tunnel_online(peer->tunnel))
 		return (1);
 
 	return (0);
