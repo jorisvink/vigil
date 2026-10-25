@@ -219,14 +219,14 @@ test_wait_mtu(u_int16_t mtu, int seconds)
 	int		idx;
 	char		*buf, want[32];
 
-	buf = calloc(1, 128 * 1024);
+	buf = calloc(1, VIGIL_STATUS_MAX);
 	if (buf == NULL)
 		fatal("calloc");
 
 	(void)snprintf(want, sizeof(want), "\"mtu\":%u,", mtu);
 
 	for (idx = 0; idx < seconds * 4; idx++) {
-		(void)vigil_status(buf, 128 * 1024);
+		(void)vigil_status(buf, VIGIL_STATUS_MAX);
 		if (strstr(buf, want) != NULL) {
 			free(buf);
 			return (0);

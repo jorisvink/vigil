@@ -91,11 +91,11 @@ main(void)
 			replies++;
 	}
 
-	buf = calloc(1, 128 * 1024);
+	buf = calloc(1, VIGIL_STATUS_MAX);
 	if (buf == NULL)
 		fatal("calloc");
 
-	(void)vigil_status(buf, 128 * 1024);
+	(void)vigil_status(buf, VIGIL_STATUS_MAX);
 
 	if (strstr(buf, "\"online\":true") == NULL) {
 		printf("FAIL tunnel not online: %s\n", buf);
@@ -105,7 +105,7 @@ main(void)
 	vigil_stop(run_id);
 	pthread_join(thread, NULL);
 
-	(void)vigil_status(buf, 128 * 1024);
+	(void)vigil_status(buf, VIGIL_STATUS_MAX);
 
 	if (strncmp(buf, "{\"running\":false", 16)) {
 		printf("FAIL still running after stop\n");
