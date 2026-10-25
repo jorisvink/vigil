@@ -76,6 +76,16 @@ $ xcrun devicectl device install app --device <device> \
     app/build/ios/iphoneos/Runner.app
 ```
 
+## Running
+
+### Android
+
+On android you may have to exempt the app from aggressive battery
+optimizations and allow it to run in the background. Some vendors
+will still VPN like applications.
+
+Consider turning on always-on VPN so its automatically restarted too.
+
 # Configuration
 
 ## Examples
