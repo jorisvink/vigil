@@ -139,14 +139,14 @@ class VigilVpnService : VpnService() {
             }
         }
 
-        val fd = if (alone) null else try {
-            build(summary).establish()
+        val fd = try {
+            (if (alone) placeholder(summary) else build(summary)).establish()
         } catch (e: Exception) {
             Log.e(TAG, "failed to establish tunnel interface", e)
             null
         }
 
-        if (!alone && fd == null) {
+        if (fd == null) {
             config.fill(0)
             voice?.fill(0)
             idle()
@@ -169,13 +169,14 @@ class VigilVpnService : VpnService() {
                 previous?.join()
 
                 val ret = Vigil.run(
-                    this, fd?.fd ?: -1, config, voice, noBackupFilesDir.absolutePath, number
+                    this, if (alone) -1 else fd.fd, config, voice, noBackupFilesDir.absolutePath,
+                    number
                 )
                 Log.i(TAG, "vigil exited with $ret")
 
                 config.fill(0)
                 voice?.fill(0)
-                fd?.close()
+                fd.close()
 
                 synchronized(lock) {
                     if (thread === Thread.currentThread()) {
@@ -252,14 +253,13 @@ class VigilVpnService : VpnService() {
     }
 
     private fun startForeground(notification: Notification, call: Boolean) {
-        val alone = summary?.let { voiceOnly(it) } == true
         var type = 0
 
-        if (!alone && Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
             type = ServiceInfo.FOREGROUND_SERVICE_TYPE_SYSTEM_EXEMPTED
         }
 
-        if ((alone || call) && Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+        if (call && Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
             type = type or ServiceInfo.FOREGROUND_SERVICE_TYPE_PHONE_CALL
         }
 
@@ -406,6 +406,21 @@ class VigilVpnService : VpnService() {
             builder.allowFamily(OsConstants.AF_INET6)
         }
 
+        return configure(builder)
+    }
+
+    private fun placeholder(summary: JSONObject): Builder {
+        val builder = Builder()
+            .setSession(summary.getString("instance"))
+            .setBlocking(false)
+            .addAddress(GOSPEL_ADDRESS, 32)
+            .addAllowedApplication(packageName)
+            .allowFamily(OsConstants.AF_INET6)
+
+        return configure(builder)
+    }
+
+    private fun configure(builder: Builder): Builder {
         packageManager.getLaunchIntentForPackage(packageName)?.let {
             builder.setConfigureIntent(
                 PendingIntent.getActivity(this, 0, it, PendingIntent.FLAG_IMMUTABLE)
@@ -449,6 +464,7 @@ class VigilVpnService : VpnService() {
         private const val NOTIFICATION = 1
         private const val REFRESH_MS = 1000L
         private const val IPV6_SINK = "fd70:6172:6973:6800::1"
+        private const val GOSPEL_ADDRESS = "169.254.86.1"
 
         private val lock = Any()
         private var thread: Thread? = null

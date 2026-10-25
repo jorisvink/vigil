@@ -6,12 +6,14 @@ import android.content.ActivityNotFoundException
 import android.content.Intent
 import android.net.Uri
 import android.provider.OpenableColumns
+import android.provider.Settings
 import java.io.ByteArrayOutputStream
 import java.io.IOException
 import android.content.pm.PackageManager
 import android.net.VpnService
 import android.os.Build
 import android.os.Bundle
+import android.os.PowerManager
 import android.util.Log
 import android.view.Surface
 import android.view.WindowManager
@@ -27,7 +29,7 @@ import org.json.JSONObject
  */
 class MainActivity : FlutterActivity() {
     private lateinit var store: TunnelStore
-    private var pending: Pair<String, MethodChannel.Result>? = null
+    private var pending: Pair<MethodChannel.Result, () -> Unit>? = null
     private var picking: Pair<String, MethodChannel.Result>? = null
     private var saving: Triple<String, String, MethodChannel.Result>? = null
     private var microphone: Pair<Intent, MethodChannel.Result?>? = null
@@ -112,7 +114,7 @@ class MainActivity : FlutterActivity() {
                         .putExtra(VigilVpnService.EXTRA_ON, on)
 
                     if (on) {
-                        withMicrophone(intent, result)
+                        withVpn(result) { withMicrophone(intent, result) }
                     } else {
                         startService(intent)
                         result.success("")
@@ -134,6 +136,7 @@ class MainActivity : FlutterActivity() {
                         .put("phone", Calls.json() ?: JSONObject.NULL)
                         .put("chats", Chats.json(this))
                         .put("gospel", store.gospel)
+                        .put("background", background())
                         .toString()
                     )
                 }
@@ -331,6 +334,10 @@ class MainActivity : FlutterActivity() {
                     call.argument<Boolean>("value")?.let { prefs.edit().putBoolean(key, it).apply() }
                     result.success(prefs.getBoolean(key, false).toString())
                 }
+                "allowBackground" -> {
+                    allowBackground()
+                    result.success("")
+                }
                 "version" -> result.success(Vigil.version())
                 "kyrkaVersion" -> result.success(Vigil.kyrkaVersion())
                 else -> result.notImplemented()
@@ -343,6 +350,19 @@ class MainActivity : FlutterActivity() {
             result.error("invalid", e.message, null)
         } catch (e: Exception) {
             result.error("failed", e.message ?: e.toString(), null)
+        }
+    }
+
+    private fun background(): Boolean =
+        getSystemService(PowerManager::class.java).isIgnoringBatteryOptimizations(packageName)
+
+    private fun allowBackground() {
+        try {
+            startActivity(
+                Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, Uri.parse("package:$packageName"))
+            )
+        } catch (e: ActivityNotFoundException) {
+            startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
         }
     }
 
@@ -369,25 +389,24 @@ class MainActivity : FlutterActivity() {
 
         if (wanted.isNotEmpty()) requestPermissions(wanted.toTypedArray(), REQUEST_NOTIFY)
 
-        if (store.summary(id).optString("mode") == "gospel") {
-            start(id, result)
-            return
-        }
+        withVpn(result) { start(id, result) }
+    }
 
+    private fun withVpn(result: MethodChannel.Result, then: () -> Unit) {
         val consent = VpnService.prepare(this)
 
         if (consent == null) {
-            start(id, result)
+            then()
             return
         }
 
-        pending?.second?.error("cancelled", "Another tunnel was connected.", null)
-        pending = id to result
+        pending?.first?.error("cancelled", "Another tunnel was connected.", null)
+        pending = result to then
         startActivityForResult(consent, REQUEST_VPN)
     }
 
     override fun onDestroy() {
-        pending?.second?.error("cancelled", "The VPN permission was not answered.", null)
+        pending?.first?.error("cancelled", "The VPN permission was not answered.", null)
         pending = null
         super.onDestroy()
     }
@@ -434,11 +453,11 @@ class MainActivity : FlutterActivity() {
 
         if (requestCode != REQUEST_VPN) return
 
-        val (id, result) = pending ?: return
+        val (result, then) = pending ?: return
         pending = null
 
         if (resultCode == RESULT_OK) {
-            start(id, result)
+            then()
         } else {
             result.error("denied", "Permission to set up a VPN was not granted.", null)
         }

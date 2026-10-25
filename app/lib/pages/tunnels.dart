@@ -3,6 +3,7 @@ import 'package:flutter/widgets.dart';
 import '../app.dart';
 import '../vigil.dart';
 import '../theme.dart';
+import '../widgets/background.dart';
 import '../widgets/buttons.dart';
 import '../widgets/marks.dart';
 import '../widgets/ui.dart';
@@ -72,6 +73,8 @@ class _TunnelsPageState extends State<TunnelsPage> {
                   busy: _busy && tunnel.connecting == null,
                   onToggle: _toggle,
                 ),
+              if (list.isNotEmpty && !status.background)
+                const BackgroundNotice(),
               if (list.isEmpty)
                 EmptyState(
                   glyph: GlyphKind.scan,

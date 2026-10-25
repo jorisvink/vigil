@@ -376,6 +376,7 @@ class Status {
     this.voice,
     Chats? chats,
     this.gospel = true,
+    this.background = true,
   ]) : chats = chats ?? Chats.none;
 
   final Map<String, dynamic> json;
@@ -388,6 +389,7 @@ class Status {
   final VoiceStatus? voice;
   final Chats chats;
   final bool gospel;
+  final bool background;
 
   static final Status idle = Status(const {'running': false}, null);
 
@@ -544,6 +546,7 @@ class Vigil {
             ? Chats(json['chats'] as Map<String, dynamic>)
             : null,
         json['gospel'] as bool? ?? true,
+        json['background'] as bool? ?? true,
       );
 
       final since = DateTime.now().difference(_connectingSince);
@@ -846,6 +849,8 @@ class Vigil {
   Future<bool> flag(String key, [bool? value]) async =>
       await _invoke('flag', {'key': key, 'value': value}) == 'true';
 
+  Future<void> allowBackground() => _invoke('allowBackground', null);
+
   Future<String> version() async =>
       await _channel.invokeMethod<String>('version') ?? 'unknown';
 
@@ -862,6 +867,7 @@ class Vigil {
       status.voice,
       status.chats,
       status.gospel,
+      status.background,
     );
 
     for (final p in _last.chat?.peers ?? const <ChatPeer>[]) {

@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import '../app.dart';
 import '../vigil.dart';
 import '../theme.dart';
+import '../widgets/background.dart';
 import '../widgets/buttons.dart';
 import '../widgets/marks.dart';
 import '../widgets/ui.dart';
@@ -183,6 +184,7 @@ class _GospelPageState extends State<GospelPage> with WidgetsBindingObserver {
                   collapsed: _collapsed,
                   onCollapse: _collapse,
                 ),
+                if (!status.background) const BackgroundNotice(),
                 ..._chatList(status),
                 ..._peers(status),
               ],

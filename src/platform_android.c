@@ -117,10 +117,9 @@ static JNINativeMethod	methods[] = {
 };
 
 /*
- * The JNIEnv and VpnService for the thread that is running vigil_run()
- * and if it has a tunnel, only valid and only used on that thread.
+ * The JNIEnv and VpnService for the thread that is running vigil_run(),
+ * only valid and only used on that thread.
  */
-static int		run_tunnel = 0;
 static JNIEnv		*run_env = NULL;
 static jobject		run_service = NULL;
 static jmethodID	run_protect = NULL;
@@ -180,8 +179,7 @@ vigil_platform_log(int prio, const char *msg)
 
 /*
  * Protect the given socket so its traffic bypasses our tunnel,
- * returns -1 if that was not possible. Without a tunnel there is
- * nothing to bypass.
+ * returns -1 if that was not possible.
  */
 int
 vigil_platform_socket(int fd)
@@ -189,10 +187,6 @@ vigil_platform_socket(int fd)
 	jboolean	ok;
 
 	PRECOND(fd >= 0);
-
-	if (!run_tunnel)
-		return (0);
-
 	PRECOND(run_env != NULL);
 	PRECOND(run_service != NULL);
 
@@ -322,13 +316,11 @@ android_run(JNIEnv *env, jclass cls, jobject service, jint fd,
 
 	run_env = env;
 	run_service = service;
-	run_tunnel = fd != -1;
 
 	ret = vigil_run((u_int64_t)id, fd, cfg, len, gcfg, glen, dir);
 
 	run_env = NULL;
 	run_service = NULL;
-	run_tunnel = 0;
 
 	android_bytes_free(cfg, len);
 
