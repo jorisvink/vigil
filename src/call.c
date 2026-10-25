@@ -459,8 +459,8 @@ call_liturgy_init(struct call_liturgy *lit, int sig)
 	cfg.tunnel = gospel->spi & 0xff;
 	cfg.identity = gospel->cathedral_id;
 
-	cfg.flock_dst = cfg.flock_src;
 	cfg.flock_src = gospel->cathedral_flock | VIGIL_CALL_FLOCK_DOMAIN;
+	cfg.flock_dst = cfg.flock_src;
 
 	if (sig) {
 		cfg.remembrance = 1;
