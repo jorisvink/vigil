@@ -457,6 +457,8 @@ struct vigil_peer {
 	KYRKA				*ctx;
 
 	LIST_HEAD(, vigil_mac)		macs;
+	u_int32_t			mac_count;
+
 	LIST_ENTRY(vigil_peer)		list;
 };
 

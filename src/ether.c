@@ -36,6 +36,9 @@
 /* The maximum age in milliseconds a MAC is valid. */
 #define ETHER_MAC_AGE_MAX	((60 * 20) * 1000)
 
+/* The maximum number of MAC addresses we keep per peer. */
+#define ETHER_MAC_PEER_MAX	128
+
 /* The interval in milliseconds between arp requests for an address. */
 #define ETHER_ARP_INTERVAL	(1 * 1000)
 
@@ -68,6 +71,7 @@ struct ether_arp {
 	u_int32_t	tpa;
 } __attribute__((packed));
 
+static void	ether_mac_evict(struct vigil_peer *);
 static void	ether_mac_prune(struct vigil_peer *);
 static void	ether_header(struct vigil_ether *, u_int16_t);
 static int	ether_multicast(struct in_addr *, u_int8_t *);
@@ -184,9 +188,37 @@ ether_mac_prune(struct vigil_peer *peer)
 			    peer->id, mac->addr[0], mac->addr[1], mac->addr[2],
 			    mac->addr[3], mac->addr[4], mac->addr[5]);
 			LIST_REMOVE(mac, list);
+			peer->mac_count--;
 			free(mac);
 		}
 	}
+}
+
+/*
+ * Evict the oldest MAC address from the peer its MAC table if required.
+ */
+static void
+ether_mac_evict(struct vigil_peer *peer)
+{
+	struct vigil_mac	*mac, *oldest;
+
+	PRECOND(peer != NULL);
+
+	if (peer->mac_count < ETHER_MAC_PEER_MAX)
+		return;
+
+	oldest = NULL;
+
+	LIST_FOREACH(mac, &peer->macs, list) {
+		if (oldest == NULL || mac->age < oldest->age)
+			oldest = mac;
+	}
+
+	VERIFY(oldest != NULL);
+
+	LIST_REMOVE(oldest, list);
+	peer->mac_count--;
+	free(oldest);
 }
 
 /*
@@ -203,6 +235,8 @@ vigil_ether_cleanup(struct vigil_peer *peer)
 		LIST_REMOVE(mac, list);
 		free(mac);
 	}
+
+	peer->mac_count = 0;
 }
 
 /*
@@ -594,7 +628,11 @@ ether_mac_register(struct vigil_peer *peer, const u_int8_t *addr)
 			    p0->id, peer->id);
 
 			LIST_REMOVE(mac, list);
+			p0->mac_count--;
+
+			ether_mac_evict(peer);
 			LIST_INSERT_HEAD(&peer->macs, mac, list);
+			peer->mac_count++;
 		}
 
 		break;
@@ -605,6 +643,8 @@ ether_mac_register(struct vigil_peer *peer, const u_int8_t *addr)
 		return (mac);
 	}
 
+	ether_mac_evict(peer);
+
 	mac = calloc(1, sizeof(*mac));
 	if (mac == NULL)
 		fatal("failed to allocate new ethernet mac address");
@@ -613,6 +653,7 @@ ether_mac_register(struct vigil_peer *peer, const u_int8_t *addr)
 	memcpy(mac->addr, addr, VIGIL_ETHER_MAC_LEN);
 
 	LIST_INSERT_HEAD(&peer->macs, mac, list);
+	peer->mac_count++;
 
 	vigil_log(LOG_INFO,
 	    "[peer=%02x] %02x:%02x:%02x:%02x:%02x:%02x discovered",
