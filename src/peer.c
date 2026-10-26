@@ -292,7 +292,8 @@ peer_create(u_int8_t id)
 	peer->io.fd = peer_socket(&peer->port);
 	if (peer->io.fd == -1) {
 		free(peer);
-		vigil->flags &= ~VIGIL_FLAG_RUNNING;
+		if (vigil->config->mode != VIGIL_MODE_LITURGY)
+			vigil->flags &= ~VIGIL_FLAG_RUNNING;
 		return;
 	}
 
