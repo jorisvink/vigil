@@ -24,12 +24,14 @@ object Chats {
 
     private var vault: ChatVault? = null
     private var session = 0L
+    private var resubmit = 0L
     private var screen: BroadcastReceiver? = null
     private data class Shown(val text: String, val time: Long, val name: String, val key: String)
 
     private val shown = mutableMapOf<String, MutableList<Shown>>()
     private val unseen = mutableMapOf<String, Int>()
     private val receipts = mutableListOf<Receipt>()
+    private val waiting = mutableSetOf<Long>()
 
     var version = 0L
         private set
@@ -55,6 +57,8 @@ object Chats {
         service.registerReceiver(receiver, IntentFilter(Intent.ACTION_SCREEN_OFF))
         screen = receiver
         session = 0
+        resubmit = 0
+        waiting.clear()
     }
 
     fun detach(service: VigilVpnService) {
@@ -67,35 +71,25 @@ object Chats {
         val vault = vault(service)
 
         if (chat.optLong("session") != session) {
+            resubmit = 0L
+            waiting.clear()
+
             try {
                 Vigil.chatNick(nick(service))
                 Vigil.chatGroup(group(service))
-
-                val outbox = vault.outboxList()
-                for (i in 0 until outbox.length()) {
-                    val entry = outbox.getJSONObject(i)
-                    val chat = entry.getString("peer")
-
-                    if (!entry.has("data")) {
-                        Vigil.chatSend(chat.toInt(16), entry.getLong("ref"), entry.getString("text").toByteArray())
-                        continue
-                    }
-
-                    val data = vault.data(chat, entry.getString("data")) ?: continue
-
-                    try {
-                        Vigil.chatDataSend(
-                            chat.toInt(16), entry.getLong("ref"), ChatVault.kind(entry.getString("media")),
-                            entry.getString("name").toByteArray(), data
-                        )
-                    } finally {
-                        data.fill(0)
-                    }
-                }
-
+                handover(vault, null)
                 session = chat.optLong("session")
             } catch (e: Exception) {
                 Log.w(TAG, "failed to hand over the outbox", e)
+            }
+        } else if (resubmit != 0L && System.currentTimeMillis() >= resubmit) {
+            resubmit = 0L
+
+            try {
+                handover(vault, waiting.toSet())
+            } catch (e: Exception) {
+                Log.w(TAG, "failed to hand over the refused data", e)
+                refused(null)
             }
         }
 
@@ -169,6 +163,46 @@ object Chats {
                 Log.e(TAG, "failed to store a chat event", e)
             }
         }
+    }
+
+    fun refused(ref: Long?) {
+        ref?.let { waiting.add(it) }
+        if (resubmit == 0L) resubmit = System.currentTimeMillis() + RESUBMIT_MS
+    }
+
+    private fun handover(vault: ChatVault, only: Set<Long>?) {
+        val outbox = vault.outboxList()
+        val refs = mutableSetOf<Long>()
+
+        for (i in 0 until outbox.length()) {
+            val entry = outbox.getJSONObject(i)
+            val chat = entry.getString("peer")
+            val ref = entry.getLong("ref")
+
+            refs.add(ref)
+
+            if (only != null && ref !in only) continue
+
+            if (!entry.has("data")) {
+                Vigil.chatSend(chat.toInt(16), ref, entry.getString("text").toByteArray())
+                continue
+            }
+
+            val data = vault.data(chat, entry.getString("data")) ?: continue
+
+            try {
+                val sent = Vigil.chatDataSend(
+                    chat.toInt(16), ref, ChatVault.kind(entry.getString("media")),
+                    entry.getString("name").toByteArray(), data
+                )
+
+                if (sent) waiting.remove(ref) else refused(ref)
+            } finally {
+                data.fill(0)
+            }
+        }
+
+        waiting.retainAll(refs)
     }
 
     private fun receipt(vault: ChatVault, receipt: Receipt) {
@@ -331,4 +365,5 @@ object Chats {
     private const val NOTIFICATION_BASE = 0x1000
     private const val GROUP_NOTIFICATION_BASE = 0x10000
     private const val SHOWN_MAX = 6
+    private const val RESUBMIT_MS = 10_000L
 }

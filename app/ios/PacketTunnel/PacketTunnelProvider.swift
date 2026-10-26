@@ -15,6 +15,8 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
     private var calls: DispatchSourceTimer?
     private var callers = Set<String>()
     private var chatSession: UInt64 = 0
+    private var chatResubmit: TimeInterval = 0
+    private var chatWaiting = Set<UInt64>()
     private var receipts = [(String, Int64, String, Int, Int)]()
     private var paths: NWPathMonitor?
     private var probe: WakeProbe?
@@ -24,6 +26,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
     /// Where the IPv6 traffic we block ends up.
     private static let ipv6Sink = "fd70:6172:6973:6800::1"
     private static let voiceAddress = "169.254.86.1"
+    private static let resubmitInterval: TimeInterval = 10
 
     override func startTunnel(options: [String: NSObject]?,
                               completionHandler: @escaping (Error?) -> Void) {
@@ -258,9 +261,14 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         let session = (chat["session"] as? NSNumber)?.uint64Value ?? 0
 
         if session != chatSession {
+            chatResubmit = 0
+            chatWaiting.removeAll()
             _ = vigil_chat_nick(defaults.string(forKey: "chatNick") ?? "")
             vigil_chat_group(UInt16(truncatingIfNeeded: defaults.integer(forKey: "chatGroup")))
             if submitOutbox() { chatSession = session }
+        } else if chatResubmit != 0, ProcessInfo.processInfo.systemUptime >= chatResubmit {
+            chatResubmit = 0
+            submitOutbox(only: chatWaiting)
         }
 
         let pending = receipts
@@ -385,13 +393,24 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
     }
 
     @discardableResult
-    private func submitOutbox() -> Bool {
-        guard let outbox = try? ChatVault.shared.outboxList() else { return false }
+    private func submitOutbox(only: Set<UInt64>? = nil) -> Bool {
+        guard let outbox = try? ChatVault.shared.outboxList() else {
+            if only != nil {
+                chatResubmit = ProcessInfo.processInfo.systemUptime + Self.resubmitInterval
+            }
+            return false
+        }
+
+        var refs = Set<UInt64>()
 
         for entry in outbox {
             guard let chat = entry["peer"] as? String,
                   let peer = UInt8(chat, radix: 16), peer > 0, peer < 0xff,
                   let ref = (entry["ref"] as? NSNumber)?.uint64Value else { continue }
+
+            refs.insert(ref)
+
+            if let only, !only.contains(ref) { continue }
 
             if let file = entry["data"] as? String {
                 guard let data = try? ChatVault.shared.data(chat, file: file) else { return false }
@@ -400,8 +419,17 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
                 let media = entry["media"] as? String ?? "file"
                 let name = entry["name"] as? String ?? "file"
 
-                _ = data.withUnsafeBytes {
+                let sent = data.withUnsafeBytes {
                     vigil_chat_data_send(peer, ref, ChatVault.kind(media), name, $0.baseAddress, data.count)
+                }
+
+                if sent == -1 {
+                    chatWaiting.insert(ref)
+                    if chatResubmit == 0 {
+                        chatResubmit = ProcessInfo.processInfo.systemUptime + Self.resubmitInterval
+                    }
+                } else {
+                    chatWaiting.remove(ref)
                 }
                 continue
             }
@@ -413,6 +441,8 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
 
             _ = vigil_chat_send(peer, ref, bytes, bytes.count)
         }
+
+        chatWaiting.formIntersection(refs)
 
         return true
     }

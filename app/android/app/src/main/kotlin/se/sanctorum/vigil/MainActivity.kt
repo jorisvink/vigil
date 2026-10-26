@@ -591,11 +591,11 @@ class MainActivity : FlutterActivity() {
         val ref = vault.ref()
 
         require(group == null || Vigil.chatGroupDataSend(ref, kind, label, data)) {
-            "Gospel is not running, group files only go to members that are around."
+            "Gospel is not running or still sending other files, group files only go to members that are around."
         }
 
         vault.sendData(id, media, name, data, ref)
-        if (group == null) Vigil.chatDataSend(id.toInt(16), ref, kind, label, data)
+        if (group == null && !Vigil.chatDataSend(id.toInt(16), ref, kind, label, data)) Chats.refused(ref)
 
         Chats.changed()
 

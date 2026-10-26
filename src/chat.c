@@ -115,6 +115,9 @@
 /* Max size of the data we hold for our platform code. */
 #define CHAT_PARCELS_MAX		(16 * 1024 * 1024)
 
+/* Max size of the data we hold for sending. */
+#define CHAT_BLOBS_MAX			(12 * 1024 * 1024)
+
 /* Time the platform gets to pull data that arrived. */
 #define CHAT_DATA_WAIT			(60 * 1000)
 
@@ -126,11 +129,18 @@
  * A data block we could be sending.
  */
 struct chat_blob {
+	int			held;
+	u_int8_t		peer;
+	u_int64_t		ref;
 	size_t			size;
 	u_int32_t		refs;
 	u_int32_t		count;
 	u_int8_t		*data;
+
+	TAILQ_ENTRY(chat_blob)	list;
 };
+
+TAILQ_HEAD(chat_blob_list, chat_blob);
 
 /*
  * A message we can send to the peer. These wait in the outbox of our peer
@@ -402,7 +412,6 @@ static void	chat_cathedral_send(struct kyrka_packet *, u_int64_t, void *);
 
 static void	chat_token_ack(u_int64_t);
 static int	chat_nick_valid(const char *);
-static void	chat_blob_release(struct chat_blob *);
 static void	chat_p2p_follow(struct chat_tunnel *);
 static int	chat_signal_check(struct chat_peer *);
 static void	chat_utf8_normalize(u_int8_t *, size_t);
@@ -439,6 +448,9 @@ static void	chat_command_next(struct chat_command **);
 static int	chat_command_insert(struct chat_command *);
 static int	chat_command_queue(int, u_int8_t, u_int64_t,
 		    const void *, size_t);
+
+static void	chat_blob_release(struct chat_blob *);
+static int	chat_blob_room(u_int8_t, u_int64_t, size_t);
 
 static void	chat_parcels_free(void);
 static void	chat_parcels_expire(void);
@@ -538,6 +550,10 @@ static size_t				event_count = 0;
 static struct chat_parcel_list		parcels;
 static size_t				parcel_bytes = 0;
 
+/* All data we hold for sending and how much of it. */
+static struct chat_blob_list		blobs;
+static size_t				blob_bytes = 0;
+
 /* Number of xfers in-flight and how many of those we are receiving. */
 static u_int32_t			transfers = 0;
 static u_int32_t			receiving = 0;
@@ -567,9 +583,11 @@ vigil_chat_init(void)
 	chat_lock();
 
 	transfers = 0;
+	blob_bytes = 0;
 	event_count = 0;
 	command_count = 0;
 
+	TAILQ_INIT(&blobs);
 	TAILQ_INIT(&events);
 	TAILQ_INIT(&tallies);
 	TAILQ_INIT(&parcels);
@@ -2842,12 +2860,15 @@ chat_command_queue(int type, u_int8_t peer, u_int64_t value,
 
 /*
  * Queue a command for the event loop that carries a copy of the given
- * data, returns -1 if we are not taking any.
+ * data, returns -1 if we are not taking any or have no room for it.
+ * Data we already hold is not copied again.
  */
 static int
 chat_data_queue(int type, u_int8_t peer, u_int64_t value, int kind,
     const char *name, const void *data, size_t len)
 {
+	int				ret;
+	size_t				size;
 	struct chat_command		*cmd;
 	struct vigil_chat_data_head	head;
 	struct chat_blob		*blob;
@@ -2867,6 +2888,18 @@ chat_data_queue(int type, u_int8_t peer, u_int64_t value, int kind,
 	if (chat_data_name_valid((const u_int8_t *)name, strlen(name)) == -1)
 		return (-1);
 
+	size = sizeof(head) + len;
+
+	chat_lock();
+	ret = chat_blob_room(peer, value, size);
+	chat_unlock();
+
+	if (ret == 1)
+		return (0);
+
+	if (ret == -1)
+		return (-1);
+
 	memset(&head, 0, sizeof(head));
 	head.kind = kind;
 	head.len = strlen(name);
@@ -2877,7 +2910,9 @@ chat_data_queue(int type, u_int8_t peer, u_int64_t value, int kind,
 		fatal("calloc: failed to allocate chat data");
 
 	blob->refs = 1;
-	blob->size = sizeof(head) + len;
+	blob->size = size;
+	blob->peer = peer;
+	blob->ref = value;
 	blob->count = (blob->size + VIGIL_CHAT_CHUNK_DATA - 1) /
 	    VIGIL_CHAT_CHUNK_DATA;
 
@@ -2902,11 +2937,14 @@ chat_data_queue(int type, u_int8_t peer, u_int64_t value, int kind,
 
 /*
  * Put the given command on the queue for the event loop, returns -1 and
- * frees it if we are not taking any.
+ * frees it if we are not taking any. A command with data we already hold
+ * is freed, one with data we have no room for is refused.
  */
 static int
 chat_command_insert(struct chat_command *cmd)
 {
+	int		ret;
+
 	PRECOND(cmd != NULL);
 
 	chat_lock();
@@ -2916,6 +2954,23 @@ chat_command_insert(struct chat_command *cmd)
 		chat_unlock();
 		chat_command_free(cmd);
 		return (-1);
+	}
+
+	if (cmd->blob != NULL) {
+		ret = chat_blob_room(cmd->blob->peer,
+		    cmd->blob->ref, cmd->blob->size);
+
+		if (ret != 0) {
+			chat_unlock();
+			chat_command_free(cmd);
+			if (ret == 1)
+				return (0);
+			return (-1);
+		}
+
+		cmd->blob->held = 1;
+		blob_bytes += cmd->blob->size;
+		TAILQ_INSERT_TAIL(&blobs, cmd->blob, list);
 	}
 
 	command_count++;
@@ -3399,11 +3454,41 @@ chat_blob_release(struct chat_blob *blob)
 	if (blob->refs > 0)
 		return;
 
+	if (blob->held) {
+		chat_lock();
+		blob_bytes -= blob->size;
+		TAILQ_REMOVE(&blobs, blob, list);
+		chat_unlock();
+	}
+
 	nyfe_mem_zero(blob->data, blob->size);
 	free(blob->data);
 
 	nyfe_mem_zero(blob, sizeof(*blob));
 	free(blob);
+}
+
+/*
+ * Check if we can hold data of the given size for the given peer and ref,
+ * returns 1 if we already hold it, -1 if there is no room and 0 if there
+ * is. Must be called with our lock held.
+ */
+static int
+chat_blob_room(u_int8_t peer, u_int64_t ref, size_t size)
+{
+	struct chat_blob	*blob;
+
+	TAILQ_FOREACH(blob, &blobs, list) {
+		if (blob->peer == peer && blob->ref == ref)
+			return (1);
+	}
+
+	if ((blob_bytes + size) > CHAT_BLOBS_MAX) {
+		vigil_log(LOG_NOTICE, "[chat] no room for more data to send");
+		return (-1);
+	}
+
+	return (0);
 }
 
 /*
@@ -4442,7 +4527,7 @@ chat_bits_set(u_int8_t *bits, u_int32_t idx)
 }
 
 /*
- * Take the lock that protects our commands, events and parcels.
+ * Take the lock that protects our commands, events, parcels and blobs.
  */
 static void
 chat_lock(void)
@@ -4452,7 +4537,7 @@ chat_lock(void)
 }
 
 /*
- * Release the lock that protects our commands, events and parcels.
+ * Release the lock that protects our commands, events, parcels and blobs.
  */
 static void
 chat_unlock(void)
