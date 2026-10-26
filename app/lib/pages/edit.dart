@@ -28,6 +28,7 @@ class _EditPageState extends State<EditPage> {
   );
   late bool _p2p = widget.tunnel.summary.p2p;
   late bool _tier6 = widget.tunnel.summary.tier6;
+  late bool _commixtion = widget.tunnel.summary.commixtion;
   bool _busy = false;
 
   Summary get _summary => widget.tunnel.summary;
@@ -40,6 +41,8 @@ class _EditPageState extends State<EditPage> {
   bool get _hasP2p => _summary.cathedral != null;
 
   bool get _hasTier6 => _summary.mode == 'liturgy';
+
+  bool get _hasCommixtion => _summary.cathedral != null && _summary.shroud;
 
   bool get _active {
     final status = Vigil.instance.status;
@@ -80,8 +83,9 @@ class _EditPageState extends State<EditPage> {
         instance: name,
         routes: _hasRoutes ? _entries(_routes) : null,
         dns: _hasDns ? _entries(_dns) : const [],
-        p2p: _hasP2p ? _p2p : null,
+        p2p: _hasP2p ? _p2p && !_commixtion : null,
         tier6: _hasTier6 ? _tier6 : null,
+        commixtion: _hasCommixtion ? _commixtion : null,
       );
 
       if (active && running != null) {
@@ -147,7 +151,7 @@ class _EditPageState extends State<EditPage> {
           _Entries(controller: _dns, hint: '10.0.0.1'),
           const Text('One server per line, up to four.', style: Styles.detail),
         ],
-        if (_hasP2p) ...[
+        if (_hasP2p && !_commixtion) ...[
           GroupLabel('Peer to peer', index: ++index),
           Panel(
             padding: const EdgeInsets.fromLTRB(16, 14, 6, 14),
@@ -164,6 +168,28 @@ class _EditPageState extends State<EditPage> {
                   on: _p2p,
                   label: 'Peer to peer',
                   onTap: () => setState(() => _p2p = !_p2p),
+                ),
+              ],
+            ),
+          ),
+        ],
+        if (_hasCommixtion) ...[
+          GroupLabel('Commixtion', index: ++index),
+          Panel(
+            padding: const EdgeInsets.fromLTRB(16, 14, 6, 14),
+            child: Row(
+              children: [
+                const Expanded(
+                  child: Text(
+                    'Mixes your packets through multiple cathedrals, '
+                    'this turns off P2P.',
+                    style: Styles.body,
+                  ),
+                ),
+                Toggle(
+                  on: _commixtion,
+                  label: 'Commixtion',
+                  onTap: () => setState(() => _commixtion = !_commixtion),
                 ),
               ],
             ),

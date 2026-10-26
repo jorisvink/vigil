@@ -262,9 +262,8 @@ vigil_run(u_int64_t id, int fd, const char *cfg, size_t cfglen,
 		running = 0;
 
 	if (running) {
-		if (vigil->config->flags & VIGIL_CONFIG_FLAG_REMEMBRANCE)
-			vigil_remembrance_init(&vigil->remembrance, datadir,
-			    vigil->config->cathedral_flock);
+		vigil_remembrance_init(&vigil->remembrance, datadir,
+		    vigil->config->cathedral_flock);
 
 		vigil_peer_init();
 

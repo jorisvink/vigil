@@ -87,7 +87,7 @@ main(void)
 	    "\"dns\":[],\"cathedral\":\"1.2.3.4:4469\","
 	    "\"cathedral_nat_port\":4470,\"cathedral_id\":\"5eb2411f\","
 	    "\"cathedral_flock\":\"493abf95a07e0c00\",\"spi\":\"0c0d\","
-	    "\"p2p\":false,\"remembrance\":true,"
+	    "\"p2p\":false,\"commixtion\":false,"
 	    "\"block_ipv6\":true,\"shroud\":false}");
 
 	test_ok("liturgy",
@@ -101,7 +101,7 @@ main(void)
 	    "liturgy_discoverable no\n"
 	    "cathedral 1.2.3.4:4469\n"
 	    "cathedral_nat_port 4501\n"
-	    "cathedral_remembrance no\n"
+	    "cathedral_remembrance yes\n"
 	    "cathedral_id 5eb2411f\n"
 	    "cathedral_flock 493abf95a07e0c00\n"
 	    "cathedral_secret " HEX32 "\n"
@@ -113,7 +113,7 @@ main(void)
 	    "\"cathedral\":\"1.2.3.4:4469\",\"cathedral_nat_port\":4501,"
 	    "\"cathedral_id\":\"5eb2411f\","
 	    "\"cathedral_flock\":\"493abf95a07e0c00\",\"spi\":\"000c\","
-	    "\"p2p\":true,\"remembrance\":false,"
+	    "\"p2p\":true,\"commixtion\":false,"
 	    "\"liturgy_prefix\":\"172.31.0.0\",\"tier6\":false,"
 	    "\"liturgy_group\":\"cafe\",\"liturgy_discoverable\":false,"
 	    "\"block_ipv6\":true,\"shroud\":false}");
@@ -138,7 +138,7 @@ main(void)
 	    "\"cathedral\":\"1.2.3.4:4469\",\"cathedral_nat_port\":4470,"
 	    "\"cathedral_id\":\"5eb2411f\","
 	    "\"cathedral_flock\":\"493abf95a07e0c00\",\"spi\":\"000c\","
-	    "\"p2p\":true,\"remembrance\":true,\"tier6\":true,"
+	    "\"p2p\":true,\"commixtion\":false,\"tier6\":true,"
 	    "\"liturgy_group\":\"0001\",\"liturgy_discoverable\":true,"
 	    "\"block_ipv6\":true,\"shroud\":false}");
 
@@ -162,7 +162,7 @@ main(void)
 	    "\"cathedral\":\"1.2.3.4:4469\",\"cathedral_nat_port\":4470,"
 	    "\"cathedral_id\":\"5eb2411f\","
 	    "\"cathedral_flock\":\"493abf95a07e0c00\",\"spi\":\"000c\","
-	    "\"p2p\":true,\"remembrance\":true,\"tier6\":true,"
+	    "\"p2p\":true,\"commixtion\":false,\"tier6\":true,"
 	    "\"liturgy_group\":\"0001\",\"liturgy_discoverable\":true,"
 	    "\"block_ipv6\":true,\"shroud\":false}");
 
@@ -183,7 +183,7 @@ main(void)
 	    "\"dns\":[],\"cathedral\":\"1.2.3.4:4469\","
 	    "\"cathedral_nat_port\":4470,\"cathedral_id\":\"5eb2411f\","
 	    "\"cathedral_flock\":\"493abf95a07e0c00\",\"spi\":\"000c\","
-	    "\"p2p\":true,\"remembrance\":true,\"liturgy_group\":\"0042\","
+	    "\"p2p\":true,\"commixtion\":false,\"liturgy_group\":\"0042\","
 	    "\"block_ipv6\":true,\"shroud\":false}");
 
 	test_ok("voice is gospel",
@@ -203,8 +203,29 @@ main(void)
 	    "\"dns\":[],\"cathedral\":\"1.2.3.4:4469\","
 	    "\"cathedral_nat_port\":4470,\"cathedral_id\":\"5eb2411f\","
 	    "\"cathedral_flock\":\"493abf95a07e0c00\",\"spi\":\"000c\","
-	    "\"p2p\":true,\"remembrance\":true,\"liturgy_group\":\"0042\","
+	    "\"p2p\":true,\"commixtion\":false,\"liturgy_group\":\"0042\","
 	    "\"block_ipv6\":true,\"shroud\":false}");
+
+	test_ok("gospel with commixtion",
+	    "vigil 1\n"
+	    "instance calls\n"
+	    "mode gospel\n"
+	    "spi 0c\n"
+	    "kek " HEX32 "\n"
+	    "cathedral 1.2.3.4:4469\n"
+	    "cathedral_id 5eb2411f\n"
+	    "cathedral_flock 493abf95a07e0c00\n"
+	    "cathedral_secret " HEX32 "\n"
+	    "cathedral_cosk " HEX64 "\n"
+	    "shroud yes\n"
+	    "cathedral_commixtion yes\n",
+	    "{\"version\":1,\"instance\":\"calls\",\"mode\":\"gospel\","
+	    "\"mtu\":1359,\"mtu_discovery\":false,\"routes\":[],"
+	    "\"dns\":[],\"cathedral\":\"1.2.3.4:4469\","
+	    "\"cathedral_nat_port\":4470,\"cathedral_id\":\"5eb2411f\","
+	    "\"cathedral_flock\":\"493abf95a07e0c00\",\"spi\":\"000c\","
+	    "\"p2p\":false,\"commixtion\":true,\"liturgy_group\":\"0001\","
+	    "\"block_ipv6\":true,\"shroud\":true}");
 
 	test_ok("mtu auto",
 	    "vigil 1\n"
@@ -324,7 +345,23 @@ main(void)
 	    "cathedral_flock 493abf95a07e0c00\n"
 	    "cathedral_secret " HEX32 "\ncathedral_cosk " HEX64 "\n"
 	    "cathedral_remembrance no\n",
-	    "cathedral_remembrance is always on for gospel");
+	    "cathedral_remembrance is always on");
+	test_fail("liturgy without remembrance",
+	    "vigil 1\ninstance x\nmode liturgy\nspi 0c\nkek " HEX32 "\n"
+	    "liturgy_prefix 172.31.0.0\n"
+	    "cathedral 1.2.3.4:4469\ncathedral_id 5eb2411f\n"
+	    "cathedral_flock 493abf95a07e0c00\n"
+	    "cathedral_secret " HEX32 "\ncathedral_cosk " HEX64 "\n"
+	    "cathedral_remembrance no\n",
+	    "cathedral_remembrance is always on");
+	test_fail("invalid remembrance",
+	    "vigil 1\ninstance x\nmode liturgy\nspi 0c\nkek " HEX32 "\n"
+	    "liturgy_prefix 172.31.0.0\n"
+	    "cathedral 1.2.3.4:4469\ncathedral_id 5eb2411f\n"
+	    "cathedral_flock 493abf95a07e0c00\n"
+	    "cathedral_secret " HEX32 "\ncathedral_cosk " HEX64 "\n"
+	    "cathedral_remembrance maybe\n",
+	    "invalid cathedral_remembrance option 'maybe', accepted: yes");
 	test_fail("peer port too large",
 	    "vigil 1\ninstance x\npeer 1.2.3.4:70000\n",
 	    "peer port is invalid");
@@ -366,6 +403,38 @@ main(void)
 	    "vigil 1\ninstance x\nmode liturgy\nsecret " HEX32 "\n"
 	    "cathedral 1.2.3.4:5\n",
 	    "secret cannot be combined with a cathedral");
+
+	test_fail("commixtion without shroud",
+	    "vigil 1\n"
+	    "instance calls\n"
+	    "mode gospel\n"
+	    "spi 0c\n"
+	    "kek " HEX32 "\n"
+	    "cathedral 1.2.3.4:4469\n"
+	    "cathedral_id 5eb2411f\n"
+	    "cathedral_flock 493abf95a07e0c00\n"
+	    "cathedral_secret " HEX32 "\n"
+	    "cathedral_cosk " HEX64 "\n"
+	    "cathedral_commixtion yes\n",
+	    "cathedral_commixtion requires shroud");
+	test_fail("commixtion without cathedral",
+	    "vigil 1\ninstance x\ntunnel 10.0.0.2/32\n"
+	    "peer 1.2.3.4:5\nsecret " HEX32 "\n"
+	    "shroud yes\ncathedral_commixtion yes\n",
+	    "cathedral_commixtion requires a cathedral");
+	test_fail("invalid commixtion",
+	    "vigil 1\n"
+	    "instance calls\n"
+	    "mode gospel\n"
+	    "spi 0c\n"
+	    "kek " HEX32 "\n"
+	    "cathedral 1.2.3.4:4469\n"
+	    "cathedral_id 5eb2411f\n"
+	    "cathedral_flock 493abf95a07e0c00\n"
+	    "cathedral_secret " HEX32 "\n"
+	    "cathedral_cosk " HEX64 "\n"
+	    "cathedral_commixtion maybe\n",
+	    "invalid cathedral_commixtion option 'maybe', accepted: yes|no");
 
 	test_edit("edit routes and dns",
 	    "vigil 1\n"
@@ -443,6 +512,45 @@ main(void)
 	    "cathedral_flock 493abf95a07e0c00\n"
 	    "cathedral_secret " HEX32 "\ncathedral_cosk " HEX64 "\n"
 	    "tier6 yes\ninstance x\n");
+	test_edit("edit commixtion",
+	    "vigil 1\n"
+	    "instance calls\n"
+	    "mode gospel\n"
+	    "spi 0c\n"
+	    "kek " HEX32 "\n"
+	    "cathedral 1.2.3.4:4469\n"
+	    "cathedral_id 5eb2411f\n"
+	    "cathedral_flock 493abf95a07e0c00\n"
+	    "cathedral_secret " HEX32 "\n"
+	    "cathedral_cosk " HEX64 "\n"
+	    "shroud yes\n",
+	    "cathedral_commixtion yes\np2p no\ninstance calls\n",
+	    "vigil 1\n"
+	    "mode gospel\n"
+	    "spi 0c\n"
+	    "kek " HEX32 "\n"
+	    "cathedral 1.2.3.4:4469\n"
+	    "cathedral_id 5eb2411f\n"
+	    "cathedral_flock 493abf95a07e0c00\n"
+	    "cathedral_secret " HEX32 "\n"
+	    "cathedral_cosk " HEX64 "\n"
+	    "shroud yes\n"
+	    "cathedral_commixtion yes\n"
+	    "p2p no\n"
+	    "instance calls\n");
+	test_edit("edit commixtion without shroud",
+	    "vigil 1\n"
+	    "instance calls\n"
+	    "mode gospel\n"
+	    "spi 0c\n"
+	    "kek " HEX32 "\n"
+	    "cathedral 1.2.3.4:4469\n"
+	    "cathedral_id 5eb2411f\n"
+	    "cathedral_flock 493abf95a07e0c00\n"
+	    "cathedral_secret " HEX32 "\n"
+	    "cathedral_cosk " HEX64 "\n",
+	    "cathedral_commixtion yes\ninstance calls\n",
+	    "cathedral_commixtion requires shroud");
 	test_edit("edit instance",
 	    "vigil 1\ninstance office\ntunnel 10.0.0.2/32\n"
 	    "peer 1.2.3.4:5\nsecret " HEX32 "\n",

@@ -1732,6 +1732,16 @@ chat_tunnel_new(struct chat_peer *peer, struct vigil_cathedral *cathedral,
 
 	cfg.flock_dst = cfg.flock_src;
 
+	if (gospel->flags & VIGIL_CONFIG_FLAG_COMMIXTION)
+		cfg.hops = VIGIL_COMMIXTION_HOPS;
+
+	if (gospel->flags & VIGIL_CONFIG_FLAG_SHROUD) {
+		if (kyrka_shroud_enable(tun->ctx) == -1) {
+			fatal("failed to enable shroud: %d",
+			    kyrka_last_error(tun->ctx));
+		}
+	}
+
 	if (kyrka_cathedral_config(tun->ctx, &cfg) == -1) {
 		fatal("failed to configure cathedral: %d",
 		    kyrka_last_error(tun->ctx));
@@ -1752,13 +1762,6 @@ chat_tunnel_new(struct chat_peer *peer, struct vigil_cathedral *cathedral,
 	    sizeof(gospel->cathedral_cosk)) == -1) {
 		fatal("kyrka_cathedral_cosk_load: %d",
 		    kyrka_last_error(tun->ctx));
-	}
-
-	if (gospel->flags & VIGIL_CONFIG_FLAG_SHROUD) {
-		if (kyrka_shroud_enable(tun->ctx) == -1) {
-			fatal("failed to enable shroud: %d",
-			    kyrka_last_error(tun->ctx));
-		}
 	}
 
 	if (kyrka_mtu_size(tun->ctx, gospel->mtu) == -1) {

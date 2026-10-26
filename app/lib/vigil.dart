@@ -29,7 +29,7 @@ class Summary {
   String? get liturgyGroup => json['liturgy_group'] as String?;
   bool get shroud => json['shroud'] as bool? ?? false;
   bool get p2p => json['p2p'] as bool? ?? false;
-  bool get remembrance => json['remembrance'] as bool? ?? false;
+  bool get commixtion => json['commixtion'] as bool? ?? false;
   bool get blockIpv6 => json['block_ipv6'] as bool? ?? false;
   bool get discoverable => json['liturgy_discoverable'] as bool? ?? true;
   bool get tier6 => json['tier6'] as bool? ?? false;
@@ -97,7 +97,7 @@ class Summary {
 
     if (cathedral != null) {
       rows.add(('P2P', p2p ? 'yes' : 'no'));
-      rows.add(('Remembrance', remembrance ? 'yes' : 'no'));
+      rows.add(('Commixtion', commixtion ? 'yes' : 'no'));
     }
 
     if (mode == 'liturgy') {
@@ -627,8 +627,8 @@ class Vigil {
     return tunnel;
   }
 
-  /// Routes, p2p and tier6 are null for tunnels that do not have them,
-  /// the core decides if the result is valid.
+  /// Routes, p2p, tier6 and commixtion are null for tunnels that do not
+  /// have them, the core decides if the result is valid.
   Future<Tunnel> edit(
     String id, {
     required String instance,
@@ -636,12 +636,15 @@ class Vigil {
     required List<String> dns,
     bool? p2p,
     bool? tier6,
+    bool? commixtion,
   }) async {
     final edits = [
       for (final r in routes ?? const <String>[]) 'route $r',
       for (final d in dns) 'dns $d',
       if (p2p != null) 'p2p ${p2p ? 'yes' : 'no'}',
       if (tier6 != null) 'tier6 ${tier6 ? 'yes' : 'no'}',
+      if (commixtion != null)
+        'cathedral_commixtion ${commixtion ? 'yes' : 'no'}',
       'instance $instance',
     ];
 

@@ -70,6 +70,9 @@
 /* The milliseconds until we consider an alive cathedral timed out. */
 #define VIGIL_CATHEDRAL_TIMEOUT		(45 * 1000)
 
+/* The number of cathedrals our packets travel through with commixtion. */
+#define VIGIL_COMMIXTION_HOPS		2
+
 /* The milliseconds before we consider a peer timed out. */
 #define VIGIL_PEER_ALIVE_TIMEOUT	(45 * 1000)
 
@@ -149,11 +152,11 @@
 /* Configuration flags. */
 #define VIGIL_CONFIG_FLAG_SHROUD	(1 << 0)
 #define VIGIL_CONFIG_FLAG_P2P		(1 << 1)
-#define VIGIL_CONFIG_FLAG_REMEMBRANCE	(1 << 2)
 #define VIGIL_CONFIG_FLAG_HIDDEN	(1 << 3)
 #define VIGIL_CONFIG_FLAG_BLOCK_IPV6	(1 << 4)
 #define VIGIL_CONFIG_FLAG_MTU_DISCOVERY	(1 << 5)
 #define VIGIL_CONFIG_FLAG_TIER6		(1 << 6)
+#define VIGIL_CONFIG_FLAG_COMMIXTION	(1 << 7)
 
 /* Which keys were present in a configuration. */
 #define VIGIL_CONFIG_KEY_SECRET		(1 << 0)

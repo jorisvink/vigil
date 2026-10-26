@@ -127,12 +127,10 @@ vigil_peer_update(void)
 	next_update = vigil->now + VIGIL_PEER_UPDATE_INTERVAL;
 
 	LIST_FOREACH(peer, &peers, list) {
-		if (vigil->config->mode != VIGIL_MODE_TUNNEL &&
-		    (vigil->config->flags & VIGIL_CONFIG_FLAG_REMEMBRANCE))
+		if (vigil->config->mode != VIGIL_MODE_TUNNEL) {
 			peer_cathedral_check(peer);
-
-		if (vigil->config->mode != VIGIL_MODE_TUNNEL)
 			peer_p2p_check(peer);
+		}
 
 		peer_alive_check(peer);
 
@@ -308,6 +306,13 @@ peer_create(u_int8_t id)
 	if (kyrka_purgatory_ifc(peer->ctx, peer_purgatory_input, peer) == -1)
 		fatal("kyrka_purgatory_ifc: %d", kyrka_last_error(peer->ctx));
 
+	if (vigil->config->flags & VIGIL_CONFIG_FLAG_SHROUD) {
+		if (kyrka_shroud_enable(peer->ctx) == -1) {
+			fatal("failed to enable shroud: %d",
+			    kyrka_last_error(peer->ctx));
+		}
+	}
+
 	if (vigil->config->mode == VIGIL_MODE_TUNNEL) {
 		memcpy(&peer->addr, &vigil->peer, sizeof(vigil->peer));
 
@@ -318,13 +323,6 @@ peer_create(u_int8_t id)
 		}
 	} else {
 		peer_cathedral_config(peer);
-	}
-
-	if (vigil->config->flags & VIGIL_CONFIG_FLAG_SHROUD) {
-		if (kyrka_shroud_enable(peer->ctx) == -1) {
-			fatal("failed to enable shroud: %d",
-			    kyrka_last_error(peer->ctx));
-		}
 	}
 
 	if (kyrka_mtu_size(peer->ctx, vigil->config->mtu) == -1) {
@@ -350,8 +348,7 @@ peer_cathedral_config(struct vigil_peer *peer)
 	PRECOND(peer != NULL);
 	PRECOND(vigil->config->mode != VIGIL_MODE_TUNNEL);
 
-	if (vigil->config->mode == VIGIL_MODE_LITURGY &&
-	    (vigil->config->flags & VIGIL_CONFIG_FLAG_REMEMBRANCE)) {
+	if (vigil->config->mode == VIGIL_MODE_LITURGY) {
 		memset(&peer->cathedral, 0, sizeof(peer->cathedral));
 
 		if (vigil_remembrance_cathedral(&vigil->remembrance,
@@ -385,9 +382,11 @@ peer_cathedral_config(struct vigil_peer *peer)
 	else
 		cfg.tunnel = vigil->config->spi;
 
-	if (vigil->config->mode == VIGIL_MODE_CATHEDRAL &&
-	    (vigil->config->flags & VIGIL_CONFIG_FLAG_REMEMBRANCE))
+	if (vigil->config->mode == VIGIL_MODE_CATHEDRAL)
 		cfg.remembrance = 1;
+
+	if (vigil->config->flags & VIGIL_CONFIG_FLAG_COMMIXTION)
+		cfg.hops = VIGIL_COMMIXTION_HOPS;
 
 	cfg.udata = peer;
 	cfg.send = peer_kyrka_send;

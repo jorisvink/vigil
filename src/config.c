@@ -89,6 +89,8 @@ static int	config_parse_liturgy_discoverable(struct config_parser *,
 		    char *);
 static int	config_parse_cathedral_remembrance(struct config_parser *,
 		    char *);
+static int	config_parse_cathedral_commixtion(struct config_parser *,
+		    char *);
 static int	config_parse_yesno(struct config_parser *, const char *, char *,
 		    u_int32_t, int);
 static int	config_parse_host(struct config_parser *, const char *, char *,
@@ -135,6 +137,7 @@ static struct {
 	{ "cathedral_nat_port",		config_parse_cathedral_nat_port },
 	{ "cathedral_flock_dst",	config_parse_cathedral_flock_dst },
 	{ "cathedral_remembrance",	config_parse_cathedral_remembrance },
+	{ "cathedral_commixtion",	config_parse_cathedral_commixtion },
 	{ NULL, NULL },
 };
 
@@ -177,9 +180,7 @@ vigil_config_parse(const char *data, size_t datalen, char *err, size_t errlen)
 	cp.cfg->mode = VIGIL_MODE_TUNNEL;
 	cp.cfg->liturgy_group = VIGIL_LITURGY_GROUP_DEFAULT;
 
-	cp.cfg->flags = VIGIL_CONFIG_FLAG_P2P |
-	    VIGIL_CONFIG_FLAG_BLOCK_IPV6 |
-	    VIGIL_CONFIG_FLAG_REMEMBRANCE;
+	cp.cfg->flags = VIGIL_CONFIG_FLAG_P2P | VIGIL_CONFIG_FLAG_BLOCK_IPV6;
 
 	lineno = 0;
 
@@ -330,10 +331,10 @@ vigil_config_check(const char *data, size_t len, char *out, size_t outlen)
 }
 
 /*
- * Replace the dns, instance, p2p, route and tier6 options in the given
- * configuration with those in edits, the result is validated and written
- * into out. Options not given in edits go back to their defaults, the
- * instance has none and must always be given.
+ * Replace the dns, instance, p2p, route, tier6 and cathedral_commixtion
+ * options in the given configuration with those in edits, the result is
+ * validated and written into out. Options not given in edits go back to
+ * their defaults, the instance has none and must always be given.
  *
  * The result holds key material, the caller must wipe it.
  *
@@ -500,8 +501,8 @@ vigil_config_summary(const struct vigil_config *cfg, char *buf, size_t len)
 		vigil_buf_appendf(&out, "\"spi\":\"%04x\",", cfg->spi);
 		config_json_bool(&out, "p2p",
 		    cfg->flags & VIGIL_CONFIG_FLAG_P2P);
-		config_json_bool(&out, "remembrance",
-		    cfg->flags & VIGIL_CONFIG_FLAG_REMEMBRANCE);
+		config_json_bool(&out, "commixtion",
+		    cfg->flags & VIGIL_CONFIG_FLAG_COMMIXTION);
 	}
 
 	if (cfg->mode == VIGIL_MODE_LITURGY) {
@@ -556,6 +557,22 @@ config_validate(struct config_parser *cp)
 	if (cfg->mode == VIGIL_MODE_TUNNEL &&
 	    cfg->cathedral_host[0] != '\0')
 		cfg->mode = VIGIL_MODE_CATHEDRAL;
+
+	if (cfg->flags & VIGIL_CONFIG_FLAG_COMMIXTION) {
+		if (cfg->mode == VIGIL_MODE_TUNNEL) {
+			ret = config_error(cp,
+			    "cathedral_commixtion requires a cathedral");
+			return (ret);
+		}
+
+		if (!(cfg->flags & VIGIL_CONFIG_FLAG_SHROUD)) {
+			ret = config_error(cp,
+			    "cathedral_commixtion requires shroud");
+			return (ret);
+		}
+
+		cfg->flags &= ~VIGIL_CONFIG_FLAG_P2P;
+	}
 
 	switch (cfg->mode) {
 	case VIGIL_MODE_TUNNEL:
@@ -655,12 +672,6 @@ config_validate(struct config_parser *cp)
 
 		if (cfg->flags & VIGIL_CONFIG_FLAG_TIER6) {
 			ret = config_error(cp, "tier6 is not used for gospel");
-			return (ret);
-		}
-
-		if (!(cfg->flags & VIGIL_CONFIG_FLAG_REMEMBRANCE)) {
-			ret = config_error(cp,
-			    "cathedral_remembrance is always on for gospel");
 			return (ret);
 		}
 
@@ -1253,7 +1264,8 @@ config_parse_cathedral_nat_port(struct config_parser *cp, char *opt)
 }
 
 /*
- * Parse the cathedral_remembrance configuration option.
+ * Parse the cathedral_remembrance configuration option, remembrance is
+ * always on so we only accept yes.
  */
 static int
 config_parse_cathedral_remembrance(struct config_parser *cp, char *opt)
@@ -1263,8 +1275,33 @@ config_parse_cathedral_remembrance(struct config_parser *cp, char *opt)
 	PRECOND(cp != NULL);
 	PRECOND(opt != NULL);
 
-	ret = config_parse_yesno(cp, "cathedral_remembrance", opt,
-	    VIGIL_CONFIG_FLAG_REMEMBRANCE, 0);
+	if (!strcmp(opt, "yes"))
+		return (0);
+
+	if (!strcmp(opt, "no")) {
+		ret = config_error(cp, "cathedral_remembrance is always on");
+		return (ret);
+	}
+
+	ret = config_error(cp,
+	    "invalid cathedral_remembrance option '%s', accepted: yes", opt);
+
+	return (ret);
+}
+
+/*
+ * Parse the cathedral_commixtion configuration option.
+ */
+static int
+config_parse_cathedral_commixtion(struct config_parser *cp, char *opt)
+{
+	int		ret;
+
+	PRECOND(cp != NULL);
+	PRECOND(opt != NULL);
+
+	ret = config_parse_yesno(cp, "cathedral_commixtion", opt,
+	    VIGIL_CONFIG_FLAG_COMMIXTION, 0);
 
 	return (ret);
 }
@@ -1646,6 +1683,8 @@ config_edit_option(const char *option)
 	else if (!strcmp(option, "tier6"))
 		return (1);
 	else if (!strcmp(option, "instance"))
+		return (1);
+	else if (!strcmp(option, "cathedral_commixtion"))
 		return (1);
 
 	return (0);

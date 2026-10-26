@@ -31,7 +31,8 @@
 #   -n <port>       cathedral nat port (default: cathedral port + 1)
 #   -S              enable shroud
 #   -N              disable p2p
-#   -R              disable cathedral remembrance (not in gospel)
+#   -M              enable cathedral commixtion, needs -S and turns off p2p
+#                   (not in tunnel)
 #   -6              do not block ipv6
 #   -q              print the QR code to the terminal instead
 #   -o <file.png>   write the QR code as a png instead
@@ -45,7 +46,7 @@
 set -e
 
 usage() {
-	sed -n '3,43p' "$0" | sed 's/^# \{0,1\}//'
+	sed -n '3,44p' "$0" | sed 's/^# \{0,1\}//'
 	exit 1
 }
 
@@ -77,7 +78,7 @@ esac
 instance= peer= secret= tunnel= cathedral= flock= spi= kek= csid=
 cs= cosk= prefix= group= natport= mtu= routes= dns= flags= output=
 
-while getopts "i:p:s:t:c:f:x:k:I:C:K:P:g:n:m:r:d:SNR6Hqo:" ch; do
+while getopts "i:p:s:t:c:f:x:k:I:C:K:P:g:n:m:r:d:SNM6Hqo:" ch; do
 	case $ch in
 	i) instance=$OPTARG ;;
 	p) peer=$OPTARG ;;
@@ -98,7 +99,7 @@ while getopts "i:p:s:t:c:f:x:k:I:C:K:P:g:n:m:r:d:SNR6Hqo:" ch; do
 	d) dns="$dns $OPTARG" ;;
 	S) flags="$flags shroud" ;;
 	N) flags="$flags nop2p" ;;
-	R) flags="$flags norem" ;;
+	M) flags="$flags commix" ;;
 	6) flags="$flags ipv6" ;;
 	H) flags="$flags hidden" ;;
 	q) output=terminal ;;
@@ -118,6 +119,9 @@ config() {
 		[ -n "$peer" ] || die "no peer given (-p)"
 		[ -n "$secret" ] || die "no secret given (-s)"
 		[ -n "$tunnel" ] || die "no tunnel given (-t)"
+		case "$flags" in
+		*commix*) die "commixtion (-M) needs a cathedral" ;;
+		esac
 		echo "tunnel $tunnel"
 		echo "peer $peer"
 		echo "secret `hexkey "$secret" 32`"
@@ -144,9 +148,6 @@ config() {
 		elif [ "$mode" = "gospel" ]; then
 			[ -z "$routes" ] || die "routes (-r) are not used for gospel"
 			[ -z "$dns" ] || die "dns (-d) is not used for gospel"
-			case "$flags" in
-			*norem*) die "remembrance (-R) is always on for gospel" ;;
-			esac
 			echo "mode gospel"
 			[ -z "$group" ] || echo "liturgy_group $group"
 		elif [ "$mode" = "tier6" ]; then
@@ -173,7 +174,13 @@ config() {
 		*nop2p*) echo "p2p no" ;;
 		esac
 		case "$flags" in
-		*norem*) echo "cathedral_remembrance no" ;;
+		*commix*)
+			case "$flags" in
+			*shroud*) ;;
+			*) die "commixtion (-M) needs shroud (-S)" ;;
+			esac
+			echo "cathedral_commixtion yes"
+			;;
 		esac
 		;;
 	esac

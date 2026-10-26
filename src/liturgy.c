@@ -70,9 +70,7 @@ vigil_liturgy_init(void)
 		fatal("failed to create liturgy context");
 
 	memset(&cfg, 0, sizeof(cfg));
-
-	if (vigil->config->flags & VIGIL_CONFIG_FLAG_REMEMBRANCE)
-		cfg.remembrance = 1;
+	cfg.remembrance = 1;
 
 	memcpy(&cathedral, &vigil->cathedral, sizeof(vigil->cathedral));
 
@@ -164,8 +162,7 @@ vigil_liturgy_update(void)
 
 		cathedral.alive = 0;
 
-		if (vigil->config->flags & VIGIL_CONFIG_FLAG_REMEMBRANCE &&
-		    vigil_remembrance_cathedral(&vigil->remembrance,
+		if (vigil_remembrance_cathedral(&vigil->remembrance,
 		    &cathedral) != -1) {
 			vigil_log(LOG_NOTICE,
 			    "liturgy switching to cathedral %s",

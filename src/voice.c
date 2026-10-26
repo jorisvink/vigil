@@ -857,6 +857,16 @@ voice_session_setup(struct voice_session *s)
 	kcfg.flock_src = s->config->cathedral_flock | VIGIL_CALL_FLOCK_DOMAIN;
 	kcfg.flock_dst = kcfg.flock_src;
 
+	if (s->config->flags & VIGIL_CONFIG_FLAG_COMMIXTION)
+		kcfg.hops = VIGIL_COMMIXTION_HOPS;
+
+	if (s->config->flags & VIGIL_CONFIG_FLAG_SHROUD) {
+		if (kyrka_shroud_enable(s->ctx) == -1) {
+			fatal("failed to enable shroud: %d",
+			    kyrka_last_error(s->ctx));
+		}
+	}
+
 	if (kyrka_cathedral_config(s->ctx, &kcfg) == -1) {
 		fatal("failed to configure cathedral: %d",
 		    kyrka_last_error(s->ctx));
@@ -877,13 +887,6 @@ voice_session_setup(struct voice_session *s)
 	    sizeof(s->config->cathedral_cosk)) == -1) {
 		fatal("kyrka_cathedral_cosk_load: %d",
 		    kyrka_last_error(s->ctx));
-	}
-
-	if (s->config->flags & VIGIL_CONFIG_FLAG_SHROUD) {
-		if (kyrka_shroud_enable(s->ctx) == -1) {
-			fatal("failed to enable shroud: %d",
-			    kyrka_last_error(s->ctx));
-		}
 	}
 
 	if (s->config->mtu < VOICE_MTU_MAX)
