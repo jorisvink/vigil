@@ -384,6 +384,7 @@ android_check(JNIEnv *env, jclass cls, jbyteArray config)
 static jbyteArray
 android_edit(JNIEnv *env, jclass cls, jbyteArray config, jstring edits)
 {
+	const char	*p;
 	jclass		exc;
 	jbyteArray	ret;
 	const char	*ed;
@@ -432,6 +433,14 @@ android_edit(JNIEnv *env, jclass cls, jbyteArray config, jstring edits)
 	return (ret);
 
 fail:
+	for (p = err; *p != '\0'; p++) {
+		if ((unsigned char)*p < 0x20 || (unsigned char)*p > 0x7e)
+			break;
+	}
+
+	if (*p != '\0')
+		(void)snprintf(err, sizeof(err), "invalid configuration");
+
 	exc = (*env)->FindClass(env,
 	    "java/lang/IllegalArgumentException");
 	if (exc != NULL)
