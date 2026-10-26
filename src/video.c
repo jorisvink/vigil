@@ -1423,6 +1423,10 @@ video_entry_new(u_int32_t id, u_int64_t now)
 		oldest->lost = 1;
 		video_flush();
 
+		/* The flush may have moved stuff past what we wanted. */
+		if (rx_last != 0 && (int32_t)(id - rx_last) <= 0)
+			return (NULL);
+
 		for (idx = 0; idx < VIDEO_ASSEMBLY; idx++) {
 			if (entries[idx].used == 0) {
 				entry = &entries[idx];
