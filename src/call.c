@@ -32,12 +32,6 @@
 #define CALL_RESOLVE_RETRY		(10 * 1000)
 
 /*
- * The milliseconds we ignore a peer we had a call with, pushes for that
- * call may still arrive. If the peer still signals us after it is a new call.
- */
-#define CALL_DONE_HOLD			(4 * 1000)
-
-/*
  * A liturgy we run for calls, with its own socket and context.
  */
 struct call_liturgy {
@@ -83,10 +77,16 @@ static struct vigil_remembrance		remembrance;
 static u_int64_t			last_notify;
 static u_int64_t			next_notify;
 
-/* The peers we want to call, may be written from any thread. */
+/*
+ * Each call we make gets its own number that we signal to the peer, so it
+ * can tell a new call from the one it just had with us.
+ */
+static volatile u_int8_t		serial;
+
+/* The peers we want to call and with what call, from any thread. */
 static volatile u_int8_t		wanted[KYRKA_PEERS_PER_FLOCK];
 
-/* The peers the cathedral told us want to call us. */
+/* The peers the cathedral told us want to call us and with what call. */
 static volatile u_int8_t		present[KYRKA_PEERS_PER_FLOCK];
 
 /* When the cathedral last pushed each peer to us. */
@@ -96,10 +96,10 @@ static u_int64_t			pushed[KYRKA_PEERS_PER_FLOCK];
 static volatile u_int8_t		online[KYRKA_PEERS_PER_FLOCK];
 
 /*
- * When we ended a call with a peer the cathedral still showed us, we
- * don't report it as calling until CALL_DONE_HOLD passed.
+ * The call we had with a peer that the cathedral still shows us, we don't
+ * report it as calling until it calls with another one or it is gone.
  */
-static volatile u_int64_t		done[KYRKA_PEERS_PER_FLOCK];
+static volatile u_int8_t		done[KYRKA_PEERS_PER_FLOCK];
 
 /* What we last sent to the cathedral. */
 static u_int8_t				sent[KYRKA_PEERS_PER_FLOCK];
@@ -111,6 +111,7 @@ void
 vigil_call_init(const char *datadir)
 {
 	int		idx;
+	u_int8_t	id;
 
 	PRECOND(datadir != NULL);
 
@@ -150,6 +151,9 @@ vigil_call_init(const char *datadir)
 		call_liturgy_cleanup(&discovery);
 		return;
 	}
+
+	nyfe_random_bytes(&id, sizeof(id));
+	vigil_atomic_write(&serial, id);
 
 	running = 1;
 
@@ -210,6 +214,7 @@ vigil_call_update(void)
 		if ((vigil->now - pushed[idx]) < VIGIL_CALL_PRESENT_EXPIRE)
 			continue;
 
+		vigil_atomic_write(&done[idx], 0);
 		vigil_atomic_write(&present[idx], 0);
 	}
 
@@ -370,10 +375,17 @@ vigil_call_liturgies(struct vigil_buf *buf)
 void
 vigil_call_dial(u_int8_t peer)
 {
+	u_int8_t	id;
+
 	PRECOND(peer > 0 && peer < KYRKA_PEERS_PER_FLOCK);
 
 	vigil_call_hangup();
-	vigil_atomic_write(&wanted[peer], 1);
+
+	do {
+		id = vigil_atomic_add(&serial, 1) + 1;
+	} while (id == 0);
+
+	vigil_atomic_write(&wanted[peer], id);
 }
 
 /*
@@ -389,8 +401,8 @@ vigil_call_hangup(void)
 }
 
 /*
- * A call with the given peer is over, stop signaling it and ignore it
- * for a little while if the cathedral still shows it.
+ * A call with the given peer is over, stop signaling it and ignore the
+ * call it signals us with until it is gone.
  */
 void
 vigil_call_done(u_int8_t peer)
@@ -398,9 +410,7 @@ vigil_call_done(u_int8_t peer)
 	PRECOND(peer > 0 && peer < KYRKA_PEERS_PER_FLOCK);
 
 	vigil_atomic_write(&wanted[peer], 0);
-
-	if (vigil_atomic_read(&present[peer]))
-		vigil_atomic_write(&done[peer], vigil_time_ms());
+	vigil_atomic_write(&done[peer], vigil_atomic_read(&present[peer]));
 }
 
 /*
@@ -410,7 +420,7 @@ int
 vigil_call_peer(u_int8_t peer)
 {
 	int		state;
-	u_int64_t	ended;
+	u_int8_t	call;
 
 	PRECOND(peer > 0 && peer < KYRKA_PEERS_PER_FLOCK);
 
@@ -419,12 +429,12 @@ vigil_call_peer(u_int8_t peer)
 	if (vigil_atomic_read(&wanted[peer]))
 		state |= VIGIL_CALL_PEER_WANTED;
 
-	if (vigil_atomic_read(&present[peer]))
+	call = vigil_atomic_read(&present[peer]);
+	if (call != 0) {
 		state |= VIGIL_CALL_PEER_PRESENT;
-
-	ended = vigil_atomic_read(&done[peer]);
-	if (ended != 0 && (vigil_time_ms() - ended) < CALL_DONE_HOLD)
-		state |= VIGIL_CALL_PEER_DONE;
+		if (call == vigil_atomic_read(&done[peer]))
+			state |= VIGIL_CALL_PEER_DONE;
+	}
 
 	if (vigil_atomic_read(&online[peer]))
 		state |= VIGIL_CALL_PEER_ONLINE;
@@ -716,31 +726,33 @@ call_kyrka_event(KYRKA *ctx, union kyrka_event *evt, void *udata)
 			if (idx == local)
 				continue;
 
-			state = evt->liturgy.peers[idx] ? 1 : 0;
+			state = evt->liturgy.peers[idx];
 
 			if (!lit->signaling) {
-				vigil_atomic_write(&online[idx], state);
+				vigil_atomic_write(&online[idx], state ? 1 : 0);
 				continue;
 			}
 
 			/*
 			 * The cathedral pushes us each peer that signals us
-			 * on its own, peers expire in vigil_call_update().
+			 * on its own with the call it signals us for, peers
+			 * expire in vigil_call_update().
 			 */
 			if (state == 0)
 				continue;
 
 			pushed[idx] = vigil->now;
 
-			if (vigil_atomic_read(&present[idx]))
+			if (vigil_atomic_read(&present[idx]) == state)
 				continue;
 
 			if (!vigil_atomic_read(&wanted[idx])) {
 				vigil_log(LOG_INFO,
-				    "[calls]: %02x is calling us", idx);
+				    "[calls]: %02x is calling us (%02x)",
+				    idx, state);
 			}
 
-			vigil_atomic_write(&present[idx], 1);
+			vigil_atomic_write(&present[idx], state);
 		}
 		break;
 	case KYRKA_EVENT_REMEMBRANCE_RECEIVED:
