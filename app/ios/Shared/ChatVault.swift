@@ -241,6 +241,11 @@ final class ChatVault {
                 if let ref = (record["ref"] as? NSNumber)?.int64Value, let at = index[ref] {
                     messages[at]["state"] = "delivered"
                 }
+            case "failed":
+                if let ref = (record["ref"] as? NSNumber)?.int64Value, let at = index[ref],
+                   messages[at]["state"] as? String == "queued" {
+                    messages[at]["state"] = "failed"
+                }
             case "acks":
                 if let ref = (record["ref"] as? NSNumber)?.int64Value, let at = index[ref] {
                     let pending = (record["pending"] as? NSNumber)?.intValue ?? 0

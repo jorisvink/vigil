@@ -16,6 +16,8 @@
 		5A0C0DE00000000000000002 /* TunnelKeychain.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5A0C0DE0000000000000000D /* TunnelKeychain.swift */; };
 		5A0C0DE000000000000000B2 /* ChatVault.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5A0C0DE000000000000000B1 /* ChatVault.swift */; };
 		5A0C0DE000000000000000B3 /* ChatVault.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5A0C0DE000000000000000B1 /* ChatVault.swift */; };
+		5A0C0DE000000000000000E2 /* TunnelLink.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5A0C0DE000000000000000E1 /* TunnelLink.swift */; };
+		5A0C0DE000000000000000E3 /* TunnelLink.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5A0C0DE000000000000000E1 /* TunnelLink.swift */; };
 		5A0C0DE00000000000000003 /* Vigil.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 5A0C0DE0000000000000000E /* Vigil.xcframework */; };
 		5A0C0DE00000000000000004 /* NetworkExtension.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 5A0C0DE0000000000000000F /* NetworkExtension.framework */; };
 		5A0C0DE00000000000000005 /* PacketTunnel.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = 5A0C0DE00000000000000010 /* PacketTunnel.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
@@ -84,6 +86,7 @@
 		5A0C0DE000000000000000D2 /* VigilVideo.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VigilVideo.swift; sourceTree = "<group>"; };
 		5A0C0DE0000000000000000D /* TunnelKeychain.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TunnelKeychain.swift; sourceTree = "<group>"; };
 		5A0C0DE000000000000000B1 /* ChatVault.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatVault.swift; sourceTree = "<group>"; };
+		5A0C0DE000000000000000E1 /* TunnelLink.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TunnelLink.swift; sourceTree = "<group>"; };
 		5A0C0DE0000000000000000E /* Vigil.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = Vigil.xcframework; path = ../../build/ios/Vigil.xcframework; sourceTree = SOURCE_ROOT; };
 		5A0C0DE0000000000000000F /* NetworkExtension.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = NetworkExtension.framework; path = System/Library/Frameworks/NetworkExtension.framework; sourceTree = SDKROOT; };
 		5A0C0DE00000000000000010 /* PacketTunnel.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = PacketTunnel.appex; sourceTree = BUILT_PRODUCTS_DIR; };
@@ -153,6 +156,7 @@
 			children = (
 				5A0C0DE0000000000000000D /* TunnelKeychain.swift */,
 				5A0C0DE000000000000000B1 /* ChatVault.swift */,
+				5A0C0DE000000000000000E1 /* TunnelLink.swift */,
 			);
 			path = Shared;
 			sourceTree = "<group>";
@@ -408,6 +412,7 @@
 				5A0C0DE000000000000000C2 /* WakeProbe.swift in Sources */,
 				5A0C0DE00000000000000007 /* TunnelKeychain.swift in Sources */,
 				5A0C0DE000000000000000B3 /* ChatVault.swift in Sources */,
+				5A0C0DE000000000000000E3 /* TunnelLink.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -423,6 +428,7 @@
 				5A0C0DE000000000000000D1 /* VigilVideo.swift in Sources */,
 				5A0C0DE00000000000000002 /* TunnelKeychain.swift in Sources */,
 				5A0C0DE000000000000000B2 /* ChatVault.swift in Sources */,
+				5A0C0DE000000000000000E2 /* TunnelLink.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

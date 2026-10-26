@@ -1481,6 +1481,7 @@ class _Bubble extends StatelessWidget {
       'delivered' => (acked == null ? '✓✓' : '✓✓ $acked', Palette.amber),
       'sent' when acked != null => ('✓ $acked · $pending pending', Palette.fg2),
       'sent' => ('✓', Palette.fg2),
+      'failed' => ('✕ not sent', Palette.amber2),
       _ => ('◷', Palette.dim),
     };
 

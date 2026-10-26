@@ -35,6 +35,7 @@ SRC=	src/vigil.c \
 	src/grace.c \
 	src/inet.c \
 	src/io.c \
+	src/link.c \
 	src/liturgy.c \
 	src/peer.c \
 	src/remembrance.c \
@@ -63,7 +64,8 @@ TESTS=	tests/config_test \
 	tests/inet_test \
 	tests/tunnel_test \
 	tests/grace_test \
-	tests/video_test
+	tests/video_test \
+	tests/link_test
 
 all:
 ifeq ("$(PLATFORM)", "host")

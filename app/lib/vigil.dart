@@ -377,6 +377,7 @@ class Status {
     Chats? chats,
     this.gospel = true,
     this.background = true,
+    this.linked = true,
   ]) : chats = chats ?? Chats.none;
 
   final Map<String, dynamic> json;
@@ -390,6 +391,7 @@ class Status {
   final Chats chats;
   final bool gospel;
   final bool background;
+  final bool linked;
 
   static final Status idle = Status(const {'running': false}, null);
 
@@ -547,6 +549,7 @@ class Vigil {
             : null,
         json['gospel'] as bool? ?? true,
         json['background'] as bool? ?? true,
+        json['link'] as bool? ?? true,
       );
 
       final since = DateTime.now().difference(_connectingSince);
@@ -871,6 +874,7 @@ class Vigil {
       status.chats,
       status.gospel,
       status.background,
+      status.linked,
     );
 
     for (final p in _last.chat?.peers ?? const <ChatPeer>[]) {

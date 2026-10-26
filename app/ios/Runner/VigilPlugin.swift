@@ -26,6 +26,10 @@ final class VigilPlugin: NSObject, FlutterPlugin, UIDocumentPickerDelegate,
 
     private var version = 0
     private var opened: String?
+    private var last: String?
+    private var silent: TimeInterval?
+
+    private static let silence: TimeInterval = 10
     private var picking: (String, FlutterResult)?
     private var saving: (URL, FlutterResult)?
     private var preview: OpenItem?
@@ -56,6 +60,8 @@ final class VigilPlugin: NSObject, FlutterPlugin, UIDocumentPickerDelegate,
 
         try? FileManager.default.removeItem(at: openFolder)
         try? ChatVault.shared.prepare()
+
+        TunnelLink.open(create: false)
     }
 
     private static var openFolder: URL {
@@ -438,11 +444,7 @@ final class VigilPlugin: NSObject, FlutterPlugin, UIDocumentPickerDelegate,
                 return
             }
 
-            do {
-                try session.sendProviderMessage(Data(message.utf8)) { _ in finish() }
-            } catch {
-                finish()
-            }
+            TunnelLink.request(session, message) { _ in finish() }
         }
     }
 
@@ -497,8 +499,14 @@ final class VigilPlugin: NSObject, FlutterPlugin, UIDocumentPickerDelegate,
                 // A freshly saved manager must be reloaded before it can start.
                 manager.loadFromPreferences { _ in
                     DispatchQueue.main.async {
-                        self.whenStopped(manager.connection) {
+                        self.whenStopped(manager.connection) { stopped in
                             do {
+                                if stopped {
+                                    TunnelLink.renew()
+                                } else {
+                                    TunnelLink.open(create: true)
+                                }
+
                                 try manager.connection.startVPNTunnel()
                                 self.used(id)
                                 result("")
@@ -521,18 +529,18 @@ final class VigilPlugin: NSObject, FlutterPlugin, UIDocumentPickerDelegate,
         }
     }
 
-    private func whenStopped(_ connection: NEVPNConnection, _ done: @escaping () -> Void) {
+    private func whenStopped(_ connection: NEVPNConnection, _ done: @escaping (Bool) -> Void) {
         let stopped: (NEVPNStatus) -> Bool = { $0 == .disconnected || $0 == .invalid }
 
         if stopped(connection.status) {
-            done()
+            done(true)
             return
         }
 
         var observer: NSObjectProtocol?
         var finished = false
 
-        let finish: () -> Void = {
+        let finish: (Bool) -> Void = { clean in
             guard !finished else { return }
             finished = true
 
@@ -540,19 +548,19 @@ final class VigilPlugin: NSObject, FlutterPlugin, UIDocumentPickerDelegate,
                 NotificationCenter.default.removeObserver(observer)
             }
 
-            done()
+            done(clean)
         }
 
         observer = NotificationCenter.default.addObserver(
             forName: .NEVPNStatusDidChange, object: connection, queue: .main
         ) { _ in
             if stopped(connection.status) {
-                finish()
+                finish(true)
             }
         }
 
         connection.stopVPNTunnel()
-        DispatchQueue.main.asyncAfter(deadline: .now() + 10) { finish() }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 10) { finish(stopped(connection.status)) }
     }
 
     private func disconnect(result: @escaping FlutterResult) {
@@ -595,7 +603,7 @@ final class VigilPlugin: NSObject, FlutterPlugin, UIDocumentPickerDelegate,
                 return
             }
 
-            try? session.sendProviderMessage(Data("gospel".utf8)) { _ in }
+            TunnelLink.request(session, "gospel") { _ in }
             result("")
         }
     }
@@ -844,6 +852,8 @@ final class VigilPlugin: NSObject, FlutterPlugin, UIDocumentPickerDelegate,
                   [.connected, .connecting, .reasserting].contains(session.status) else {
                 VigilCall.shared.update(nil)
                 VigilCall.shared.send = nil
+                self.last = nil
+                self.silent = nil
                 result(idle)
                 return
             }
@@ -852,32 +862,70 @@ final class VigilPlugin: NSObject, FlutterPlugin, UIDocumentPickerDelegate,
             let ref = self.voiceTunnel()?.ref
 
             VigilCall.shared.config = { ref.flatMap { try? TunnelKeychain.load(ref: $0) } }
+
             VigilCall.shared.send = { message in
-                try? session.sendProviderMessage(Data(message.utf8)) { _ in }
+                TunnelLink.request(session, message) { reply in
+                    guard reply == nil else { return }
+                    DispatchQueue.main.async { self.unsent(message) }
+                }
             }
 
-            do {
-                try session.sendProviderMessage(Data("status".utf8)) { response in
-                    DispatchQueue.main.async {
-                        guard let response,
-                              let status = String(data: response, encoding: .utf8) else {
-                            result(idle)
-                            return
-                        }
-                        VigilCall.shared.update(
-                            (try? JSONSerialization.jsonObject(with: response)) as? [String: Any])
+            TunnelLink.request(session, "status") { response in
+                DispatchQueue.main.async {
+                    let tunnel = id.map { "\"\($0)\"" } ?? "null"
 
-                        let tunnel = id.map { "\"\($0)\"" } ?? "null"
-                        let phone = VigilCall.shared.json().map { self.json($0) } ?? "null"
-                        result("{\"tunnel\":\(tunnel),\"status\":\(status)," +
-                            "\"voice\":\(self.voice()),\"phone\":\(phone)," +
-                            "\"chats\":\(self.chats()),\"gospel\":\(Self.gospelEnabled)}")
+                    let now = ProcessInfo.processInfo.systemUptime
+
+                    guard let response,
+                          let status = String(data: response, encoding: .utf8) else {
+                        let since = self.silent ?? now
+                        self.silent = since
+
+                        result(self.combined(tunnel, self.last ?? "{\"running\":true}",
+                                             linked: now - since < Self.silence))
+                        return
                     }
+
+                    self.last = status
+                    self.silent = nil
+
+                    VigilCall.shared.update(
+                        (try? JSONSerialization.jsonObject(with: response)) as? [String: Any])
+
+                    result(self.combined(tunnel, status, linked: true))
                 }
-            } catch {
-                result(idle)
             }
         }
+    }
+
+    private func unsent(_ message: String) {
+        let words = message.split(separator: " ")
+        let chat: String
+
+        switch words.first {
+        case "chat-group-send":
+            let group = ChatVault.defaults.integer(forKey: "chatGroup")
+            chat = ChatVault.groupChat(UInt16(truncatingIfNeeded: group))
+        case "chat-group-data":
+            guard words.count == 6 else { return }
+            chat = String(words[3])
+        default:
+            return
+        }
+
+        guard words.count > 1, let ref = Int64(words[1]) else { return }
+
+        try? ChatVault.shared.receipt(chat, ref: ref, kind: "failed")
+        version += 1
+    }
+
+    private func combined(_ tunnel: String, _ status: String, linked: Bool) -> String {
+        let phone = VigilCall.shared.json().map { json($0) } ?? "null"
+
+        return "{\"tunnel\":\(tunnel),\"status\":\(status)," +
+            "\"voice\":\(voice()),\"phone\":\(phone)," +
+            "\"chats\":\(chats()),\"gospel\":\(Self.gospelEnabled)," +
+            "\"link\":\(linked)}"
     }
 
     private func chat(_ call: FlutterMethodCall) throws -> String {

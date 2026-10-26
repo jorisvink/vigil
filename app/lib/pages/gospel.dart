@@ -184,6 +184,7 @@ class _GospelPageState extends State<GospelPage> with WidgetsBindingObserver {
                   collapsed: _collapsed,
                   onCollapse: _collapse,
                 ),
+                if (status.running && !status.linked) const LinkNotice(),
                 if (!status.background) const BackgroundNotice(),
                 ..._chatList(status),
                 ..._peers(status),

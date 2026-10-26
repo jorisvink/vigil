@@ -22,6 +22,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
     private var probe: WakeProbe?
     private var network: String?
     private var gospel: Data?
+    private var answered: UInt64 = 0
 
     /// Where the IPv6 traffic we block ends up.
     private static let ipv6Sink = "fd70:6172:6973:6800::1"
@@ -55,6 +56,10 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         }
 
         let alone = summary["mode"] as? String == "gospel"
+
+        if !TunnelLink.open(create: true) {
+            NSLog("vigil: failed to open the link to the app")
+        }
 
         gospel = proto.providerConfiguration?["voice"] as? Data
 
@@ -167,6 +172,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         vigil_stop(run)
         _ = stopped.wait(timeout: .now() + 5)
 
+        TunnelLink.close()
         completionHandler()
     }
 
@@ -182,7 +188,24 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
 
     override func handleAppMessage(_ messageData: Data,
                                    completionHandler: ((Data?) -> Void)?) {
-        let words = String(decoding: messageData, as: UTF8.self).split(separator: " ")
+        var request = TunnelLink.input(messageData) ?? []
+        var reply = request.isEmpty ? [] : answer(String(decoding: request, as: UTF8.self))
+
+        completionHandler?(TunnelLink.output(reply, capacity: Int(VIGIL_LINK_BATCH_MAX)))
+
+        TunnelKeychain.wipe(&request)
+        TunnelKeychain.wipe(&reply)
+    }
+
+    private func answer(_ message: String) -> [UInt8] {
+        var words = message.split(separator: " ")
+
+        if let seq = words.first.flatMap({ UInt64($0) }) {
+            words.removeFirst()
+
+            if seq == answered { words.removeAll() }
+            answered = seq
+        }
 
         switch words.first {
         case "dial":
@@ -243,14 +266,13 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         }
 
         var buf = [CChar](repeating: 0, count: Int(VIGIL_STATUS_MAX))
+        defer { TunnelKeychain.wipe(&buf) }
+
         let len = vigil_status(&buf, buf.count)
 
-        guard len > 0 else {
-            completionHandler?(Data("{\"running\":false}".utf8))
-            return
-        }
+        guard len > 0 else { return Array("{\"running\":false}".utf8) }
 
-        completionHandler?(Data(bytes: buf, count: len))
+        return buf[0..<len].map { UInt8(bitPattern: $0) }
     }
 
     private func checkChats(_ status: [String: Any]) {

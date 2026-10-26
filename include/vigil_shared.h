@@ -82,6 +82,15 @@
 /* The buffer vigil_status() needs at most, with all log lines escaped. */
 #define VIGIL_STATUS_MAX		(512 * 1024)
 
+/*
+ * The link its secret, largest message (at least VIGIL_STATUS_MAX),
+ * fragment data and batch (room for a full message).
+ */
+#define VIGIL_LINK_SECRET_LEN		32
+#define VIGIL_LINK_FRAGMENT_DATA	1400
+#define VIGIL_LINK_MESSAGE_MAX		(512 * 1024)
+#define VIGIL_LINK_BATCH_MAX		(1024 * 1024)
+
 /* The buffer vigil_chat_events() needs at least. */
 #define VIGIL_CHAT_EVENTS_MAX		(64 * 1024)
 
@@ -260,6 +269,13 @@ int	vigil_chat_data_send(u_int8_t, u_int64_t, int, const char *,
 	    const void *, size_t);
 int	vigil_chat_group_data_send(u_int64_t, int, const char *,
 	    const void *, size_t);
+
+/* src/link.c */
+void	vigil_link_close(void);
+int	vigil_link_ready(void);
+int	vigil_link_open(const u_int8_t *, size_t);
+ssize_t	vigil_link_input(const u_int8_t *, size_t, u_int8_t *, size_t);
+ssize_t	vigil_link_output(const u_int8_t *, size_t, u_int8_t *, size_t);
 
 /* src/config.c */
 int	vigil_config_check(const char *, size_t, char *, size_t);

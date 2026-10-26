@@ -73,6 +73,7 @@ class _TunnelsPageState extends State<TunnelsPage> {
                   busy: _busy && tunnel.connecting == null,
                   onToggle: _toggle,
                 ),
+              if (status.running && !status.linked) const LinkNotice(),
               if (list.isNotEmpty && !status.background)
                 const BackgroundNotice(),
               if (list.isEmpty)

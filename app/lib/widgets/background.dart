@@ -5,6 +5,20 @@ import '../vigil.dart';
 import 'buttons.dart';
 import 'ui.dart';
 
+class LinkNotice extends StatelessWidget {
+  const LinkNotice({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return const Notice(
+      kind: NoticeKind.warn,
+      text:
+          'Vigil lost contact with its tunnel, calls and messages may not '
+          'go out. Reconnect the tunnel if this does not clear up.',
+    );
+  }
+}
+
 class BackgroundNotice extends StatelessWidget {
   const BackgroundNotice({super.key});
 

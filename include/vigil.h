@@ -233,6 +233,15 @@ struct vigil_chat_chunk {
 } __attribute__((packed));
 
 /*
+ * A fragment of a message on the link, always sent at full size.
+ */
+struct vigil_link_fragment {
+	u_int32_t		total;
+	u_int32_t		offset;
+	u_int8_t		data[VIGIL_LINK_FRAGMENT_DATA];
+} __attribute__((packed));
+
+/*
  * An ack from a peer.
  */
 struct vigil_chat_data_ack {

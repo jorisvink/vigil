@@ -10,3 +10,4 @@ tests/grace_test
 tests/caller
 tests/chatter
 tests/video_test
+tests/link_test

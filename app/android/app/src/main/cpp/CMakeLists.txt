@@ -30,6 +30,7 @@ add_library(vigil SHARED
 	${VIGIL_ROOT}/src/grace.c
 	${VIGIL_ROOT}/src/inet.c
 	${VIGIL_ROOT}/src/io.c
+	${VIGIL_ROOT}/src/link.c
 	${VIGIL_ROOT}/src/liturgy.c
 	${VIGIL_ROOT}/src/peer.c
 	${VIGIL_ROOT}/src/remembrance.c
