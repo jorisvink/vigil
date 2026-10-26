@@ -2149,8 +2149,10 @@ chat_tunnel_event(KYRKA *ctx, union kyrka_event *evt, void *udata)
 		break;
 	case KYRKA_EVENT_KEYS_ERASED:
 		vigil_log(LOG_INFO, "[chat] %02x keys erased", tun->peer->id);
+		tun->p2p_verify = 0;
 		memcpy(&tun->addr, &tun->cathedral.addr,
 		    sizeof(tun->cathedral.addr));
+		(void)kyrka_p2p_active(tun->ctx, 0);
 		break;
 	case KYRKA_EVENT_PEER_DISCOVERY:
 		chat_cathedral_alive(tun);
