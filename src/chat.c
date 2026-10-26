@@ -1346,9 +1346,9 @@ chat_liturgy_event(KYRKA *ctx, union kyrka_event *evt, void *udata)
 		}
 
 		lit->last = vigil->now;
+		lit->cathedral.alive = 1;
 		lit->cathedral.last = vigil->now;
 		lit->cathedral.timeout = VIGIL_CATHEDRAL_TIMEOUT;
-		lit->cathedral.alive = 1;
 	}
 
 	switch (evt->type) {

@@ -32,6 +32,12 @@
 #define CALL_RESOLVE_RETRY		(10 * 1000)
 
 /*
+ * The milliseconds we ignore a peer we had a call with, pushes for that
+ * call may still arrive. If the peer still signals us after it is a new call.
+ */
+#define CALL_DONE_HOLD			(4 * 1000)
+
+/*
  * A liturgy we run for calls, with its own socket and context.
  */
 struct call_liturgy {
@@ -90,10 +96,10 @@ static u_int64_t			pushed[KYRKA_PEERS_PER_FLOCK];
 static volatile u_int8_t		online[KYRKA_PEERS_PER_FLOCK];
 
 /*
- * The peers we had a call with that the cathedral still shows us, we
- * don't report those as calling until they are gone.
+ * When we ended a call with a peer the cathedral still showed us, we
+ * don't report it as calling until CALL_DONE_HOLD passed.
  */
-static volatile u_int8_t		done[KYRKA_PEERS_PER_FLOCK];
+static volatile u_int64_t		done[KYRKA_PEERS_PER_FLOCK];
 
 /* What we last sent to the cathedral. */
 static u_int8_t				sent[KYRKA_PEERS_PER_FLOCK];
@@ -204,7 +210,6 @@ vigil_call_update(void)
 		if ((vigil->now - pushed[idx]) < VIGIL_CALL_PRESENT_EXPIRE)
 			continue;
 
-		vigil_atomic_write(&done[idx], 0);
 		vigil_atomic_write(&present[idx], 0);
 	}
 
@@ -385,7 +390,7 @@ vigil_call_hangup(void)
 
 /*
  * A call with the given peer is over, stop signaling it and ignore it
- * until the cathedral no longer shows it.
+ * for a little while if the cathedral still shows it.
  */
 void
 vigil_call_done(u_int8_t peer)
@@ -395,7 +400,7 @@ vigil_call_done(u_int8_t peer)
 	vigil_atomic_write(&wanted[peer], 0);
 
 	if (vigil_atomic_read(&present[peer]))
-		vigil_atomic_write(&done[peer], 1);
+		vigil_atomic_write(&done[peer], vigil_time_ms());
 }
 
 /*
@@ -405,6 +410,7 @@ int
 vigil_call_peer(u_int8_t peer)
 {
 	int		state;
+	u_int64_t	ended;
 
 	PRECOND(peer > 0 && peer < KYRKA_PEERS_PER_FLOCK);
 
@@ -416,7 +422,8 @@ vigil_call_peer(u_int8_t peer)
 	if (vigil_atomic_read(&present[peer]))
 		state |= VIGIL_CALL_PEER_PRESENT;
 
-	if (vigil_atomic_read(&done[peer]))
+	ended = vigil_atomic_read(&done[peer]);
+	if (ended != 0 && (vigil_time_ms() - ended) < CALL_DONE_HOLD)
 		state |= VIGIL_CALL_PEER_DONE;
 
 	if (vigil_atomic_read(&online[peer]))
