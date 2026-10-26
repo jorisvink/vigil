@@ -220,6 +220,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         case "chat-group-data":
             if words.count == 6, let ref = UInt64(words[1]),
                let data = try? ChatVault.shared.data(String(words[3]), file: String(words[2])),
+               !data.isEmpty, data.count <= Int(VIGIL_CHAT_DATA_MAX),
                let name = Data(base64Encoded: String(words[5])).flatMap({ String(data: $0, encoding: .utf8) }) {
                 _ = data.withUnsafeBytes {
                     vigil_chat_group_data_send(ref, ChatVault.kind(String(words[4])), name,
@@ -394,6 +395,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
 
             if let file = entry["data"] as? String {
                 guard let data = try? ChatVault.shared.data(chat, file: file) else { return false }
+                guard !data.isEmpty, data.count <= Int(VIGIL_CHAT_DATA_MAX) else { continue }
 
                 let media = entry["media"] as? String ?? "file"
                 let name = entry["name"] as? String ?? "file"
