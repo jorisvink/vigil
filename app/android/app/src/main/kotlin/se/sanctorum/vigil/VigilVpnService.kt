@@ -320,7 +320,7 @@ class VigilVpnService : VpnService() {
 
         if (summary?.let { voiceOnly(it) } == true) {
             return if (status.optJSONObject("call")?.optBoolean("alive") == true) {
-                "Ready for calls"
+                "Active"
             } else {
                 "Waiting for the cathedral…"
             }
