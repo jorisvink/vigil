@@ -79,6 +79,8 @@ static void	ether_send(struct vigil_peer *, const struct vigil_ether *,
 		    const void *, size_t);
 
 static void	ether_heartbeat_send(struct vigil_peer *);
+static void	ether_heartbeat_local(struct vigil_peer *,
+		    struct vigil_ether_hb *);
 static void	ether_heartbeat_recv(struct vigil_peer *, const u_int8_t *,
 		    size_t);
 
@@ -672,10 +674,7 @@ static void
 ether_heartbeat_send(struct vigil_peer *peer)
 {
 	struct vigil_ether_hb	hb;
-	int			idx;
 	struct vigil_ether	eth;
-	struct sockaddr_in	*sin, *mask;
-	struct ifaddrs		*ifa, *ifap;
 
 	PRECOND(peer != NULL);
 
@@ -692,42 +691,60 @@ ether_heartbeat_send(struct vigil_peer *peer)
 
 	eth.proto = htons(VIGIL_ETHER_TYPE_HEARTBEAT);
 
-	if (peer->local_discovery) {
-		if (getifaddrs(&ifap) == -1)
-			fatal("getifaddrs: %s", errno_s);
-
-		idx = 0;
-		hb.port = peer->port;
-
-		for (ifa = ifap; ifa != NULL; ifa = ifa->ifa_next) {
-			if (idx >= VIGIL_ETHER_HB_IPV4_MAX)
-				break;
-
-			if (ifa->ifa_addr == NULL || ifa->ifa_netmask == NULL)
-				continue;
-
-			if (ifa->ifa_addr->sa_family != AF_INET)
-				continue;
-
-			if (!(ifa->ifa_flags & IFF_UP))
-				continue;
-
-			if (ifa->ifa_flags & (IFF_POINTOPOINT | IFF_LOOPBACK))
-				continue;
-
-			sin = (struct sockaddr_in *)ifa->ifa_addr;
-			mask = (struct sockaddr_in *)ifa->ifa_netmask;
-
-			hb.ips[idx] = sin->sin_addr.s_addr;
-			hb.masks[idx] = mask->sin_addr.s_addr;
-
-			idx++;
-		}
-
-		freeifaddrs(ifap);
-	}
+	if (peer->local_discovery)
+		ether_heartbeat_local(peer, &hb);
 
 	ether_send(peer, &eth, &hb, sizeof(hb));
+}
+
+/*
+ * Gather our local addresses and add them to the heartbeat, if we fail
+ * with this the heartbeat is sent without them.
+ */
+static void
+ether_heartbeat_local(struct vigil_peer *peer, struct vigil_ether_hb *hb)
+{
+	int			idx;
+	struct sockaddr_in	*sin, *mask;
+	struct ifaddrs		*ifa, *ifap;
+
+	PRECOND(peer != NULL);
+	PRECOND(hb != NULL);
+
+	if (getifaddrs(&ifap) == -1) {
+		vigil_log(LOG_NOTICE, "getifaddrs: %s", errno_s);
+		return;
+	}
+
+	idx = 0;
+	hb->port = peer->port;
+
+	for (ifa = ifap; ifa != NULL; ifa = ifa->ifa_next) {
+		if (idx >= VIGIL_ETHER_HB_IPV4_MAX)
+			break;
+
+		if (ifa->ifa_addr == NULL || ifa->ifa_netmask == NULL)
+			continue;
+
+		if (ifa->ifa_addr->sa_family != AF_INET)
+			continue;
+
+		if (!(ifa->ifa_flags & IFF_UP))
+			continue;
+
+		if (ifa->ifa_flags & (IFF_POINTOPOINT | IFF_LOOPBACK))
+			continue;
+
+		sin = (struct sockaddr_in *)ifa->ifa_addr;
+		mask = (struct sockaddr_in *)ifa->ifa_netmask;
+
+		hb->ips[idx] = sin->sin_addr.s_addr;
+		hb->masks[idx] = mask->sin_addr.s_addr;
+
+		idx++;
+	}
+
+	freeifaddrs(ifap);
 }
 
 /*
@@ -762,8 +779,10 @@ ether_heartbeat_recv(struct vigil_peer *peer, const u_int8_t *data,
 	if (hb.port == 0 || hb.ips[0] == 0)
 		return;
 
-	if (getifaddrs(&ifap) == -1)
-		fatal("getifaddrs: %s", errno_s);
+	if (getifaddrs(&ifap) == -1) {
+		vigil_log(LOG_NOTICE, "getifaddrs: %s", errno_s);
+		return;
+	}
 
 	for (idx = 0; idx < VIGIL_ETHER_HB_IPV4_MAX; idx++) {
 		if (hb.ips[idx] == 0)
