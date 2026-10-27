@@ -274,12 +274,13 @@ struct vigil_video_hdr {
 } __attribute__((packed));
 
 /*
- * Video control channel we send periodically.
+ * Video control channel we send periodically, rtt is the round trip in
+ * milliseconds the sender measured or 0 if it did not.
  */
 struct vigil_video_ctl {
 	u_int8_t		camera;
 	u_int8_t		keyframe;
-	u_int16_t		rfu;
+	u_int16_t		rtt;
 	u_int32_t		frames;
 	u_int32_t		lost;
 	u_int32_t		fragments;
@@ -298,7 +299,7 @@ struct vigil_video_nack {
 /*
  * A multi-producer, multi-consumer ring queue of indices, see src/ring.c.
  */
-#define VIGIL_RING_MAX		64
+#define VIGIL_RING_MAX		128
 
 struct vigil_ring_span {
 	volatile u_int32_t	head;

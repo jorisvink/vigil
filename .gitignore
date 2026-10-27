@@ -11,3 +11,4 @@ tests/caller
 tests/chatter
 tests/video_test
 tests/link_test
+tests/video_path_test

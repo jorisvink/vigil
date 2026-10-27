@@ -24,17 +24,43 @@
 #include "vigil.h"
 
 /* The frames we hold in each direction, must be a power of 2. */
-#define VIDEO_FRAMES			32
+#define VIDEO_FRAMES			128
 
 /*
- * The frames we keep around after sending them for resends, about as
- * long as our peer waits for a frame.
+ * The most frames we keep around after sending them for resends, and
+ * the milliseconds we keep them at least, longer on a slow path.
  */
-#define VIDEO_HISTORY			16
+#define VIDEO_HISTORY			96
+#define VIDEO_HISTORY_TIME		500
 
 /* The frames we put together at once, and the most we wait on unseen. */
-#define VIDEO_ASSEMBLY			12
+#define VIDEO_ASSEMBLY			96
 #define VIDEO_GAP_MAX			3
+
+/* The frames we remember sending for round trips, must be a power of 2. */
+#define VIDEO_SENT			128
+
+/*
+ * What we add to the round trip for the time it takes our peer to see a
+ * fragment is missing and for the resend to make its way through.
+ */
+#define VIDEO_RTT_MARGIN		50
+
+/*
+ * A round trip this much longer than the shortest we saw, or a quarter
+ * of it if that is more, means the queues on the path are filling up
+ * and we should slow down before they drop.
+ */
+#define VIDEO_RTT_QUEUE			100
+
+/*
+ * From this round trip on a resend takes too long to wait for, we send
+ * a parity fragment after every VIDEO_FEC_GROUP fragments so our peer can
+ * rebuild one it lost on its own. The most a peer may group by.
+ */
+#define VIDEO_FEC_RTT			150
+#define VIDEO_FEC_GROUP			4
+#define VIDEO_FEC_GROUP_MAX		16
 
 /* The most fragments a frame can have, enough for the smallest mtu. */
 #define VIDEO_FRAGMENTS_MAX		2048
@@ -73,6 +99,9 @@
 /*
  * The milliseconds between asking for the fragments of a frame we miss,
  * and how long we wait on the last fragments before we ask for those too.
+ *
+ * All of these timers are the least we wait, on a slow path such as one
+ * under commixtion we wait as long as the round trip needs.
  */
 #define VIDEO_NACK_INTERVAL		100
 #define VIDEO_TAIL_WAIT			30
@@ -108,10 +137,14 @@ struct video_frame {
 	u_int16_t		fragsize;
 	u_int16_t		got;
 	u_int16_t		highest;
+	u_int16_t		fec;
 	u_int64_t		last;
+	u_int64_t		sent;
 	u_int8_t		*data;
+	u_int8_t		*parity;
 	u_int8_t		seen[VIDEO_FRAGMENTS_MAX / 8];
 	u_int8_t		asked[VIDEO_FRAGMENTS_MAX / 8];
+	u_int8_t		pseen[VIDEO_FRAGMENTS_MAX / 8];
 };
 
 /*
@@ -134,9 +167,20 @@ struct video_entry {
 	int			lost;
 	int			slot;
 	int			asked;
+
 	u_int32_t		id;
 	u_int64_t		first;
 	u_int64_t		next_nack;
+};
+
+/*
+ * A frame we sent and when, the first time our peer asks for it again
+ * tells us about the round trip.
+ */
+struct video_sent {
+	u_int32_t		id;
+	u_int64_t		when;
+	int			nacked;
 };
 
 /*
@@ -159,28 +203,41 @@ static void	video_ctl_send(struct vigil_video_link *);
 static void	video_key_honor(struct vigil_video_link *);
 static void	video_rate_adjust(const struct vigil_video_ctl *);
 
+static u_int64_t	video_rtt(void);
+static u_int64_t	video_rtt_wait(u_int64_t, u_int64_t);
+static void		video_rtt_sample(u_int32_t, u_int64_t);
+
 static void	video_tx_skip(u_int64_t);
 static void	video_tx_finish(u_int64_t);
 static void	video_tx_release(u_int32_t);
+static void	video_tx_history(u_int64_t);
 static void	video_tx_begin(struct vigil_video_link *, u_int32_t);
+static void	video_tx_parity(struct vigil_video_link *, u_int32_t,
+		    u_int16_t);
 static void	video_tx_fragment(struct vigil_video_link *, u_int32_t,
 		    u_int16_t);
 
 static void	video_rx_release(struct video_entry *);
+static void	video_rx_recover(struct video_entry *, u_int16_t);
 static void	video_rx_nack(struct vigil_video_link *, struct video_entry *);
+static int	video_rx_slot(struct video_entry *,
+		    const struct vigil_video_hdr *);
+static int	video_rx_parity(struct video_entry *,
+		    const struct vigil_video_hdr *, const u_int8_t *,
+		    u_int64_t);
 static int	video_rx_fragment(struct video_entry *,
 		    const struct vigil_video_hdr *, const u_int8_t *,
 		    u_int64_t);
 
+static struct video_pool	*video_pool_alloc(void);
 static void			video_pool_free(struct video_pool *);
 static void			video_resend_queue(u_int32_t, u_int16_t);
-static struct video_pool	*video_pool_alloc(void);
 static struct video_entry	*video_entry_get(u_int32_t, u_int64_t);
 static struct video_entry	*video_entry_new(u_int32_t, u_int64_t);
 
 /* The frames we send and get, read by the platform video. */
-static struct video_pool	*volatile tx = NULL;
-static struct video_pool	*volatile rx = NULL;
+static struct video_pool	*tx = NULL;
+static struct video_pool	*rx = NULL;
 
 /* If the platform wants our camera on, may be set from any thread. */
 static volatile int		camera = 0;
@@ -194,11 +251,11 @@ static volatile int		refresh = 0;
 /* What we show in vigil_video_status(). */
 static volatile int		remote = 0;
 static volatile int		sending = 0;
-static volatile u_int32_t	rate = VIDEO_RATE_START;
 static volatile u_int64_t	resent = 0;
 static volatile u_int64_t	rx_frames = 0;
 static volatile u_int64_t	tx_frames = 0;
 static volatile u_int64_t	lost_frames = 0;
+static volatile u_int32_t	rate = VIDEO_RATE_START;
 
 /* If we started the platform video, only touched by the voice thread. */
 static int			started = 0;
@@ -223,6 +280,13 @@ static u_int64_t		key_sent = 0;
 static u_int32_t		history[VIDEO_HISTORY];
 static int			history_count = 0;
 
+/* The round trip we measured, the one our peer did and what we sent. */
+static u_int64_t		rtt = 0;
+static u_int64_t		rtt_min = 0;
+static u_int64_t		rtt_last = 0;
+static u_int64_t		peer_rtt = 0;
+static struct video_sent	stamps[VIDEO_SENT];
+
 /* The fragments we resend first. */
 static struct video_resend	resends[VIDEO_RESENDS];
 static u_int32_t		resend_head = 0;
@@ -235,11 +299,20 @@ static u_int64_t		tokens_last = 0;
 /* The frames we are putting together. */
 static struct video_entry	entries[VIDEO_ASSEMBLY];
 
+/* Where we rebuild a fragment from its parity. */
+static u_int8_t			rebuild[KYRKA_PACKET_DATA_LEN];
+
 /* The last frame we handed to the platform or gave up on. */
 static u_int32_t		rx_last = 0;
 
 /* If we need a keyframe before we can hand frames over again. */
 static int			need_key = 1;
+
+/*
+ * If a frame is stuck for so long that a keyframe gets here sooner than
+ * its resends, we ask for one but keep waiting on the frame too.
+ */
+static int			want_key = 0;
 
 /* When we last asked for and honored a keyframe, and next report. */
 static u_int64_t		key_asked = 0;
@@ -362,6 +435,9 @@ vigil_video_take(u_int8_t *buf, size_t len, int *flags)
 	free(frame->data);
 	frame->data = NULL;
 
+	free(frame->parity);
+	frame->parity = NULL;
+
 	if (vigil_ring_queue(&pool->free, idx) == -1)
 		fatal("video rx free overflow");
 
@@ -376,28 +452,37 @@ vigil_video_open(void)
 {
 	PRECOND(started == 0);
 
-	talked = 0;
 	tx_id = 0;
+	talked = 0;
 	tx_busy = 0;
 	tx_skip = 0;
-	skip_since = 0;
 	key_sent = 0;
+	skip_since = 0;
 	history_count = 0;
+
+	rtt = 0;
+	rtt_min = 0;
+	rtt_last = 0;
+	peer_rtt = 0;
+	memset(stamps, 0, sizeof(stamps));
+
 	resend_head = 0;
 	resend_tail = 0;
+
 	tokens = 0;
 	tokens_last = 0;
 
 	rx_last = 0;
 	need_key = 1;
+	want_key = 0;
 	key_asked = 0;
+	rate_told = 0;
 	key_honored = 0;
 	next_report = 0;
 	report_lost = 0;
 	report_nacks = 0;
 	report_frames = 0;
 	report_fragments = 0;
-	rate_told = 0;
 
 	memset(entries, 0, sizeof(entries));
 
@@ -449,6 +534,7 @@ void
 vigil_video_update(struct vigil_video_link *link)
 {
 	int		want;
+	u_int32_t	encode;
 
 	PRECOND(link != NULL);
 	PRECOND(link->ctx != NULL);
@@ -487,8 +573,13 @@ vigil_video_update(struct vigil_video_link *link)
 		vigil_platform_video_keyframe();
 	}
 
-	if (rate_told != vigil_atomic_read(&rate)) {
-		rate_told = vigil_atomic_read(&rate);
+	/* Our rate is what goes on the wire, parity included. */
+	encode = vigil_atomic_read(&rate);
+	if (video_rtt() >= VIDEO_FEC_RTT)
+		encode = encode * VIDEO_FEC_GROUP / (VIDEO_FEC_GROUP + 1);
+
+	if (rate_told != encode) {
+		rate_told = encode;
 		vigil_platform_video_bitrate(rate_told);
 	}
 
@@ -496,8 +587,10 @@ vigil_video_update(struct vigil_video_link *link)
 		return;
 
 	/* This also tells a peer that rings for us that our camera is on. */
-	if (link->now >= next_report || (link->talking && need_key &&
-	    (link->now - key_asked) >= VIDEO_KEY_INTERVAL))
+	if (link->now >= next_report || (link->talking &&
+	    (need_key || want_key) &&
+	    (link->now - key_asked) >= video_rtt_wait(VIDEO_KEY_INTERVAL,
+	    video_rtt() + VIDEO_RTT_MARGIN)))
 		video_ctl_send(link);
 
 	if (link->talking == 0) {
@@ -531,6 +624,8 @@ vigil_video_ctl(struct vigil_video_link *link,
 		    ctl->camera ? "on" : "off");
 		vigil_atomic_write(&remote, ctl->camera ? 1 : 0);
 	}
+
+	peer_rtt = ntohs(ctl->rtt);
 
 	if (vigil_atomic_read(&sending) == 0)
 		return;
@@ -567,6 +662,8 @@ vigil_video_nack(struct vigil_video_link *link,
 
 	if (count > VIGIL_VIDEO_NACK_MAX)
 		return;
+
+	video_rtt_sample(id, link->now);
 
 	slot = 0;
 	sent = 0;
@@ -639,16 +736,28 @@ vigil_video_recv(struct vigil_video_link *link, const u_int8_t *data,
 		return;
 
 	count = (size + hdr.fragsize - 1) / hdr.fragsize;
-	if (count > VIDEO_FRAGMENTS_MAX || hdr.fragment >= count)
+	if (count > VIDEO_FRAGMENTS_MAX)
 		return;
 
-	if (hdr.fragment == count - 1)
-		expect = size - hdr.fragment * hdr.fragsize;
-	else
-		expect = hdr.fragsize;
+	if (hdr.fragment >= count) {
+		if (hdr.length == 0 || hdr.length > VIDEO_FEC_GROUP_MAX)
+			return;
 
-	if (hdr.length != expect || hdr.length > len - sizeof(hdr))
-		return;
+		if (hdr.fragment - count >= (count + hdr.length - 1) /
+		    hdr.length)
+			return;
+
+		if (hdr.fragsize > len - sizeof(hdr))
+			return;
+	} else {
+		if (hdr.fragment == count - 1)
+			expect = size - hdr.fragment * hdr.fragsize;
+		else
+			expect = hdr.fragsize;
+
+		if (hdr.length != expect || hdr.length > len - sizeof(hdr))
+			return;
+	}
 
 	if (rx_last != 0 && (int32_t)(id - rx_last) <= 0)
 		return;
@@ -662,9 +771,15 @@ vigil_video_recv(struct vigil_video_link *link, const u_int8_t *data,
 	hdr.frame = id;
 	hdr.size = size;
 
-	if (video_rx_fragment(entry, &hdr,
-	    data + sizeof(hdr), link->now) == -1)
-		return;
+	if (hdr.fragment >= count) {
+		if (video_rx_parity(entry, &hdr,
+		    data + sizeof(hdr), link->now) == -1)
+			return;
+	} else {
+		if (video_rx_fragment(entry, &hdr,
+		    data + sizeof(hdr), link->now) == -1)
+			return;
+	}
 
 	video_flush();
 }
@@ -778,10 +893,19 @@ video_send(struct vigil_video_link *link)
 	if (pool == NULL)
 		return;
 
+	video_tx_history(link->now);
+
 	elapsed = link->now - tokens_last;
 	tokens_last = link->now;
 
-	tokens += elapsed * vigil_atomic_read(&rate) / 4000;
+	/*
+	 * Twice our rate gets a keyframe out quickly, on a slow path that
+	 * waits a round trip anyway we rather not burst past what it takes.
+	 */
+	if (video_rtt() >= VIDEO_FEC_RTT)
+		tokens += elapsed * vigil_atomic_read(&rate) / 6400;
+	else
+		tokens += elapsed * vigil_atomic_read(&rate) / 4000;
 	if (tokens > VIDEO_TOKENS_MAX)
 		tokens = VIDEO_TOKENS_MAX;
 
@@ -836,6 +960,13 @@ video_send(struct vigil_video_link *link)
 		video_tx_fragment(link, tx_slot, tx_next);
 		tx_next++;
 
+		if (pool->frames[tx_slot].fec != 0 &&
+		    (tx_next % pool->frames[tx_slot].fec == 0 ||
+		    tx_next == pool->frames[tx_slot].count)) {
+			video_tx_parity(link, tx_slot,
+			    (tx_next - 1) / pool->frames[tx_slot].fec);
+		}
+
 		if (tx_next == pool->frames[tx_slot].count)
 			video_tx_finish(link->now);
 	}
@@ -876,6 +1007,11 @@ video_tx_begin(struct vigil_video_link *link, u_int32_t slot)
 	frame->id = ++tx_id;
 	frame->count = count;
 
+	if (video_rtt() >= VIDEO_FEC_RTT)
+		frame->fec = VIDEO_FEC_GROUP;
+	else
+		frame->fec = 0;
+
 	tx_next = 0;
 	tx_busy = 1;
 	tx_slot = slot;
@@ -909,6 +1045,12 @@ video_tx_finish(u_int64_t now)
 	if (pool->frames[tx_slot].flags & VIGIL_VIDEO_FLAG_KEY)
 		key_sent = now;
 
+	pool->frames[tx_slot].sent = now;
+
+	stamps[tx_id & (VIDEO_SENT - 1)].id = pool->frames[tx_slot].id;
+	stamps[tx_id & (VIDEO_SENT - 1)].when = now;
+	stamps[tx_id & (VIDEO_SENT - 1)].nacked = 0;
+
 	if (history_count == VIDEO_HISTORY) {
 		video_tx_release(history[0]);
 
@@ -922,6 +1064,34 @@ video_tx_finish(u_int64_t now)
 	tx_busy = 0;
 
 	vigil_atomic_add(&tx_frames, 1);
+}
+
+/*
+ * Give back the frames we sent long enough ago that our peer will not
+ * ask for them anymore.
+ */
+static void
+video_tx_history(u_int64_t now)
+{
+	int			idx;
+	u_int64_t		keep;
+	struct video_pool	*pool;
+
+	pool = vigil_atomic_read(&tx);
+	VERIFY(pool != NULL);
+
+	keep = video_rtt_wait(VIDEO_HISTORY_TIME,
+	    2 * (video_rtt() + VIDEO_RTT_MARGIN));
+
+	while (history_count > 0 &&
+	    now - pool->frames[history[0]].sent > keep) {
+		video_tx_release(history[0]);
+
+		for (idx = 1; idx < history_count; idx++)
+			history[idx - 1] = history[idx];
+
+		history_count--;
+	}
 }
 
 /*
@@ -974,6 +1144,82 @@ video_tx_fragment(struct vigil_video_link *link, u_int32_t slot,
 	hdr->fragsize = htons(frame->fragsize);
 
 	memcpy(ptr + sizeof(*hdr), frame->data + offset, length);
+
+	pkt.shroud = link->shroud;
+	pkt.length = sizeof(*hdr) + frame->fragsize;
+
+	if (kyrka_heaven_input(link->ctx, &pkt) == -1 &&
+	    kyrka_last_error(link->ctx) != KYRKA_ERROR_NO_TX_KEY) {
+		vigil_log(LOG_NOTICE, "[video] kyrka_heaven_input: %d",
+		    kyrka_last_error(link->ctx));
+	}
+
+	if (tokens > pkt.length)
+		tokens -= pkt.length;
+	else
+		tokens = 0;
+}
+
+/*
+ * Send the parity of the given group of fragments of the frame in the
+ * given slot, the xor of all of them padded to the fragment size. Its
+ * length says how many fragments a group has.
+ */
+static void
+video_tx_parity(struct vigil_video_link *link, u_int32_t slot,
+    u_int16_t group)
+{
+	struct kyrka_packet		pkt;
+	size_t				max;
+	struct vigil_video_hdr		*hdr;
+	u_int8_t			*ptr;
+	struct video_pool		*pool;
+	struct video_frame		*frame;
+	u_int32_t			idx, first, last, offset, length, byte;
+
+	PRECOND(link != NULL);
+	PRECOND(slot < VIDEO_FRAMES);
+
+	pool = vigil_atomic_read(&tx);
+	VERIFY(pool != NULL);
+
+	frame = &pool->frames[slot];
+	VERIFY(frame->fec != 0);
+
+	ptr = kyrka_packet_databuf(link->ctx, &pkt, &max);
+	if (ptr == NULL)
+		fatal("failed to get video data buffer");
+
+	if (sizeof(*hdr) + frame->fragsize > max)
+		fatal("video parity does not fit");
+
+	memset(ptr, 0, sizeof(*hdr) + frame->fragsize);
+
+	first = group * frame->fec;
+	last = first + frame->fec;
+
+	if (last > frame->count)
+		last = frame->count;
+
+	for (idx = first; idx < last; idx++) {
+		offset = idx * frame->fragsize;
+		length = frame->size - offset;
+
+		if (length > frame->fragsize)
+			length = frame->fragsize;
+
+		for (byte = 0; byte < length; byte++)
+			ptr[sizeof(*hdr) + byte] ^= frame->data[offset + byte];
+	}
+
+	hdr = (struct vigil_video_hdr *)ptr;
+	hdr->type = VIGIL_VOICE_TYPE_VIDEO;
+	hdr->flags = frame->flags;
+	hdr->frame = htonl(frame->id);
+	hdr->size = htonl(frame->size);
+	hdr->length = htons(frame->fec);
+	hdr->fragment = htons(frame->count + group);
+	hdr->fragsize = htons(frame->fragsize);
 
 	pkt.shroud = link->shroud;
 	pkt.length = sizeof(*hdr) + frame->fragsize;
@@ -1056,14 +1302,15 @@ video_ctl_send(struct vigil_video_link *link)
 	next_report = link->now + VIDEO_REPORT_INTERVAL;
 
 	memset(&ctl, 0, sizeof(ctl));
+	ctl.rtt = htons(rtt > UINT16_MAX ? UINT16_MAX : rtt);
 	ctl.camera = vigil_atomic_read(&sending);
-	ctl.keyframe = need_key;
+	ctl.keyframe = need_key || want_key;
 	ctl.lost = htonl(report_lost);
 	ctl.nacks = htonl(report_nacks);
 	ctl.frames = htonl(report_frames);
 	ctl.fragments = htonl(report_fragments);
 
-	if (need_key)
+	if (need_key || want_key)
 		key_asked = link->now;
 
 	report_lost = 0;
@@ -1113,10 +1360,12 @@ video_key_honor(struct vigil_video_link *link)
 	if (tx_skip)
 		return;
 
-	if ((link->now - key_honored) < VIDEO_KEY_INTERVAL)
+	if ((link->now - key_honored) < video_rtt_wait(VIDEO_KEY_INTERVAL,
+	    video_rtt() + VIDEO_RTT_MARGIN))
 		return;
 
-	if (key_sent != 0 && (link->now - key_sent) < VIDEO_KEY_HOLD)
+	if (key_sent != 0 && (link->now - key_sent) <
+	    video_rtt_wait(VIDEO_KEY_HOLD, video_rtt() + VIDEO_KEY_HOLD / 2))
 		return;
 
 	if (tx_busy) {
@@ -1162,8 +1411,16 @@ video_rate_adjust(const struct vigil_video_ctl *ctl)
 		next = next * 7 / 10;
 	else if (lost > 0 || ploss >= 10)
 		next = next * 9 / 10;
+	else if (rtt_min != 0 && rtt_last > rtt_min +
+	    video_rtt_wait(VIDEO_RTT_QUEUE, rtt_min / 4))
+		next = next * 85 / 100;
+	else if (ploss < 5 && video_rtt() >= VIDEO_FEC_RTT)
+		next = next * 102 / 100;
 	else if (ploss < 5)
 		next = next * 104 / 100;
+
+	/* A round trip only counts until the next report. */
+	rtt_last = 0;
 
 	if (next < VIDEO_RATE_MIN)
 		next = VIDEO_RATE_MIN;
@@ -1184,12 +1441,21 @@ video_expire(struct vigil_video_link *link)
 	int			idx;
 	struct video_pool	*pool;
 	struct video_entry	*entry;
-	u_int64_t		progress;
+	u_int64_t		progress, wait, most, stuck;
 
 	PRECOND(link != NULL);
 
 	pool = vigil_atomic_read(&rx);
 	VERIFY(pool != NULL);
+
+	want_key = 0;
+	stuck = video_rtt_wait(VIDEO_FRAME_TIMEOUT,
+	    2 * (video_rtt() + VIDEO_RTT_MARGIN));
+
+	wait = video_rtt_wait(VIDEO_FRAME_TIMEOUT,
+	    3 * (video_rtt() + VIDEO_RTT_MARGIN));
+	most = video_rtt_wait(VIDEO_FRAME_TIMEOUT_MAX,
+	    4 * (video_rtt() + VIDEO_RTT_MARGIN));
 
 	for (idx = 0; idx < VIDEO_ASSEMBLY; idx++) {
 		entry = &entries[idx];
@@ -1201,12 +1467,15 @@ video_expire(struct vigil_video_link *link)
 		if (entry->slot != -1)
 			progress = pool->frames[entry->slot].last;
 
-		if ((link->now - progress) >= VIDEO_FRAME_TIMEOUT ||
-		    (link->now - entry->first) >= VIDEO_FRAME_TIMEOUT_MAX) {
+		if ((link->now - progress) >= wait ||
+		    (link->now - entry->first) >= most) {
 			entry->done = 1;
 			entry->lost = 1;
 			continue;
 		}
+
+		if ((link->now - entry->first) >= stuck)
+			want_key = 1;
 
 		if (link->now >= entry->next_nack)
 			video_rx_nack(link, entry);
@@ -1444,7 +1713,8 @@ video_entry_new(u_int32_t id, u_int64_t now)
 	entry->used = 1;
 	entry->slot = -1;
 	entry->first = now;
-	entry->next_nack = now + VIDEO_TAIL_WAIT;
+	entry->next_nack = now +
+	    video_rtt_wait(VIDEO_TAIL_WAIT, video_rtt() / 8);
 
 	return (entry);
 }
@@ -1457,7 +1727,6 @@ static int
 video_rx_fragment(struct video_entry *entry, const struct vigil_video_hdr *hdr,
     const u_int8_t *data, u_int64_t now)
 {
-	u_int32_t		idx;
 	struct video_pool	*pool;
 	struct video_frame	*frame;
 
@@ -1468,39 +1737,10 @@ video_rx_fragment(struct video_entry *entry, const struct vigil_video_hdr *hdr,
 	pool = vigil_atomic_read(&rx);
 	VERIFY(pool != NULL);
 
-	if (entry->slot == -1) {
-		if (vigil_ring_dequeue(&pool->free, &idx) == -1) {
-			entry->done = 1;
-			entry->lost = 1;
-			return (-1);
-		}
-
-		VERIFY(idx < VIDEO_FRAMES);
-
-		frame = &pool->frames[idx];
-		VERIFY(frame->data == NULL);
-
-		frame->data = malloc(hdr->size);
-		if (frame->data == NULL)
-			fatal("malloc: failed to allocate video frame");
-
-		frame->got = 0;
-		frame->highest = 0;
-		frame->id = hdr->frame;
-		frame->size = hdr->size;
-		frame->flags = hdr->flags;
-		frame->fragsize = hdr->fragsize;
-		frame->count = (hdr->size + hdr->fragsize - 1) / hdr->fragsize;
-		memset(frame->seen, 0, sizeof(frame->seen));
-		memset(frame->asked, 0, sizeof(frame->asked));
-
-		entry->slot = idx;
-	}
+	if (video_rx_slot(entry, hdr) == -1)
+		return (-1);
 
 	frame = &pool->frames[entry->slot];
-
-	if (frame->size != hdr->size || frame->fragsize != hdr->fragsize)
-		return (-1);
 
 	if (frame->seen[hdr->fragment / 8] & (1 << (hdr->fragment % 8)))
 		return (-1);
@@ -1517,8 +1757,202 @@ video_rx_fragment(struct video_entry *entry, const struct vigil_video_hdr *hdr,
 
 	if (frame->got == frame->count)
 		entry->done = 1;
+	else if (frame->fec != 0)
+		video_rx_recover(entry, hdr->fragment / frame->fec);
 
 	return (0);
+}
+
+/*
+ * Give the entry a frame to put its fragments in if it has none yet,
+ * returns -1 if we are out of frames or the fragment does not belong.
+ */
+static int
+video_rx_slot(struct video_entry *entry, const struct vigil_video_hdr *hdr)
+{
+	u_int32_t		idx;
+	struct video_pool	*pool;
+	struct video_frame	*frame;
+
+	PRECOND(entry != NULL);
+	PRECOND(hdr != NULL);
+
+	pool = vigil_atomic_read(&rx);
+	VERIFY(pool != NULL);
+
+	if (entry->slot == -1) {
+		if (vigil_ring_dequeue(&pool->free, &idx) == -1) {
+			entry->done = 1;
+			entry->lost = 1;
+			return (-1);
+		}
+
+		VERIFY(idx < VIDEO_FRAMES);
+
+		frame = &pool->frames[idx];
+		VERIFY(frame->data == NULL);
+		VERIFY(frame->parity == NULL);
+
+		frame->data = malloc(hdr->size);
+		if (frame->data == NULL)
+			fatal("malloc: failed to allocate video frame");
+
+		frame->got = 0;
+		frame->fec = 0;
+		frame->highest = 0;
+		frame->id = hdr->frame;
+		frame->size = hdr->size;
+		frame->flags = hdr->flags;
+		frame->fragsize = hdr->fragsize;
+		frame->count = (hdr->size + hdr->fragsize - 1) / hdr->fragsize;
+		memset(frame->seen, 0, sizeof(frame->seen));
+		memset(frame->asked, 0, sizeof(frame->asked));
+		memset(frame->pseen, 0, sizeof(frame->pseen));
+
+		entry->slot = idx;
+	}
+
+	frame = &pool->frames[entry->slot];
+
+	if (frame->size != hdr->size || frame->fragsize != hdr->fragsize)
+		return (-1);
+
+	return (0);
+}
+
+/*
+ * Keep the given parity fragment for the frame of the given entry and
+ * see if it lets us rebuild a fragment we lost, returns -1 if it does
+ * not belong there or we have it already.
+ */
+static int
+video_rx_parity(struct video_entry *entry, const struct vigil_video_hdr *hdr,
+    const u_int8_t *data, u_int64_t now)
+{
+	u_int16_t		group, groups;
+	struct video_pool	*pool;
+	struct video_frame	*frame;
+
+	PRECOND(entry != NULL);
+	PRECOND(hdr != NULL);
+	PRECOND(data != NULL);
+
+	pool = vigil_atomic_read(&rx);
+	VERIFY(pool != NULL);
+
+	if (video_rx_slot(entry, hdr) == -1)
+		return (-1);
+
+	frame = &pool->frames[entry->slot];
+
+	if (frame->fec == 0)
+		frame->fec = hdr->length;
+
+	if (frame->fec != hdr->length)
+		return (-1);
+
+	groups = (frame->count + frame->fec - 1) / frame->fec;
+	group = hdr->fragment - frame->count;
+
+	if (frame->parity == NULL) {
+		frame->parity = calloc(groups, frame->fragsize);
+		if (frame->parity == NULL)
+			fatal("calloc: failed to allocate video parity");
+	}
+
+	if (frame->pseen[group / 8] & (1 << (group % 8)))
+		return (-1);
+
+	frame->pseen[group / 8] |= 1 << (group % 8);
+	memcpy(frame->parity + group * frame->fragsize, data, frame->fragsize);
+
+	frame->last = now;
+	video_rx_recover(entry, group);
+
+	return (0);
+}
+
+/*
+ * If the given group of fragments of the frame of the given entry has
+ * its parity and misses one fragment, rebuild that fragment from the
+ * parity and the others.
+ */
+static void
+video_rx_recover(struct video_entry *entry, u_int16_t group)
+{
+	struct video_pool	*pool;
+	struct video_frame	*frame;
+	u_int32_t		idx, first, last, lost, missing;
+	u_int32_t		offset, length, byte;
+
+	PRECOND(entry != NULL);
+	PRECOND(entry->slot != -1);
+
+	pool = vigil_atomic_read(&rx);
+	VERIFY(pool != NULL);
+
+	frame = &pool->frames[entry->slot];
+	VERIFY(frame->fec != 0);
+
+	if (frame->parity == NULL)
+		return;
+
+	if (!(frame->pseen[group / 8] & (1 << (group % 8))))
+		return;
+
+	first = group * frame->fec;
+	last = first + frame->fec;
+
+	if (last > frame->count)
+		last = frame->count;
+
+	lost = 0;
+	missing = 0;
+
+	for (idx = first; idx < last; idx++) {
+		if (frame->seen[idx / 8] & (1 << (idx % 8)))
+			continue;
+
+		missing = idx;
+		lost++;
+	}
+
+	if (lost != 1)
+		return;
+
+	memcpy(rebuild, frame->parity + group * frame->fragsize,
+	    frame->fragsize);
+
+	for (idx = first; idx < last; idx++) {
+		if (idx == missing)
+			continue;
+
+		offset = idx * frame->fragsize;
+		length = frame->size - offset;
+
+		if (length > frame->fragsize)
+			length = frame->fragsize;
+
+		for (byte = 0; byte < length; byte++)
+			rebuild[byte] ^= frame->data[offset + byte];
+	}
+
+	offset = missing * frame->fragsize;
+	length = frame->size - offset;
+
+	if (length > frame->fragsize)
+		length = frame->fragsize;
+
+	memcpy(frame->data + offset, rebuild, length);
+
+	frame->seen[missing / 8] |= 1 << (missing % 8);
+	frame->got++;
+
+	/* We still lost it, our peer should slow down all the same. */
+	report_nacks++;
+
+	if (frame->got == frame->count)
+		entry->done = 1;
 }
 
 /*
@@ -1551,7 +1985,8 @@ video_rx_nack(struct vigil_video_link *link, struct video_entry *entry)
 	if (entry->slot != -1) {
 		frame = &pool->frames[entry->slot];
 
-		if ((link->now - frame->last) >= VIDEO_TAIL_WAIT)
+		if ((link->now - frame->last) >=
+		    video_rtt_wait(VIDEO_TAIL_WAIT, video_rtt() / 8))
 			end = frame->count;
 		else
 			end = frame->highest;
@@ -1577,7 +2012,8 @@ video_rx_nack(struct vigil_video_link *link, struct video_entry *entry)
 
 	/* We report what we missed, not how often we asked for it. */
 	entry->asked = 1;
-	entry->next_nack = link->now + VIDEO_NACK_INTERVAL;
+	entry->next_nack = link->now +
+	    video_rtt_wait(VIDEO_NACK_INTERVAL, video_rtt() + VIDEO_RTT_MARGIN);
 	report_nacks += fresh;
 
 	nack.frame = htonl(entry->id);
@@ -1608,6 +2044,69 @@ video_rx_nack(struct vigil_video_link *link, struct video_entry *entry)
 }
 
 /*
+ * The round trip to our peer, the longest of what we and it measured,
+ * 0 if neither of us did.
+ */
+static u_int64_t
+video_rtt(void)
+{
+	if (peer_rtt > rtt)
+		return (peer_rtt);
+
+	return (rtt);
+}
+
+/*
+ * Our peer asks for fragments of the given frame. The first time it does
+ * the time since we sent the frame is about a round trip, its tail wait
+ * aside.
+ */
+static void
+video_rtt_sample(u_int32_t id, u_int64_t now)
+{
+	u_int64_t		tail, sample;
+	struct video_sent	*s;
+
+	s = &stamps[id & (VIDEO_SENT - 1)];
+
+	if (s->id != id)
+		return;
+
+	if (s->nacked)
+		return;
+
+	s->nacked = 1;
+	tail = video_rtt_wait(VIDEO_TAIL_WAIT, video_rtt() / 8);
+
+	if (now - s->when <= tail)
+		return;
+
+	sample = now - s->when - tail;
+
+	rtt_last = sample;
+
+	if (rtt_min == 0 || sample < rtt_min)
+		rtt_min = sample;
+
+	if (rtt == 0)
+		rtt = sample;
+	else
+		rtt = (rtt * 7 + sample) / 8;
+}
+
+/*
+ * Returns the given milliseconds, or the scaled ones if those are longer.
+ */
+static u_int64_t
+video_rtt_wait(u_int64_t least, u_int64_t scaled)
+{
+	if (scaled > least)
+		return (scaled);
+
+	return (least);
+}
+
+/*
  * Release the given entry and the frame it held, if any.
  */
 static void
@@ -1624,6 +2123,9 @@ video_rx_release(struct video_entry *entry)
 	if (entry->slot != -1) {
 		free(pool->frames[entry->slot].data);
 		pool->frames[entry->slot].data = NULL;
+
+		free(pool->frames[entry->slot].parity);
+		pool->frames[entry->slot].parity = NULL;
 
 		if (vigil_ring_queue(&pool->free, entry->slot) == -1)
 			fatal("video rx free overflow");
@@ -1667,8 +2169,10 @@ video_pool_free(struct video_pool *pool)
 	if (pool == NULL)
 		return;
 
-	for (idx = 0; idx < VIDEO_FRAMES; idx++)
+	for (idx = 0; idx < VIDEO_FRAMES; idx++) {
 		free(pool->frames[idx].data);
+		free(pool->frames[idx].parity);
+	}
 
 	free(pool);
 }

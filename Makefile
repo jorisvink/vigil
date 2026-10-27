@@ -65,7 +65,8 @@ TESTS=	tests/config_test \
 	tests/tunnel_test \
 	tests/grace_test \
 	tests/video_test \
-	tests/link_test
+	tests/link_test \
+	tests/video_path_test
 
 all:
 ifeq ("$(PLATFORM)", "host")

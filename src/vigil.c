@@ -103,7 +103,7 @@ static u_int64_t		next_rebind = 0;
 static const char		*datadir_run = NULL;
 
 /* The Gospel configuration the event loop should pick up, if any. */
-static struct vigil_gospel	*volatile gospel = NULL;
+static struct vigil_gospel	*gospel = NULL;
 
 /* Our wakeup pipe, created by the first run and never closed. */
 static volatile int		wake[2] = { -1, -1 };
