@@ -22,12 +22,14 @@
  * pointing the apps at it:
  *
  *	$ ./tests/pong 4500 <64 hex characters secret> [shroud] [mtu <n>]
+ *	    [probe <n>]
  *
  * The peer address is learned from authenticated packets.
  *
  * Graces are handled the way sanctum handles them: heartbeats are
  * logged and MTU probes are acked, but only up to the given mtu which
- * simulates the path MTU between us and our peer.
+ * simulates the path MTU between us and our peer. With probe we send
+ * an MTU probe of that size on every heartbeat until our peer acks it.
  */
 
 #include <sys/types.h>
@@ -55,6 +57,7 @@ static void	usage(void) __attribute__((noreturn));
 static void	fatal(const char *, ...) __attribute__((noreturn))
 		    __attribute__((format (printf, 1, 2)));
 
+static void		pong_probe(void);
 static void		pong_icmp(struct kyrka_packet *);
 static void		pong_grace(struct kyrka_packet *);
 static u_int16_t	pong_csum(const u_int8_t *, size_t);
@@ -79,11 +82,16 @@ static u_int64_t		answered = 0;
 /* The largest MTU probe we ack. */
 static u_int16_t		path_mtu = 1500;
 
+/* The MTU probe we send, and if our peer acked it. */
+static u_int16_t		probe_size = 0;
+static int			probe_acked = 0;
+
 static void
 usage(void)
 {
 	fprintf(stderr,
-	    "usage: pong <port> <secret-hex> [shroud] [mtu <n>]\n");
+	    "usage: pong <port> <secret-hex> [shroud] [mtu <n>] "
+	    "[probe <n>]\n");
 	exit(1);
 }
 
@@ -109,6 +117,8 @@ main(int argc, char **argv)
 			shroud = 1;
 		} else if (!strcmp(argv[idx], "mtu") && idx + 1 < argc) {
 			path_mtu = atoi(argv[++idx]);
+		} else if (!strcmp(argv[idx], "probe") && idx + 1 < argc) {
+			probe_size = atoi(argv[++idx]);
 		} else {
 			usage();
 		}
@@ -278,6 +288,9 @@ pong_grace(struct kyrka_packet *in)
 	switch (hdr[0]) {
 	case 1:
 		printf("grace heartbeat\n");
+
+		if (probe_size != 0 && probe_acked == 0)
+			pong_probe();
 		break;
 	case 2:
 		if (in->length < sizeof(hdr) || hdr[1] != in->length)
@@ -304,12 +317,48 @@ pong_grace(struct kyrka_packet *in)
 			    kyrka_last_error(ctx));
 		}
 		break;
+	case 3:
+		if (in->length < sizeof(hdr))
+			return;
+
+		printf("grace mtu ack %u\n", hdr[1]);
+		probe_acked = 1;
+		break;
 	default:
 		printf("grace unknown type %u\n", hdr[0]);
 		break;
 	}
 
 	fflush(stdout);
+}
+
+/*
+ * Send our peer an MTU probe of probe_size, padded to that size.
+ */
+static void
+pong_probe(void)
+{
+	struct kyrka_packet	pkt;
+	size_t			len;
+	u_int16_t		*out;
+
+	out = kyrka_packet_databuf(ctx, &pkt, &len);
+	if (out == NULL)
+		fatal("kyrka_packet_databuf");
+
+	if (probe_size > len)
+		fatal("probe of %u does not fit", probe_size);
+
+	memset(out, 0, probe_size);
+	out[0] = 2;
+	out[1] = probe_size;
+
+	pkt.length = probe_size;
+	pkt.type = KYRKA_PACKET_TYPE_GRACE;
+	pkt.shroud = KYRKA_PACKET_SHROUD_PEER;
+
+	if (kyrka_heaven_input(ctx, &pkt) == -1)
+		printf("kyrka_heaven_input: %d\n", kyrka_last_error(ctx));
 }
 
 /*

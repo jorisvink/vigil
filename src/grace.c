@@ -161,8 +161,7 @@ vigil_grace_input(struct vigil_peer *peer, struct sockaddr_in *from,
 
 		mtu = data;
 
-		if (mtu->size < VIGIL_GRACE_MTU_MIN ||
-		    mtu->size > vigil->config->mtu) {
+		if (mtu->size < VIGIL_GRACE_MTU_MIN) {
 			vigil_log(LOG_NOTICE,
 			    "[peer=%02x] sent an MTU grace with an invalid "
 			    "size (%u)", peer->id, mtu->size);
@@ -170,8 +169,15 @@ vigil_grace_input(struct vigil_peer *peer, struct sockaddr_in *from,
 		}
 
 		if (grace->type == VIGIL_GRACE_TYPE_MTU_PROBE) {
-			grace_mtu_ack(peer, mtu->size);
+			grace_mtu_ack(peer, MIN(mtu->size, vigil->config->mtu));
 			break;
+		}
+
+		if (mtu->size > vigil->config->mtu) {
+			vigil_log(LOG_NOTICE,
+			    "[peer=%02x] sent an MTU grace ack with an invalid "
+			    "size (%u)", peer->id, mtu->size);
+			return;
 		}
 
 		if (vigil_inet_match(from, &peer->addr))

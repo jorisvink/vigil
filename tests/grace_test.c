@@ -23,6 +23,9 @@
  *	  the largest probe that fits the path.
  *	- a packet with DF set that is too large for that MTU is answered
  *	  with an icmp fragmentation needed carrying that MTU.
+ *	- an MTU probe from pong larger than our MTU is acked with our MTU,
+ *	  so a peer with a larger MTU settles on ours instead of a smaller
+ *	  size it probes later.
  */
 
 #include <sys/types.h>
@@ -40,6 +43,7 @@
 
 #define TEST_PORT	"45998"
 #define TEST_MTU	1202
+#define TEST_PROBE	"1440"
 #define TEST_SECRET	"0f1e2d3c4b5a69788796a5b4c3d2e1f0" \
 			"00112233445566778899aabbccddeeff"
 
@@ -63,6 +67,7 @@ static int	result = -1;
 static u_int64_t	run_id = 0;
 static int	heartbeats = 0;
 static int	probes = 0;
+static int	acked = 0;
 
 int
 main(void)
@@ -87,7 +92,7 @@ main(void)
 			exit(1);
 
 		execl("./tests/pong", "pong", TEST_PORT, TEST_SECRET,
-		    "mtu", "1300", NULL);
+		    "mtu", "1300", "probe", TEST_PROBE, NULL);
 		exit(1);
 	}
 
@@ -135,7 +140,16 @@ main(void)
 		ok = 0;
 	}
 
-	test_pong_output();
+	for (idx = 0; idx < 20 && acked == 0; idx++) {
+		test_pong_output();
+		(void)poll(NULL, 0, 500);
+	}
+
+	if (ok && acked != VIGIL_MTU_DEFAULT) {
+		printf("FAIL pong its probe of %s was acked with %d\n",
+		    TEST_PROBE, acked);
+		ok = 0;
+	}
 
 	if (ok && heartbeats < 2) {
 		printf("FAIL pong saw %d heartbeats\n", heartbeats);
@@ -208,6 +222,9 @@ test_pong_output(void)
 
 	for (p = buf; (p = strstr(p, "grace mtu probe")) != NULL; p++)
 		probes++;
+
+	if ((p = strstr(buf, "grace mtu ack ")) != NULL)
+		acked = atoi(p + strlen("grace mtu ack "));
 }
 
 /*
