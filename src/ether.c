@@ -56,6 +56,9 @@
 #define ETHER_HB_INTERVAL	(5 * 1000)
 #define ETHER_HB_BURST_TIME	(15 * 1000)
 
+/* How long we allow acks coming back for a probe we send. */
+#define ETHER_DISC_ACK_WAIT	(10 * 1000)
+
 /*
  * An ARP packet.
  */
@@ -84,6 +87,8 @@ static void	ether_heartbeat_local(struct vigil_peer *,
 static void	ether_heartbeat_recv(struct vigil_peer *, const u_int8_t *,
 		    size_t);
 
+static int	ether_discovery_probed(struct vigil_peer *,
+		    const struct sockaddr_in *);
 static void	ether_discovery_probe(struct vigil_peer *, u_int32_t,
 		    u_int16_t);
 static void	ether_discovery_send(struct vigil_peer *, u_int16_t,
@@ -308,10 +313,10 @@ vigil_ether_input(struct vigil_peer *peer, struct sockaddr_in *from,
 		return;
 	case VIGIL_ETHER_TYPE_DISC_PROBE:
 		ether_discovery_send(peer, VIGIL_ETHER_TYPE_DISC_ACK, from);
-		vigil_peer_local(peer, from);
 		return;
 	case VIGIL_ETHER_TYPE_DISC_ACK:
-		vigil_peer_local(peer, from);
+		if (ether_discovery_probed(peer, from))
+			vigil_peer_local(peer, from);
 		return;
 	default:
 		return;
@@ -784,6 +789,9 @@ ether_heartbeat_recv(struct vigil_peer *peer, const u_int8_t *data,
 		return;
 	}
 
+	peer->local_probed = vigil->now;
+	memset(peer->local_probes, 0, sizeof(peer->local_probes));
+
 	for (idx = 0; idx < VIGIL_ETHER_HB_IPV4_MAX; idx++) {
 		if (hb.ips[idx] == 0)
 			break;
@@ -824,6 +832,7 @@ ether_heartbeat_recv(struct vigil_peer *peer, const u_int8_t *data,
 static void
 ether_discovery_probe(struct vigil_peer *peer, u_int32_t ip, u_int16_t port)
 {
+	int			idx;
 	struct sockaddr_in	sin;
 
 	PRECOND(peer != NULL);
@@ -839,7 +848,42 @@ ether_discovery_probe(struct vigil_peer *peer, u_int32_t ip, u_int16_t port)
 	sin.sin_port = port;
 	sin.sin_addr.s_addr = ip;
 
+	for (idx = 0; idx < VIGIL_ETHER_HB_IPV4_MAX; idx++) {
+		if (peer->local_probes[idx].sin_port == 0)
+			break;
+	}
+
+	VERIFY(idx < VIGIL_ETHER_HB_IPV4_MAX);
+	memcpy(&peer->local_probes[idx], &sin, sizeof(sin));
+
 	ether_discovery_send(peer, VIGIL_ETHER_TYPE_DISC_PROBE, &sin);
+}
+
+/*
+ * Returns 1 if we recently sent a discovery probe to the given address.
+ */
+static int
+ether_discovery_probed(struct vigil_peer *peer, const struct sockaddr_in *from)
+{
+	int		idx;
+
+	PRECOND(peer != NULL);
+	PRECOND(from != NULL);
+
+	if ((vigil->now - peer->local_probed) >= ETHER_DISC_ACK_WAIT)
+		return (0);
+
+	for (idx = 0; idx < VIGIL_ETHER_HB_IPV4_MAX; idx++) {
+		if (peer->local_probes[idx].sin_port == 0)
+			break;
+
+		if (peer->local_probes[idx].sin_addr.s_addr ==
+		    from->sin_addr.s_addr &&
+		    peer->local_probes[idx].sin_port == from->sin_port)
+			return (1);
+	}
+
+	return (0);
 }
 
 /*

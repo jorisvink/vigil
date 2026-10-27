@@ -445,6 +445,9 @@ struct vigil_peer {
 	u_int64_t			p2p_verify;
 	struct sockaddr_in		p2p_failed;
 
+	u_int64_t			local_probed;
+	struct sockaddr_in		local_probes[VIGIL_ETHER_HB_IPV4_MAX];
+
 	struct vigil_cathedral		cathedral;
 	u_int64_t			cathedral_update;
 

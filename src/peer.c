@@ -939,8 +939,8 @@ vigil_peer_poke(void)
 }
 
 /*
- * Our peer answered us on a local address found via tier6 local
- * discovery, it is authenticated so we move the tunnel there.
+ * Our peer answered one of our local discovery probes, move the tunnel
+ * to the address it answered from.
  */
 void
 vigil_peer_local(struct vigil_peer *peer, struct sockaddr_in *sin)
@@ -958,12 +958,16 @@ vigil_peer_local(struct vigil_peer *peer, struct sockaddr_in *sin)
 	if (vigil_inet_match(sin, &peer->addr))
 		return;
 
+	if (vigil->now < peer->p2p_retry &&
+	    vigil_inet_match(sin, &peer->p2p_failed))
+		return;
+
 	memcpy(&peer->addr, sin, sizeof(*sin));
 
 	if (kyrka_p2p_active(peer->ctx, 1) == -1)
 		fatal("failed to set p2p status");
 
-	peer->p2p_verify = 0;
+	peer->p2p_verify = vigil->now + VIGIL_PEER_P2P_VERIFY;
 	peer->flags |= VIGIL_PEER_FLAG_P2P | VIGIL_PEER_FLAG_LOCAL;
 
 	vigil_log(LOG_INFO, "[peer=%02x] local discovery %s",
