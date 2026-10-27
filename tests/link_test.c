@@ -14,23 +14,6 @@
  * OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
  */
 
-/*
- * A test of the link. We are the app, a forked child is the provider
- * and a socketpair carries a batch per request and per reply. We
- * check that:
- *
- *	- a wrong secret never gets keys, the right one does.
- *	- a request of VIGIL_CONFIG_MAX arrives intact.
- *	- a reply of VIGIL_LINK_MESSAGE_MAX arrives intact.
- *	- the plaintext never shows up on the socketpair.
- *	- a tampered request is not delivered.
- *	- a replayed request is not delivered.
- *	- the link rekeys when pumped past the SA soft and hard limits, comes
- *	  back after being idle past them and after the provider reopened.
- *
- * Time is skewed for both of us through our own clock_gettime().
- */
-
 #include <sys/types.h>
 #include <sys/mman.h>
 #include <sys/socket.h>
