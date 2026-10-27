@@ -53,6 +53,11 @@ class LogPage extends StatelessWidget {
                 child: SelectableText.rich(
                   TextSpan(
                     children: [
+                      const TextSpan(
+                        text: r'$ ',
+                        style: TextStyle(color: Palette.amber),
+                      ),
+                      const TextSpan(text: 'tail -f /vigil/log\n'),
                       for (final l in log) ...[
                         TextSpan(
                           text: '${l.when}  ',
@@ -60,10 +65,6 @@ class LogPage extends StatelessWidget {
                         ),
                         TextSpan(text: '${l.line}\n'),
                       ],
-                      const TextSpan(
-                        text: r'$ ',
-                        style: TextStyle(color: Palette.amber),
-                      ),
                       const TextSpan(
                         text: '█',
                         style: TextStyle(color: Palette.amber),
