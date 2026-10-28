@@ -36,10 +36,10 @@ I rewrote a bunch of code the LLM suggested as well as it was not
 up-to-par with what I consider good code.
 
 I know nothing about app development, I am an old unix neckbeard who
-lives in dark moody terminal, so this was somewhat of a benchmark on how
-quicky and correctly I could get something like this off the ground.
-The results are staggering and I think LLM-assisted development is the
-way forward for projects like this.
+hacks on COMSEC devices from a dark terminal, so this was somewhat of
+a benchmark on how quicky and correctly I could get something like this
+off the ground. The results are staggering and I think LLM-assisted
+development is the way forward for projects like this.
 
 I will continue to refuse LLM written code for security critical pieces
 of software such as Sanctum and libkyrka. I strongly believe that those
