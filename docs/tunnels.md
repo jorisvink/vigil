@@ -61,13 +61,29 @@ are behind NAT. The cathedral tells each side the public address of the
 other. Both sides then send heartbeats to each other more often for a
 while to open up a path through their NAT.
 
-A direct path has 30 seconds to prove that it works. If no answer comes
-back over it in time, Vigil goes back to sending through the cathedral.
-That path is not tried again for 30 minutes.
+The cathedral only hands out these addresses once a tunnel has been up
+for about 15 seconds. Until then, traffic is relayed.
 
-If both devices share the same public address, Vigil always relays
-through the cathedral. Many routers cannot send traffic back into their
-own network.
+A direct path has to prove that it works. A tunnel sends a small probe
+over it every second, and the path works once the peer answers one of
+those probes over that same path. A call or chat counts the path as
+working once something from the peer arrives over it. Tunnels and chats
+give a new path 30 seconds, calls give it 10 seconds.
+
+If the path does not work in time, Vigil goes back to sending through
+the cathedral. The path is not tried again for 30 seconds. Each time it
+fails again that wait doubles, up to 30 minutes. A path that works or a
+network change starts the wait over.
+
+When the peer reaches us over a direct path while we still relay, we
+move to that path as well. In calls and chats it also works the other
+way around. When the peer reaches us through the cathedral while we are
+on a direct path, the peer cannot use that path, and we go back to the
+cathedral too.
+
+If both devices share the same public address, calls and chats always
+relay through the cathedral. Many routers cannot send traffic back into
+their own network. Tunnels do the same, unless tier6 is on, see below.
 
 When the cathedral relays, it only forwards encrypted packets. It cannot
 read or change them. Direct paths can be turned off in the configuration
@@ -97,11 +113,32 @@ With tier6 turned on, the tunnels carry ethernet frames instead of IP
 packets. This allows talking to the tier6 daemon, which builds a layer 2
 network. The key handling is the same as in the other modes.
 
+When two tier6 peers share the same public address, they look for each
+other on their local networks. Each side sends the other its local IPv4
+addresses inside the tunnel. The other side then sends a discovery probe
+to each of those addresses. It only moves the tunnel to an address that
+answered one of its own probes. These probes travel under the session
+keys like everything else.
+
+## Commixtion
+
+With `cathedral_commixtion` turned on, relayed traffic does not go from
+the cathedral straight to the peer. It travels through two cathedrals of
+the federation first. This makes it harder to tie the two ends of a
+tunnel together by watching a single cathedral.
+
+Commixtion requires shroud and turns off direct paths, so all traffic is
+relayed. Calls and chats use it as well when the gospel configuration
+has it turned on.
+
 ## Gospel mode
 
-A gospel configuration does not create a VPN interface at all. It is only
-used for calls and messages. It can run on its own, or next to a normal
-tunnel. See [gospel.md](gospel.md).
+A gospel configuration is only used for calls and messages. It can run
+on its own, or next to a normal tunnel. See [gospel.md](gospel.md).
+
+When it runs on its own, Vigil still creates a VPN interface so the
+system keeps it running. That interface has a single local address and
+no routes, so no traffic goes through it.
 
 When it runs next to a tunnel that sends all traffic through the VPN,
 the route to the gospel cathedral is left out of the tunnel. Calls and

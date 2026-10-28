@@ -58,7 +58,7 @@ zeros and then deleted.
 ## Editing a configuration
 
 A few options can be changed in the app: the name, DNS servers, routes,
-p2p and tier6. Keys cannot be changed.
+p2p, tier6 and commixtion. Keys cannot be changed.
 
 An edit works on the decrypted configuration in the core. The core
 replaces only the allowed options and then parses the result as if it
@@ -100,6 +100,24 @@ two seconds for it to let go. The other thread is then blocked from ever
 using libkyrka again. This makes sure no code keeps using a context that
 was just wiped.
 
+## Between the app and the extension
+
+On iOS the app and the packet tunnel extension are separate processes.
+They talk through messages that iOS passes from one to the other. These
+carry chat messages, call signaling and the tunnel status.
+
+Vigil does not hand these messages to iOS in the clear. Both sides run a
+libkyrka tunnel between them and send the messages through it, so they
+are encrypted and authenticated like any other tunnel traffic.
+
+That tunnel uses a random 256-bit secret. It is stored in the shared
+keychain with "after first unlock, this device only", and it is never
+put in a message. The app creates a new secret when you connect after
+the extension stopped cleanly.
+
+Android does not need this, the app and the VPN service run in the same
+process.
+
 ## Other files
 
 When a cathedral tells the device about other cathedrals in its
@@ -112,6 +130,8 @@ created with permissions that only allow the app to read it.
 - `src/remembrance.c` stores the cathedral list.
 - `src/config.c` creates summaries and applies edits.
 - `src/vigil.c` holds the libkyrka lock and the emergency erase.
+- `src/link.c` and `app/ios/Shared/TunnelLink.swift` run the link
+  between the iOS app and its extension.
 - `app/ios/Shared/TunnelKeychain.swift` stores configurations on iOS.
 - `app/android/app/src/main/kotlin/se/sanctorum/vigil/TunnelStore.kt`
   stores configurations on Android.

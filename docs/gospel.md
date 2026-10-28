@@ -11,8 +11,9 @@ has the same keys as a cathedral configuration: a KEK, a cathedral
 secret, a COSK, a flock and a device id. There can only be one gospel
 configuration on a device.
 
-A gospel configuration can run on its own. In that case no VPN interface
-is created at all. It can also run next to a normal tunnel. It then
+A gospel configuration can run on its own. In that case the VPN interface
+has no routes and carries no traffic, it only keeps Vigil running. It can
+also run next to a normal tunnel. It then
 shares the core with that tunnel but uses its own sockets, contexts and
 keys.
 
