@@ -784,6 +784,7 @@ peer_heaven_input(struct kyrka_packet *pkt, u_int64_t seq, void *udata)
 	if (vigil->config->flags & VIGIL_CONFIG_FLAG_TIER6) {
 		if (peer->p2p_verify != 0 &&
 		    vigil_inet_match(&sender, &peer->addr)) {
+			peer->p2p_retry = 0;
 			peer->p2p_verify = 0;
 			peer->p2p_backoff = 0;
 		}
@@ -1242,6 +1243,7 @@ peer_p2p_follow(struct vigil_peer *peer)
 	peer_holepunch(peer);
 
 	peer->p2p_probe = 0;
+	peer->p2p_retry = 0;
 	peer->p2p_verify = vigil->now + VIGIL_PEER_P2P_VERIFY;
 
 	vigil_log(LOG_INFO, "[peer=%02x] p2p via %s, following our peer",

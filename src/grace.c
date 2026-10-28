@@ -184,6 +184,7 @@ vigil_grace_input(struct vigil_peer *peer, struct sockaddr_in *from,
 
 		if (peer->p2p_verify != 0 &&
 		    vigil_inet_match(from, &peer->addr)) {
+			peer->p2p_retry = 0;
 			peer->p2p_verify = 0;
 			peer->p2p_backoff = 0;
 		}

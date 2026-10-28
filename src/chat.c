@@ -64,9 +64,12 @@
 #define CHAT_NOTIFY_INTERVAL		(5 * 1000)
 
 /* Time between p2p path check and failure. */
-#define CHAT_P2P_VERIFY			(10 * 1000)
+#define CHAT_P2P_VERIFY			(30 * 1000)
 #define CHAT_P2P_RETRY			(30 * 1000)
 #define CHAT_P2P_RETRY_MAX		(1800 * 1000)
+
+/* Time without p2p traffic while our peer reaches us via the cathedral. */
+#define CHAT_P2P_SILENT			(1 * 1000)
 
 /* Time we heartbeat every second after we moved to a p2p path. */
 #define CHAT_HOLEPUNCH			(10 * 1000)
@@ -283,6 +286,7 @@ struct chat_tunnel {
 
 	u_int64_t		msgid;
 	u_int64_t		online;
+	u_int64_t		p2p_rx;
 	u_int64_t		last_rx;
 	u_int64_t		holepunch;
 	u_int64_t		local_uid;
@@ -417,9 +421,12 @@ static void	chat_cathedral_alive(struct chat_tunnel *);
 static void	chat_cathedral_check(struct chat_tunnel *);
 static void	chat_cathedral_send(struct kyrka_packet *, u_int64_t, void *);
 
+static void	chat_p2p_fail(struct chat_tunnel *);
+static void	chat_p2p_follow(struct chat_tunnel *);
+static void	chat_p2p_abandon(struct chat_tunnel *);
+
 static void	chat_token_ack(u_int64_t);
 static int	chat_nick_valid(const char *);
-static void	chat_p2p_follow(struct chat_tunnel *);
 static int	chat_signal_check(struct chat_peer *);
 static void	chat_utf8_normalize(u_int8_t *, size_t);
 static void	chat_member_report(struct chat_peer *, u_int16_t, int);
@@ -1981,22 +1988,7 @@ chat_tunnel_manage(struct chat_tunnel *tun)
 	if (tun->p2p_verify != 0 && vigil->now >= tun->p2p_verify) {
 		vigil_log(LOG_INFO, "[chat] %02x p2p via %s did not work",
 		    tun->peer->id, vigil_address(&tun->addr));
-
-		if (tun->p2p_backoff == 0)
-			tun->p2p_backoff = CHAT_P2P_RETRY;
-		else
-			tun->p2p_backoff *= 2;
-
-		if (tun->p2p_backoff > CHAT_P2P_RETRY_MAX)
-			tun->p2p_backoff = CHAT_P2P_RETRY_MAX;
-
-		tun->p2p_verify = 0;
-		tun->p2p_retry = vigil->now + tun->p2p_backoff;
-		memcpy(&tun->p2p_failed, &tun->addr, sizeof(tun->addr));
-		memcpy(&tun->addr, &tun->cathedral.addr,
-		    sizeof(tun->cathedral.addr));
-
-		(void)kyrka_p2p_active(tun->ctx, 0);
+		chat_p2p_fail(tun);
 	}
 
 	if (vigil->now >= tun->next_notify) {
@@ -2226,6 +2218,7 @@ chat_tunnel_event(KYRKA *ctx, union kyrka_event *evt, void *udata)
 		} else {
 			vigil_log(LOG_INFO, "[chat] %02x p2p via %s",
 			    tun->peer->id, vigil_address(&sin));
+			tun->p2p_rx = vigil->now;
 			tun->p2p_verify = vigil->now + CHAT_P2P_VERIFY;
 			tun->holepunch = vigil->now + CHAT_HOLEPUNCH;
 			tun->next_heartbeat = vigil->now;
@@ -2261,7 +2254,9 @@ chat_heaven_input(struct kyrka_packet *pkt, u_int64_t seq, void *udata)
 	tun = udata;
 	tun->last_rx = vigil->now;
 
-	if (!vigil_inet_match(&tun->from, &tun->cathedral.addr))
+	if (vigil_inet_match(&tun->from, &tun->cathedral.addr))
+		chat_p2p_abandon(tun);
+	else
 		chat_p2p_follow(tun);
 
 	if (pkt->type != KYRKA_PACKET_TYPE_IP)
@@ -2386,10 +2381,12 @@ chat_p2p_follow(struct chat_tunnel *tun)
 	PRECOND(tun->ctx != NULL);
 
 	if (vigil_inet_match(&tun->from, &tun->addr)) {
-		if (tun->p2p_verify != 0) {
-			tun->p2p_verify = 0;
+		if (tun->p2p_verify != 0)
 			tun->p2p_backoff = 0;
-		}
+
+		tun->p2p_rx = vigil->now;
+		tun->p2p_retry = 0;
+		tun->p2p_verify = 0;
 		return;
 	}
 
@@ -2407,10 +2404,65 @@ chat_p2p_follow(struct chat_tunnel *tun)
 
 	memcpy(&tun->addr, &tun->from, sizeof(tun->from));
 
+	tun->p2p_rx = vigil->now;
+	tun->p2p_retry = 0;
 	tun->p2p_verify = vigil->now + CHAT_P2P_VERIFY;
 	tun->holepunch = vigil->now + CHAT_HOLEPUNCH;
 	tun->next_heartbeat = vigil->now;
 	(void)kyrka_p2p_active(tun->ctx, 1);
+}
+
+/*
+ * Our peer reaches us via the cathedral. If we did not hear from it over
+ * p2p for a while it cannot use our p2p path, so we go back to the cathedral.
+ */
+static void
+chat_p2p_abandon(struct chat_tunnel *tun)
+{
+	PRECOND(tun != NULL);
+	PRECOND(tun->ctx != NULL);
+
+	if (vigil_inet_match(&tun->addr, &tun->cathedral.addr))
+		return;
+
+	/* Our peer may not know about this path yet. */
+	if (tun->p2p_verify != 0)
+		return;
+
+	if ((vigil->now - tun->p2p_rx) < CHAT_P2P_SILENT)
+		return;
+
+	vigil_log(LOG_INFO, "[chat] %02x p2p via %s went silent",
+	    tun->peer->id, vigil_address(&tun->addr));
+
+	chat_p2p_fail(tun);
+}
+
+/*
+ * The p2p path we are on does not work, go back to the cathedral and
+ * do not try it again for a while.
+ */
+static void
+chat_p2p_fail(struct chat_tunnel *tun)
+{
+	PRECOND(tun != NULL);
+	PRECOND(tun->ctx != NULL);
+
+	if (tun->p2p_backoff == 0)
+		tun->p2p_backoff = CHAT_P2P_RETRY;
+	else
+		tun->p2p_backoff *= 2;
+
+	if (tun->p2p_backoff > CHAT_P2P_RETRY_MAX)
+		tun->p2p_backoff = CHAT_P2P_RETRY_MAX;
+
+	tun->p2p_verify = 0;
+	tun->p2p_retry = vigil->now + tun->p2p_backoff;
+
+	memcpy(&tun->p2p_failed, &tun->addr, sizeof(tun->addr));
+	memcpy(&tun->addr, &tun->cathedral.addr, sizeof(tun->cathedral.addr));
+
+	(void)kyrka_p2p_active(tun->ctx, 0);
 }
 
 /*
