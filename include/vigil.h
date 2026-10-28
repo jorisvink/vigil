@@ -443,6 +443,8 @@ struct vigil_peer {
 	u_int64_t			p2p_probe;
 	u_int64_t			p2p_retry;
 	u_int64_t			p2p_verify;
+	u_int64_t			p2p_backoff;
+	struct sockaddr_in		p2p_peer;
 	struct sockaddr_in		p2p_failed;
 
 	u_int64_t			local_probed;

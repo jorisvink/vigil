@@ -51,6 +51,7 @@ static void	peer_cathedral_update(struct vigil_peer *);
 static void	peer_cathedral_config(struct vigil_peer *);
 
 static void	peer_p2p_check(struct vigil_peer *);
+static void	peer_p2p_follow(struct vigil_peer *);
 static void	peer_p2p_failed(struct vigil_peer *);
 
 static void	peer_kyrka_event(KYRKA *, union kyrka_event *, void *);
@@ -704,6 +705,11 @@ peer_kyrka_event(KYRKA *ctx, union kyrka_event *evt, void *udata)
 		if ((ip >> 24) == 127)
 			memcpy(&sin, &peer->cathedral.addr, sizeof(sin));
 
+		if (vigil_inet_match(&sin, &peer->cathedral.addr))
+			memset(&peer->p2p_peer, 0, sizeof(peer->p2p_peer));
+		else
+			memcpy(&peer->p2p_peer, &sin, sizeof(sin));
+
 		if (vigil->now < peer->p2p_retry &&
 		    vigil_inet_match(&sin, &peer->p2p_failed))
 			memcpy(&sin, &peer->cathedral.addr, sizeof(sin));
@@ -762,6 +768,9 @@ peer_heaven_input(struct kyrka_packet *pkt, u_int64_t seq, void *udata)
 	    vigil_inet_match(&sender, &peer->cathedral.addr))
 		peer->cathedral.last = vigil->now;
 
+	if (vigil->config->mode != VIGIL_MODE_TUNNEL)
+		peer_p2p_follow(peer);
+
 	if (pkt->type == KYRKA_PACKET_TYPE_GRACE) {
 		vigil_grace_input(peer, &sender, data, pkt->length);
 		return;
@@ -773,9 +782,6 @@ peer_heaven_input(struct kyrka_packet *pkt, u_int64_t seq, void *udata)
 	peer->rx_pkts++;
 
 	if (vigil->config->flags & VIGIL_CONFIG_FLAG_TIER6) {
-		if (vigil_inet_match(&sender, &peer->addr))
-			peer->p2p_verify = 0;
-
 		vigil_ether_input(peer, &sender, data, pkt->length);
 		return;
 	}
@@ -909,6 +915,8 @@ vigil_peer_rebind(void)
 		peer->io.fd = fd;
 		vigil_io_schedule(&peer->io);
 
+		peer->p2p_retry = 0;
+		peer->p2p_backoff = 0;
 		peer->cathedral_update = 0;
 
 		if (vigil->config->mode != VIGIL_MODE_TUNNEL &&
@@ -1107,7 +1115,7 @@ peer_relay(struct vigil_peer *peer)
 }
 
 /*
- * Check if the p2p path got one of our probes acked in time, if not
+ * Check if we heard from our peer over the p2p path in time, if not
  * we go back to relaying via the cathedral.
  */
 static void
@@ -1187,9 +1195,63 @@ peer_p2p_failed(struct vigil_peer *peer)
 	PRECOND(peer != NULL);
 	PRECOND(peer->flags & VIGIL_PEER_FLAG_P2P);
 
+	if (peer->p2p_backoff == 0)
+		peer->p2p_backoff = VIGIL_PEER_P2P_RETRY;
+	else
+		peer->p2p_backoff *= 2;
+
+	if (peer->p2p_backoff > VIGIL_PEER_P2P_RETRY_MAX)
+		peer->p2p_backoff = VIGIL_PEER_P2P_RETRY_MAX;
+
 	memcpy(&peer->p2p_failed, &peer->addr, sizeof(peer->addr));
-	peer->p2p_retry = vigil->now + VIGIL_PEER_P2P_RETRY;
+	peer->p2p_retry = vigil->now + peer->p2p_backoff;
 
 	vigil_grace_mtu_start(peer);
 	peer_relay(peer);
+}
+
+/*
+ * We got a packet from our peer, if we relay and it came from where the
+ * cathedral said our peer is we follow it there.
+ */
+static void
+peer_p2p_follow(struct vigil_peer *peer)
+{
+	PRECOND(peer != NULL);
+	PRECOND(vigil->config->mode != VIGIL_MODE_TUNNEL);
+
+	if (vigil_inet_match(&sender, &peer->addr)) {
+		if (peer->p2p_verify != 0) {
+			peer->p2p_verify = 0;
+			peer->p2p_backoff = 0;
+		}
+		return;
+	}
+
+	if (!(vigil->config->flags & VIGIL_CONFIG_FLAG_P2P))
+		return;
+
+	if (!vigil_inet_match(&peer->addr, &peer->cathedral.addr))
+		return;
+
+	if (peer->p2p_peer.sin_port == 0)
+		return;
+
+	if (!vigil_inet_match(&sender, &peer->p2p_peer))
+		return;
+
+	vigil_grace_mtu_start(peer);
+	memcpy(&peer->addr, &sender, sizeof(sender));
+
+	if (kyrka_p2p_active(peer->ctx, 1) == -1)
+		fatal("failed to set p2p status");
+
+	peer->flags |= VIGIL_PEER_FLAG_P2P;
+	peer_holepunch(peer);
+
+	peer->p2p_probe = 0;
+	peer->p2p_verify = vigil->now + VIGIL_PEER_P2P_VERIFY;
+
+	vigil_log(LOG_INFO, "[peer=%02x] p2p via %s, following our peer",
+	    peer->id, vigil_address(&peer->addr));
 }

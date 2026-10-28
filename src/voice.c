@@ -58,10 +58,11 @@
 /*
  * The milliseconds a new p2p path gets to prove it works, our peer may
  * only hear about it from the cathedral a notify interval after us.
- * A p2p path that failed is not tried again for VOICE_P2P_RETRY.
+ * A p2p path that failed is not tried again for at least VOICE_P2P_RETRY.
  */
 #define VOICE_P2P_VERIFY		(10 * 1000)
 #define VOICE_P2P_RETRY			(30 * 1000)
+#define VOICE_P2P_RETRY_MAX		(1800 * 1000)
 
 /*
  * The milliseconds we go without hearing from our peer over p2p while it
@@ -157,6 +158,7 @@ struct voice_session {
 	u_int64_t		p2p_rx;
 	u_int64_t		p2p_retry;
 	u_int64_t		p2p_verify;
+	u_int64_t		p2p_backoff;
 	u_int64_t		next_hangup;
 	u_int64_t		next_manage;
 	u_int64_t		next_notify;
@@ -1169,6 +1171,7 @@ voice_session_rebind(struct voice_session *s)
 
 	s->p2p_retry = 0;
 	s->p2p_verify = 0;
+	s->p2p_backoff = 0;
 	s->next_notify = 0;
 
 	if (!vigil_inet_match(&s->addr, &s->cathedral)) {
@@ -1923,6 +1926,9 @@ voice_p2p_follow(struct voice_session *s)
 	PRECOND(s->ctx != NULL);
 
 	if (vigil_inet_match(&s->from, &s->addr)) {
+		if (s->p2p_verify != 0)
+			s->p2p_backoff = 0;
+
 		s->p2p_rx = s->now;
 		s->p2p_retry = 0;
 		s->p2p_verify = 0;
@@ -1987,8 +1993,16 @@ voice_p2p_fail(struct voice_session *s)
 	PRECOND(s != NULL);
 	PRECOND(s->ctx != NULL);
 
+	if (s->p2p_backoff == 0)
+		s->p2p_backoff = VOICE_P2P_RETRY;
+	else
+		s->p2p_backoff *= 2;
+
+	if (s->p2p_backoff > VOICE_P2P_RETRY_MAX)
+		s->p2p_backoff = VOICE_P2P_RETRY_MAX;
+
 	s->p2p_verify = 0;
-	s->p2p_retry = s->now + VOICE_P2P_RETRY;
+	s->p2p_retry = s->now + s->p2p_backoff;
 
 	memcpy(&s->p2p_failed, &s->addr, sizeof(s->addr));
 	memcpy(&s->addr, &s->cathedral, sizeof(s->cathedral));

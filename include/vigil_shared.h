@@ -156,7 +156,8 @@
 #define VIGIL_PEER_P2P_VERIFY		(30 * 1000)
 
 /* The milliseconds before we try a p2p path that did not work again. */
-#define VIGIL_PEER_P2P_RETRY		(1800 * 1000)
+#define VIGIL_PEER_P2P_RETRY		(30 * 1000)
+#define VIGIL_PEER_P2P_RETRY_MAX	(1800 * 1000)
 
 /* Configuration flags. */
 #define VIGIL_CONFIG_FLAG_SHROUD	(1 << 0)

@@ -66,6 +66,11 @@
 /* Time between p2p path check and failure. */
 #define CHAT_P2P_VERIFY			(10 * 1000)
 #define CHAT_P2P_RETRY			(30 * 1000)
+#define CHAT_P2P_RETRY_MAX		(1800 * 1000)
+
+/* Time we heartbeat every second after we moved to a p2p path. */
+#define CHAT_HOLEPUNCH			(10 * 1000)
+#define CHAT_HOLEPUNCH_INTERVAL		(1 * 1000)
 
 /* Time the platform gets to store a message we just received. */
 #define CHAT_STORE_WAIT			(10 * 1000)
@@ -279,10 +284,12 @@ struct chat_tunnel {
 	u_int64_t		msgid;
 	u_int64_t		online;
 	u_int64_t		last_rx;
+	u_int64_t		holepunch;
 	u_int64_t		local_uid;
 	u_int64_t		p2p_retry;
 	u_int64_t		p2p_verify;
 	u_int64_t		remote_uid;
+	u_int64_t		p2p_backoff;
 	u_int64_t		next_manage;
 	u_int64_t		next_notify;
 	u_int64_t		next_heartbeat;
@@ -1975,8 +1982,16 @@ chat_tunnel_manage(struct chat_tunnel *tun)
 		vigil_log(LOG_INFO, "[chat] %02x p2p via %s did not work",
 		    tun->peer->id, vigil_address(&tun->addr));
 
+		if (tun->p2p_backoff == 0)
+			tun->p2p_backoff = CHAT_P2P_RETRY;
+		else
+			tun->p2p_backoff *= 2;
+
+		if (tun->p2p_backoff > CHAT_P2P_RETRY_MAX)
+			tun->p2p_backoff = CHAT_P2P_RETRY_MAX;
+
 		tun->p2p_verify = 0;
-		tun->p2p_retry = vigil->now + CHAT_P2P_RETRY;
+		tun->p2p_retry = vigil->now + tun->p2p_backoff;
 		memcpy(&tun->p2p_failed, &tun->addr, sizeof(tun->addr));
 		memcpy(&tun->addr, &tun->cathedral.addr,
 		    sizeof(tun->cathedral.addr));
@@ -2053,6 +2068,7 @@ chat_tunnel_rebind(struct chat_tunnel *tun)
 
 	tun->p2p_retry = 0;
 	tun->p2p_verify = 0;
+	tun->p2p_backoff = 0;
 	tun->next_notify = 0;
 
 	if (!vigil_inet_match(&tun->addr, &tun->cathedral.addr)) {
@@ -2211,6 +2227,8 @@ chat_tunnel_event(KYRKA *ctx, union kyrka_event *evt, void *udata)
 			vigil_log(LOG_INFO, "[chat] %02x p2p via %s",
 			    tun->peer->id, vigil_address(&sin));
 			tun->p2p_verify = vigil->now + CHAT_P2P_VERIFY;
+			tun->holepunch = vigil->now + CHAT_HOLEPUNCH;
+			tun->next_heartbeat = vigil->now;
 			(void)kyrka_p2p_active(tun->ctx, 1);
 		}
 		break;
@@ -2368,7 +2386,10 @@ chat_p2p_follow(struct chat_tunnel *tun)
 	PRECOND(tun->ctx != NULL);
 
 	if (vigil_inet_match(&tun->from, &tun->addr)) {
-		tun->p2p_verify = 0;
+		if (tun->p2p_verify != 0) {
+			tun->p2p_verify = 0;
+			tun->p2p_backoff = 0;
+		}
 		return;
 	}
 
@@ -2387,6 +2408,8 @@ chat_p2p_follow(struct chat_tunnel *tun)
 	memcpy(&tun->addr, &tun->from, sizeof(tun->from));
 
 	tun->p2p_verify = vigil->now + CHAT_P2P_VERIFY;
+	tun->holepunch = vigil->now + CHAT_HOLEPUNCH;
+	tun->next_heartbeat = vigil->now;
 	(void)kyrka_p2p_active(tun->ctx, 1);
 }
 
@@ -2453,7 +2476,13 @@ chat_frame_send(struct chat_tunnel *tun, struct chat_msg *msg)
 
 		tun->greeted = 1;
 		tun->typed = hb->typing;
-		tun->next_heartbeat = vigil->now + CHAT_HEARTBEAT;
+
+		if (vigil->now < tun->holepunch) {
+			tun->next_heartbeat = vigil->now +
+			    CHAT_HOLEPUNCH_INTERVAL;
+		} else {
+			tun->next_heartbeat = vigil->now + CHAT_HEARTBEAT;
+		}
 	}
 
 	pkt.length = sizeof(*frame);

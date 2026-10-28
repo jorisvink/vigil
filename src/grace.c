@@ -180,9 +180,6 @@ vigil_grace_input(struct vigil_peer *peer, struct sockaddr_in *from,
 			return;
 		}
 
-		if (vigil_inet_match(from, &peer->addr))
-			peer->p2p_verify = 0;
-
 		if (!(vigil->config->flags & VIGIL_CONFIG_FLAG_MTU_DISCOVERY))
 			break;
 

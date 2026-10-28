@@ -19,13 +19,14 @@
  *
  *	$ ./tests/chatter [-n nick] [-m peer:text] [-g group] [-G text]
  *	    [-i peer:file] [-I file] [-f peer:file] [-F file] [-o dir]
- *	    [-t peer] [-T] [-e count] [-x secs] [-l count] [-D datadir]
- *	    <gospel>
+ *	    [-t peer] [-T] [-O peer] [-e count] [-x secs] [-l count]
+ *	    [-D datadir] <gospel>
  *
  * With -m we send the text to the given peer, -m may be given more
  * than once. With -g we join the given group and with -G we send the
  * text to it once a member is online, -G may be given more than once.
  * With -t we keep typing to the given peer and with -T to our group.
+ * With -O we keep the chat with the given peer open.
  * With -i we send the image in the given file to the given peer and with
  * -I to our group, -f and -F do the same for any file. All of them may be
  * given more than once. Data we get is written to the directory given
@@ -108,13 +109,16 @@ static const char	*outdir = NULL;
 static long		typing_peer = 0;
 static int		typing_group = 0;
 
+/* Who we keep a chat open with. */
+static long		open_peer = 0;
+
 static void
 usage(void)
 {
 	fprintf(stderr, "usage: chatter [-n nick] [-m peer:text] [-g group] "
 	    "[-G text] [-i peer:file] [-I file] [-f peer:file] [-F file] "
-	    "[-o dir] [-t peer] [-T] [-e count] [-x secs] [-l count] "
-	    "[-D datadir] <gospel>\n");
+	    "[-o dir] [-t peer] [-T] [-O peer] [-e count] [-x secs] "
+	    "[-l count] [-D datadir] <gospel>\n");
 	exit(1);
 }
 
@@ -139,7 +143,7 @@ main(int argc, char **argv)
 	delivered = 0;
 
 	while ((ch = getopt(argc, argv,
-	    "D:e:f:F:g:G:i:I:l:m:n:o:t:Tx:")) != -1) {
+	    "D:e:f:F:g:G:i:I:l:m:n:o:O:t:Tx:")) != -1) {
 		switch (ch) {
 		case 'D':
 			datadir = optarg;
@@ -226,6 +230,14 @@ main(int argc, char **argv)
 		case 'T':
 			typing_group = 1;
 			break;
+		case 'O':
+			open_peer = strtol(optarg, &ep, 16);
+			if (*ep != '\0')
+				usage();
+			if (open_peer <= 0 ||
+			    open_peer >= KYRKA_PEERS_PER_FLOCK)
+				usage();
+			break;
 		case 'x':
 			quit = atoi(optarg);
 			break;
@@ -299,6 +311,9 @@ main(int argc, char **argv)
 
 				if (typing_peer != 0)
 					vigil_chat_typing(typing_peer, 1);
+
+				if (open_peer != 0)
+					vigil_chat_open(open_peer, 1);
 
 				if (typing_group)
 					vigil_chat_group_typing(1);
