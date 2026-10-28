@@ -34,8 +34,9 @@ static void	grace_heartbeat_answer(struct vigil_peer *);
 static void	grace_send(struct vigil_peer *, const void *, size_t, size_t);
 
 static void	grace_mtu_reset(struct vigil_peer *);
-static void	grace_mtu_ack(struct vigil_peer *, u_int16_t);
 static void	grace_mtu_probe(struct vigil_peer *, u_int16_t);
+static void	grace_mtu_ack(struct vigil_peer *, u_int16_t,
+		    struct sockaddr_in *);
 
 /* The well known path sizes, the first entry is our configured MTU. */
 static const u_int16_t	mtu_sizes[] = {
@@ -169,7 +170,8 @@ vigil_grace_input(struct vigil_peer *peer, struct sockaddr_in *from,
 		}
 
 		if (grace->type == VIGIL_GRACE_TYPE_MTU_PROBE) {
-			grace_mtu_ack(peer, MIN(mtu->size, vigil->config->mtu));
+			grace_mtu_ack(peer,
+			    MIN(mtu->size, vigil->config->mtu), from);
 			break;
 		}
 
@@ -180,7 +182,18 @@ vigil_grace_input(struct vigil_peer *peer, struct sockaddr_in *from,
 			return;
 		}
 
+		if (peer->p2p_verify != 0 &&
+		    vigil_inet_match(from, &peer->addr)) {
+			peer->p2p_verify = 0;
+			peer->p2p_backoff = 0;
+		}
+
 		if (!(vigil->config->flags & VIGIL_CONFIG_FLAG_MTU_DISCOVERY))
+			break;
+
+		/* This acks one of our p2p probes, not an MTU probe. */
+		if (mtu->size == VIGIL_GRACE_MTU_MIN &&
+		    peer->mtu_size != VIGIL_GRACE_MTU_MIN)
 			break;
 
 		if (peer->mtu != mtu->size) {
@@ -337,8 +350,7 @@ grace_mtu_probe(struct vigil_peer *peer, u_int16_t size)
 }
 
 /*
- * Without MTU discovery we still need to know if a new p2p path works,
- * so we send the smallest MTU probe every second until it is acked.
+ * Send the smallest MTU probe every second until a new p2p path is acked.
  * Sanctum acks these even if it does not do MTU discovery itself.
  */
 static void
@@ -347,9 +359,6 @@ grace_p2p_probe(struct vigil_peer *peer)
 	struct vigil_grace_mtu		probe;
 
 	PRECOND(peer != NULL);
-
-	if (vigil->config->flags & VIGIL_CONFIG_FLAG_MTU_DISCOVERY)
-		return;
 
 	if (peer->tx_spi == 0 || peer->p2p_verify == 0)
 		return;
@@ -365,20 +374,28 @@ grace_p2p_probe(struct vigil_peer *peer)
 }
 
 /*
- * Let our peer know its MTU probe of the given size arrived.
+ * Let our peer know its MTU probe of the given size arrived, the ack goes
+ * back to where the probe came from so it travels the same path.
  */
 static void
-grace_mtu_ack(struct vigil_peer *peer, u_int16_t size)
+grace_mtu_ack(struct vigil_peer *peer, u_int16_t size, struct sockaddr_in *to)
 {
 	struct vigil_grace_mtu		ack;
+	struct sockaddr_in		addr;
 
 	PRECOND(peer != NULL);
 	PRECOND(size >= VIGIL_GRACE_MTU_MIN && size <= vigil->config->mtu);
+	PRECOND(to != NULL);
 
 	ack.size = size;
 	ack.grace.type = VIGIL_GRACE_TYPE_MTU_ACK;
 
+	memcpy(&addr, &peer->addr, sizeof(addr));
+	memcpy(&peer->addr, to, sizeof(*to));
+
 	grace_send(peer, &ack, sizeof(ack), sizeof(ack));
+
+	memcpy(&peer->addr, &addr, sizeof(addr));
 }
 
 /*

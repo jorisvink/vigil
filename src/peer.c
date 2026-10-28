@@ -782,6 +782,12 @@ peer_heaven_input(struct kyrka_packet *pkt, u_int64_t seq, void *udata)
 	peer->rx_pkts++;
 
 	if (vigil->config->flags & VIGIL_CONFIG_FLAG_TIER6) {
+		if (peer->p2p_verify != 0 &&
+		    vigil_inet_match(&sender, &peer->addr)) {
+			peer->p2p_verify = 0;
+			peer->p2p_backoff = 0;
+		}
+
 		vigil_ether_input(peer, &sender, data, pkt->length);
 		return;
 	}
@@ -1115,7 +1121,7 @@ peer_relay(struct vigil_peer *peer)
 }
 
 /*
- * Check if we heard from our peer over the p2p path in time, if not
+ * Check if the p2p path got one of our probes acked in time, if not
  * we go back to relaying via the cathedral.
  */
 static void
@@ -1126,19 +1132,13 @@ peer_p2p_check(struct vigil_peer *peer)
 	if (peer->p2p_verify == 0 || vigil->now < peer->p2p_verify)
 		return;
 
-	/*
-	 * No keys means we could not probe either, get keys via the
-	 * cathedral first. It will tell us about the p2p path again.
-	 */
 	if (peer->tx_spi == 0) {
 		vigil_log(LOG_NOTICE, "[peer=%02x] no keys via p2p path %s",
 		    peer->id, vigil_address(&peer->addr));
-		peer_relay(peer);
-		return;
+	} else {
+		vigil_log(LOG_NOTICE, "[peer=%02x] p2p path %s is not working",
+		    peer->id, vigil_address(&peer->addr));
 	}
-
-	vigil_log(LOG_NOTICE, "[peer=%02x] p2p path %s is not working",
-	    peer->id, vigil_address(&peer->addr));
 
 	peer_p2p_failed(peer);
 }
@@ -1219,14 +1219,6 @@ peer_p2p_follow(struct vigil_peer *peer)
 {
 	PRECOND(peer != NULL);
 	PRECOND(vigil->config->mode != VIGIL_MODE_TUNNEL);
-
-	if (vigil_inet_match(&sender, &peer->addr)) {
-		if (peer->p2p_verify != 0) {
-			peer->p2p_verify = 0;
-			peer->p2p_backoff = 0;
-		}
-		return;
-	}
 
 	if (!(vigil->config->flags & VIGIL_CONFIG_FLAG_P2P))
 		return;
