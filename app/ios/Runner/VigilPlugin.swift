@@ -91,6 +91,11 @@ final class VigilPlugin: NSObject, FlutterPlugin, UIDocumentPickerDelegate,
     private static let coverTag = 0x76676c
 
     private func background() {
+        if var data = VigilVoice.shared.finish() {
+            data.resetBytes(in: 0..<data.count)
+        }
+
+        VigilVoice.shared.stop()
         ChatVault.shared.lock()
 
         if let chat = opened {
@@ -240,6 +245,8 @@ final class VigilPlugin: NSObject, FlutterPlugin, UIDocumentPickerDelegate,
             picker.delegate = self
             picking = (hex, result)
             top.present(picker, animated: true)
+        case "voiceRecord", "voiceSend", "voiceCancel", "voicePlay", "voiceStop":
+            voice(call, result: result)
         case "chats", "chat", "chatSend", "chatImageSend", "chatRead", "chatOpen", "chatTyping",
              "chatDelete", "chatSettings", "chatGroup":
             do {
@@ -606,6 +613,62 @@ final class VigilPlugin: NSObject, FlutterPlugin, UIDocumentPickerDelegate,
 
             TunnelLink.request(session, "gospel") { _ in }
             result("")
+        }
+    }
+
+    private func voice(_ call: FlutterMethodCall, result: @escaping FlutterResult) {
+        let args = call.arguments as? [String: Any] ?? [:]
+        let hex = (call.arguments as? String) ?? (args["peer"] as? String) ?? ""
+        let voice = VigilVoice.shared
+
+        do {
+            switch call.method {
+            case "voiceRecord":
+                guard ChatVault.chat(hex) != nil else {
+                    throw ChatVault.Failure(description: "There is no chat \(hex).")
+                }
+
+                let session = AVAudioSession.sharedInstance()
+
+                if session.recordPermission == .undetermined {
+                    session.requestRecordPermission { _ in }
+                    throw ChatVault.Failure(description: "Allow the microphone, then hold to record.")
+                }
+
+                guard session.recordPermission == .granted else {
+                    throw ChatVault.Failure(description: "Voice messages need access to the microphone.")
+                }
+
+                try voice.record()
+                result("")
+            case "voiceSend":
+                guard var data = voice.finish() else {
+                    throw ChatVault.Failure(description: "Nothing was recorded.")
+                }
+
+                defer { data.resetBytes(in: 0..<data.count) }
+                result(try dataSend(hex, media: "voice", name: VigilVoice.name(), data: data))
+            case "voiceCancel":
+                if var data = voice.finish() {
+                    data.resetBytes(in: 0..<data.count)
+                }
+                result("")
+            case "voicePlay":
+                guard let data = try ChatVault.shared.data(hex, file: args["data"] as? String ?? "") else {
+                    throw ChatVault.Failure(description: "That voice message is gone.")
+                }
+
+                try voice.play(data) { result("") }
+            default:
+                voice.stop()
+                result("")
+            }
+        } catch let error as ChatVault.Locked {
+            result(FlutterError(code: "locked", message: error.description, details: nil))
+        } catch let error as ChatVault.Failure {
+            result(FlutterError(code: "invalid", message: error.description, details: nil))
+        } catch {
+            result(FlutterError(code: "failed", message: "\(error)", details: nil))
         }
     }
 

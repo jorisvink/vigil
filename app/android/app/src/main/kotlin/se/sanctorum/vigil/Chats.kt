@@ -143,7 +143,7 @@ object Chats {
 
                         if (!foreground || opened != id) {
                             unseen[id] = (unseen[id] ?: 0) + 1
-                            notify(service, id, peer, nick, if (media == "image") "Image" else "File: $name", time)
+                            notify(service, id, peer, nick, summary(media, name), time)
                         }
                     }
                     "joined", "left" -> vault.deliver(
@@ -310,6 +310,13 @@ object Chats {
 
     private fun peer(id: String): Int? =
         if (id.length == 2) id.toInt(16).takeIf { it in 1..0xfe } else null
+
+    private fun summary(media: String, name: String): String =
+        when (media) {
+            "image" -> "Image"
+            "voice" -> "Voice message"
+            else -> "File: $name"
+        }
 
     private fun notify(
         service: VigilVpnService, id: String, peer: Int, nick: String, text: String, time: Long

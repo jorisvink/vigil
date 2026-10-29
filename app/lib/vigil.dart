@@ -783,6 +783,20 @@ class Vigil {
     await refresh();
   }
 
+  Future<void> recordVoice(String peer) => _invoke('voiceRecord', peer);
+
+  Future<void> sendVoice(String peer) async {
+    await _invoke('voiceSend', peer);
+    await refresh();
+  }
+
+  Future<void> cancelVoice() => _invoke('voiceCancel', null);
+
+  Future<void> playVoice(String peer, String data) =>
+      _invoke('voicePlay', {'peer': peer, 'data': data});
+
+  Future<void> stopVoice() => _invoke('voiceStop', null);
+
   Future<void> openData(String peer, String data, String name) =>
       _invoke('chatDataOpen', {'peer': peer, 'data': data, 'name': name});
 

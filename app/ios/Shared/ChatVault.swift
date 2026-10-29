@@ -410,7 +410,14 @@ final class ChatVault {
     }
 
     static func kind(_ media: String) -> Int32 {
-        media == "image" ? Int32(VIGIL_CHAT_DATA_IMAGE) : Int32(VIGIL_CHAT_DATA_FILE)
+        switch media {
+        case "image":
+            return Int32(VIGIL_CHAT_DATA_IMAGE)
+        case "voice":
+            return Int32(VIGIL_CHAT_DATA_VOICE)
+        default:
+            return Int32(VIGIL_CHAT_DATA_FILE)
+        }
     }
 
     private func exclusive(_ body: () throws -> Void) throws {

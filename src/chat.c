@@ -483,6 +483,8 @@ static int	chat_data_queue(int, u_int8_t, u_int64_t, int, const char *,
 
 static struct chat_msg	*chat_data_msg(u_int64_t, struct chat_blob *);
 
+static const char	*chat_data_kind_name(int);
+
 static void	chat_xfer_run(struct chat_tunnel *);
 static void	chat_xfer_free(struct chat_tunnel *);
 static void	chat_xfer_pump(struct chat_tunnel *);
@@ -3330,8 +3332,7 @@ chat_event_render(struct vigil_buf *buf, struct chat_event *evt, int first)
 	case CHAT_EVENT_DATA:
 		vigil_buf_appendf(buf, ",\"type\":\"data\",\"kind\":\"%s\""
 		    ",\"token\":%" PRIu64 ",\"size\":%zu,\"name\":",
-		    evt->kind == VIGIL_CHAT_DATA_IMAGE ? "image" : "file",
-		    evt->value, evt->size);
+		    chat_data_kind_name(evt->kind), evt->value, evt->size);
 		vigil_buf_quote(buf, evt->text);
 		vigil_buf_appendf(buf, ",\"nick\":");
 		vigil_buf_quote(buf, evt->nick);
@@ -3598,6 +3599,8 @@ chat_data_msg(u_int64_t ref, struct chat_blob *blob)
 
 	if (head->kind == VIGIL_CHAT_DATA_IMAGE) {
 		(void)snprintf(what, sizeof(what), "an image");
+	} else if (head->kind == VIGIL_CHAT_DATA_VOICE) {
+		(void)snprintf(what, sizeof(what), "a voice message");
 	} else {
 		(void)snprintf(what, sizeof(what), "the file %.*s",
 		    head->len, head->name);
@@ -4487,10 +4490,27 @@ chat_data_kind_valid(int kind)
 	switch (kind) {
 	case VIGIL_CHAT_DATA_IMAGE:
 	case VIGIL_CHAT_DATA_FILE:
+	case VIGIL_CHAT_DATA_VOICE:
 		return (0);
 	}
 
 	return (-1);
+}
+
+/*
+ * Returns the name the platform knows the given kind of data by.
+ */
+static const char *
+chat_data_kind_name(int kind)
+{
+	switch (kind) {
+	case VIGIL_CHAT_DATA_IMAGE:
+		return ("image");
+	case VIGIL_CHAT_DATA_VOICE:
+		return ("voice");
+	}
+
+	return ("file");
 }
 
 /*

@@ -823,10 +823,16 @@ class ChatVault(context: Context) {
 
         fun groupChat(group: Int): String = "g%04x".format(group)
 
-        fun kind(media: String): Int = if (media == "image") DATA_IMAGE else DATA_FILE
+        fun kind(media: String): Int =
+            when (media) {
+                "image" -> DATA_IMAGE
+                "voice" -> DATA_VOICE
+                else -> DATA_FILE
+            }
 
         const val DATA_IMAGE = 1
         const val DATA_FILE = 2
+        const val DATA_VOICE = 3
 
         private const val CHAT = "[0-9a-f]{2}|g[0-9a-f]{4}"
         private const val DATA = "(?:[0-9a-f]{2}|g[0-9a-f]{4})-[0-9a-f]{16}\\.dat"

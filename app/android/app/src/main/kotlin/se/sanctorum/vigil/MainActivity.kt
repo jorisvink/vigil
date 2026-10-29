@@ -59,6 +59,8 @@ class MainActivity : FlutterActivity() {
     }
 
     override fun onStop() {
+        Voice.finish()?.fill(0)
+        Voice.stop()
         Chats.background(this)
         super.onStop()
     }
@@ -273,6 +275,45 @@ class MainActivity : FlutterActivity() {
                         Intent(Intent.ACTION_OPEN_DOCUMENT).addCategory(Intent.CATEGORY_OPENABLE).setType("*/*"),
                         REQUEST_FILE
                     )
+                }
+                "voiceRecord" -> {
+                    chat(call.arguments as String)
+
+                    if (!granted(Manifest.permission.RECORD_AUDIO)) {
+                        requestPermissions(arrayOf(Manifest.permission.RECORD_AUDIO), REQUEST_VOICE)
+                        result.error("denied", "Allow the microphone, then hold to record.", null)
+                        return
+                    }
+
+                    Voice.record(this)
+                    result.success("")
+                }
+                "voiceSend" -> {
+                    val id = chat(call.arguments as String)
+
+                    background(result) {
+                        val data = Voice.finish() ?: throw IllegalArgumentException("Nothing was recorded.")
+
+                        try {
+                            dataSend(id, "voice", Voice.name(), data)
+                        } finally {
+                            data.fill(0)
+                        }
+                    }
+                }
+                "voiceCancel" -> background(result) {
+                    Voice.finish()?.fill(0)
+                    ""
+                }
+                "voicePlay" -> {
+                    val id = chat(call.argument<String>("peer")!!)
+                    val file = call.argument<String>("data")!!
+
+                    voicePlay(id, file, result)
+                }
+                "voiceStop" -> {
+                    Voice.stop()
+                    result.success("")
                 }
                 "chatData" -> {
                     val id = chat(call.argument<String>("peer")!!)
@@ -687,6 +728,21 @@ class MainActivity : FlutterActivity() {
         return ""
     }
 
+    private fun voicePlay(id: String, file: String, result: MethodChannel.Result) {
+        Thread {
+            try {
+                val data = Chats.vault(this).data(id, file) ?: throw IllegalArgumentException("That voice message is gone.")
+                Voice.play(data) { runOnUiThread { result.success("") } }
+            } catch (e: ChatVault.Locked) {
+                runOnUiThread { result.error("locked", e.message, null) }
+            } catch (e: IllegalArgumentException) {
+                runOnUiThread { result.error("invalid", e.message, null) }
+            } catch (e: Exception) {
+                runOnUiThread { result.error("failed", e.message ?: e.toString(), null) }
+            }
+        }.start()
+    }
+
     private fun dataSave(id: String, file: String, uri: Uri): String {
         val data = Chats.vault(this).data(id, file) ?: throw IllegalArgumentException("That file is gone.")
 
@@ -738,6 +794,7 @@ class MainActivity : FlutterActivity() {
         const val REQUEST_MICROPHONE = 0x5c
         const val REQUEST_FILE = 0x5d
         const val REQUEST_SAVE = 0x5e
+        const val REQUEST_VOICE = 0x5f
         const val DATA_MAX = 4 * 1024 * 1024
         const val MESSAGE_MAX = 512
         const val VIDEO_WIDTH = 960

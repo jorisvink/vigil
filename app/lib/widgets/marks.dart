@@ -211,6 +211,9 @@ enum GlyphKind {
   send,
   video,
   flip,
+  mic,
+  play,
+  stop,
 }
 
 class Glyph extends StatelessWidget {
@@ -402,7 +405,7 @@ class _GlyphPainter extends CustomPainter {
           4,
           16,
         ], close: true);
-      case GlyphKind.mute:
+      case GlyphKind.mute || GlyphKind.mic:
         canvas.drawRect(const Rect.fromLTWH(9, 3, 6, 10), line);
         poly([6, 11, 6, 13, 9, 16, 15, 16, 18, 13, 18, 11]);
         poly([12, 16, 12, 21]);
@@ -419,6 +422,17 @@ class _GlyphPainter extends CustomPainter {
         poly([20, 14, 17, 18, 7, 18, 4, 14]);
         poly([17, 3, 20, 6, 17, 9]);
         poly([7, 15, 4, 18, 7, 21]);
+      case GlyphKind.play:
+        canvas.drawPath(
+          Path()
+            ..moveTo(7, 4)
+            ..lineTo(20, 12)
+            ..lineTo(7, 20)
+            ..close(),
+          solid,
+        );
+      case GlyphKind.stop:
+        canvas.drawRect(const Rect.fromLTWH(6, 6, 12, 12), solid);
     }
   }
 

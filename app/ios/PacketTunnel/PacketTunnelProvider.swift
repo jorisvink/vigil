@@ -362,7 +362,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
 
                     if defaults.string(forKey: "chatOpen") != chat {
                         unseen[chat, default: 0] += 1
-                        notifyChat(chat, peer, nick, media == "image" ? "Image" : "File: \(name)")
+                        notifyChat(chat, peer, nick, Self.summary(media, name))
                     }
                 case "sent", "delivered":
                     receipt(chat, ref: (event["ref"] as? NSNumber)?.int64Value ?? 0, kind: kind)
@@ -467,6 +467,17 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         chatWaiting.formIntersection(refs)
 
         return true
+    }
+
+    private static func summary(_ media: String, _ name: String) -> String {
+        switch media {
+        case "image":
+            return "Image"
+        case "voice":
+            return "Voice message"
+        default:
+            return "File: \(name)"
+        }
     }
 
     private func notifyChat(_ chat: String, _ peer: UInt8, _ nick: String, _ text: String) {

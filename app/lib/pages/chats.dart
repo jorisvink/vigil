@@ -14,6 +14,11 @@ import '../widgets/ui.dart';
 import 'call.dart';
 
 const _messageMax = 512;
+const _voiceMax = Duration(minutes: 5);
+const _voiceMin = Duration(milliseconds: 700);
+const _voiceBars = 32;
+
+final _playing = ValueNotifier<String?>(null);
 
 (Liveness, String, Color) _link(Status status, String peer) {
   if (!status.gospel) {
@@ -118,6 +123,10 @@ String _summary(ChatMessage message) {
 
   if (message.media == 'image') {
     return 'Image';
+  }
+
+  if (message.media == 'voice') {
+    return 'Voice message';
   }
 
   return message.name;
@@ -551,6 +560,10 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
   Timer? _idle;
   bool _typing = false;
   bool _sending = false;
+  bool _held = false;
+  bool _discard = false;
+  DateTime? _recording;
+  Timer? _ticker;
   int _version = -1;
 
   String get peer => widget.peer;
@@ -610,9 +623,18 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
     WidgetsBinding.instance.removeObserver(this);
     _updates?.cancel();
     _idle?.cancel();
+    _ticker?.cancel();
     _input.dispose();
 
     final vigil = Vigil.instance;
+    if (_recording != null) {
+      unawaited(vigil.cancelVoice().catchError((Object _) {}));
+    }
+
+    if (_playing.value != null) {
+      unawaited(vigil.stopVoice().catchError((Object _) {}));
+    }
+
     unawaited(vigil.typing(peer, false).catchError((Object _) {}));
     unawaited(vigil.openChat(peer, false).catchError((Object _) {}));
 
@@ -756,6 +778,88 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
     }
 
     await _sendWith(() => Vigil.instance.sendImage(peer, picked.path));
+  }
+
+  Future<void> _hold() async {
+    if (_sending) {
+      return;
+    }
+
+    if (_held || _recording != null) {
+      return;
+    }
+
+    _held = true;
+    _discard = false;
+
+    try {
+      await Vigil.instance.recordVoice(peer);
+    } on VigilError catch (e) {
+      _held = false;
+      notify(e.message);
+      return;
+    }
+
+    if (!mounted || !_held) {
+      await Vigil.instance.cancelVoice().catchError((Object _) {});
+      if (mounted) {
+        notify('Hold to record a voice message', warn: false);
+      }
+      return;
+    }
+
+    unawaited(HapticFeedback.mediumImpact());
+
+    setState(() => _recording = DateTime.now());
+    _ticker = Timer.periodic(const Duration(milliseconds: 250), (_) {
+      final started = _recording;
+
+      if (started != null && DateTime.now().difference(started) >= _voiceMax) {
+        unawaited(_release());
+        return;
+      }
+
+      setState(() {});
+    });
+  }
+
+  void _slide(Offset offset) {
+    final discard = offset.dx < -72;
+
+    if (_recording != null && discard != _discard) {
+      unawaited(HapticFeedback.selectionClick());
+      setState(() => _discard = discard);
+    }
+  }
+
+  Future<void> _release({bool cancel = false}) async {
+    final started = _recording;
+
+    _held = false;
+    if (started == null) {
+      return;
+    }
+
+    _ticker?.cancel();
+    _ticker = null;
+
+    final short = DateTime.now().difference(started) < _voiceMin;
+    final discard = cancel || _discard || short;
+
+    setState(() {
+      _recording = null;
+      _discard = false;
+    });
+
+    if (discard) {
+      await Vigil.instance.cancelVoice().catchError((Object _) {});
+      if (short && !cancel) {
+        notify('Hold to record a voice message', warn: false);
+      }
+      return;
+    }
+
+    await _sendWith(() => Vigil.instance.sendVoice(peer));
   }
 
   Future<void> _sendWith(Future<void> Function() send) async {
@@ -1132,8 +1236,13 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
                           : _Composer(
                               input: _input,
                               busy: _sending,
+                              recording: _recording,
+                              discard: _discard,
                               onSend: _send,
                               onAttach: _attach,
+                              onHold: _hold,
+                              onSlide: _slide,
+                              onRelease: _release,
                             ),
                     ),
                   ],
@@ -1547,6 +1656,12 @@ class _Bubble extends StatelessWidget {
                               )
                             else if (message.media == 'image')
                               _Photo(chat: chat, message: message)
+                            else if (message.media == 'voice')
+                              _VoiceNote(
+                                key: ValueKey('$chat/${message.data}'),
+                                chat: chat,
+                                message: message,
+                              )
                             else
                               _File(chat: chat, message: message),
                           ],
@@ -1602,14 +1717,89 @@ class _Composer extends StatelessWidget {
   const _Composer({
     required this.input,
     required this.busy,
+    required this.recording,
+    required this.discard,
     required this.onSend,
     required this.onAttach,
+    required this.onHold,
+    required this.onSlide,
+    required this.onRelease,
   });
 
   final TextEditingController input;
   final bool busy;
+  final DateTime? recording;
+  final bool discard;
   final VoidCallback onSend;
   final VoidCallback onAttach;
+  final VoidCallback onHold;
+  final ValueChanged<Offset> onSlide;
+  final Future<void> Function({bool cancel}) onRelease;
+
+  Widget _recorder(DateTime started) {
+    final elapsed = DateTime.now().difference(started).inSeconds;
+
+    return CustomPaint(
+      painter: CutPainter(
+        fill: Palette.bg,
+        stroke: discard ? Palette.amber2 : Palette.amberDim,
+        cut: 8,
+      ),
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(12, 10, 12, 10),
+        child: Row(
+          children: [
+            _Pulse(color: discard ? Palette.dim : Palette.amber),
+            const SizedBox(width: 10),
+            Text(
+              _length(elapsed),
+              style: Styles.body.copyWith(color: Palette.fg),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Text(
+                discard ? 'Release to discard' : '‹ Slide to discard',
+                overflow: TextOverflow.ellipsis,
+                textAlign: TextAlign.right,
+                style: Styles.detail.copyWith(
+                  color: discard ? Palette.amber2 : Palette.dim,
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _mic() {
+    final Color color;
+
+    if (busy) {
+      color = Palette.dim;
+    } else if (recording != null) {
+      color = Palette.amber;
+    } else {
+      color = Palette.fg2;
+    }
+
+    return Semantics(
+      button: true,
+      label: 'Hold to record a voice message',
+      child: Listener(
+        behavior: HitTestBehavior.opaque,
+        onPointerDown: busy ? null : (_) => onHold(),
+        onPointerMove: (e) => onSlide(e.localPosition - const Offset(22, 22)),
+        onPointerUp: (_) => onRelease(),
+        onPointerCancel: (_) => onRelease(cancel: true),
+        child: SizedBox(
+          width: 44,
+          height: 44,
+          child: Center(child: Glyph(GlyphKind.mic, color: color)),
+        ),
+      ),
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -1629,60 +1819,362 @@ class _Composer extends StatelessWidget {
             ),
             const SizedBox(width: 4),
             Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.end,
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  if (used > _messageMax - 112)
-                    Padding(
-                      padding: const EdgeInsets.only(bottom: 4),
-                      child: Text(
-                        '$used/$_messageMax',
-                        style: Styles.detail.copyWith(
-                          fontSize: 10.5,
-                          color: used >= _messageMax
-                              ? Palette.amber
-                              : Palette.dim,
+              child: recording != null
+                  ? _recorder(recording!)
+                  : Column(
+                      crossAxisAlignment: CrossAxisAlignment.end,
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        if (used > _messageMax - 112)
+                          Padding(
+                            padding: const EdgeInsets.only(bottom: 4),
+                            child: Text(
+                              '$used/$_messageMax',
+                              style: Styles.detail.copyWith(
+                                fontSize: 10.5,
+                                color: used >= _messageMax
+                                    ? Palette.amber
+                                    : Palette.dim,
+                              ),
+                            ),
+                          ),
+                        CustomPaint(
+                          painter: const CutPainter(
+                            fill: Palette.bg,
+                            stroke: Palette.line2,
+                            cut: 8,
+                          ),
+                          child: Padding(
+                            padding: const EdgeInsets.fromLTRB(12, 10, 12, 10),
+                            child: TextField(
+                              controller: input,
+                              minLines: 1,
+                              maxLines: 5,
+                              keyboardType: TextInputType.multiline,
+                              textCapitalization: TextCapitalization.sentences,
+                              inputFormatters: const [_Utf8Limit(_messageMax)],
+                              style: Styles.body.copyWith(color: Palette.fg),
+                              cursorColor: Palette.amber,
+                              decoration: InputDecoration.collapsed(
+                                hintText: 'Message',
+                                hintStyle: Styles.body.copyWith(
+                                  color: Palette.dim,
+                                ),
+                              ),
+                            ),
+                          ),
                         ),
-                      ),
+                      ],
                     ),
-                  CustomPaint(
-                    painter: const CutPainter(
-                      fill: Palette.bg,
-                      stroke: Palette.line2,
-                      cut: 8,
-                    ),
-                    child: Padding(
-                      padding: const EdgeInsets.fromLTRB(12, 10, 12, 10),
-                      child: TextField(
-                        controller: input,
-                        minLines: 1,
-                        maxLines: 5,
-                        keyboardType: TextInputType.multiline,
-                        textCapitalization: TextCapitalization.sentences,
-                        inputFormatters: const [_Utf8Limit(_messageMax)],
-                        style: Styles.body.copyWith(color: Palette.fg),
-                        cursorColor: Palette.amber,
-                        decoration: InputDecoration.collapsed(
-                          hintText: 'Message',
-                          hintStyle: Styles.body.copyWith(color: Palette.dim),
-                        ),
-                      ),
-                    ),
-                  ),
-                ],
-              ),
             ),
+            _mic(),
             GlyphBtn(
               GlyphKind.send,
               label: 'Send',
-              onTap: ready ? onSend : null,
+              onTap: ready && recording == null ? onSend : null,
             ),
           ],
         );
       },
     );
   }
+}
+
+String _length(int seconds) =>
+    '${seconds ~/ 60}:${(seconds % 60).toString().padLeft(2, '0')}';
+
+class _Pulse extends StatefulWidget {
+  const _Pulse({required this.color});
+
+  final Color color;
+
+  @override
+  State<_Pulse> createState() => _PulseState();
+}
+
+class _PulseState extends State<_Pulse> with SingleTickerProviderStateMixin {
+  late final _beat = AnimationController(
+    vsync: this,
+    duration: const Duration(milliseconds: 900),
+  )..repeat(reverse: true);
+
+  @override
+  void dispose() {
+    _beat.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return FadeTransition(
+      opacity: Tween(begin: 0.3, end: 1.0).animate(_beat),
+      child: Container(width: 10, height: 10, color: widget.color),
+    );
+  }
+}
+
+class _Voice {
+  const _Voice(this.seconds, this.bars);
+
+  final int seconds;
+  final List<double> bars;
+}
+
+const _adtsRates = [
+  96000,
+  88200,
+  64000,
+  48000,
+  44100,
+  32000,
+  24000,
+  22050,
+  16000,
+  12000,
+  11025,
+  8000,
+  7350,
+];
+
+List<double> _voiceShape(String seed) {
+  final bars = <double>[];
+  var x = seed.hashCode & 0x7fffffff;
+
+  for (var i = 0; i < _voiceBars; i++) {
+    x = (x * 1103515245 + 12345) & 0x7fffffff;
+    bars.add(0.25 + (x % 1000) / 1333);
+  }
+
+  return bars;
+}
+
+_Voice _voice(Uint8List bytes, String seed) {
+  final sizes = <int>[];
+  var rate = 0;
+  var off = 0;
+
+  while (off + 7 <= bytes.length) {
+    if (bytes[off] != 0xff || (bytes[off + 1] & 0xf6) != 0xf0) {
+      break;
+    }
+
+    final index = (bytes[off + 2] >> 2) & 0x0f;
+    if (index >= _adtsRates.length) {
+      break;
+    }
+
+    final len =
+        ((bytes[off + 3] & 0x03) << 11) |
+        (bytes[off + 4] << 3) |
+        (bytes[off + 5] >> 5);
+    if (len <= 7) {
+      break;
+    }
+
+    rate = _adtsRates[index];
+    sizes.add(len);
+    off += len;
+  }
+
+  if (sizes.isEmpty) {
+    return _Voice(0, _voiceShape(seed));
+  }
+
+  final seconds = (sizes.length * 1024 / rate).round();
+  final bars = <double>[];
+
+  for (var i = 0; i < _voiceBars; i++) {
+    final from = i * sizes.length ~/ _voiceBars;
+    final to = (i + 1) * sizes.length ~/ _voiceBars;
+    var sum = 0;
+
+    for (var j = from; j < to; j++) {
+      sum += sizes[j];
+    }
+
+    bars.add(to > from ? sum / (to - from) : 0);
+  }
+
+  final low = bars.reduce((a, b) => a < b ? a : b);
+  final high = bars.reduce((a, b) => a > b ? a : b);
+
+  if (high - low < high * 0.08) {
+    return _Voice(seconds, _voiceShape(seed));
+  }
+
+  return _Voice(seconds, [
+    for (final b in bars) 0.15 + 0.85 * (b - low) / (high - low),
+  ]);
+}
+
+class _VoiceNote extends StatefulWidget {
+  const _VoiceNote({super.key, required this.chat, required this.message});
+
+  final String chat;
+  final ChatMessage message;
+
+  @override
+  State<_VoiceNote> createState() => _VoiceNoteState();
+}
+
+class _VoiceNoteState extends State<_VoiceNote>
+    with SingleTickerProviderStateMixin {
+  late final _progress = AnimationController(vsync: this);
+  late final Future<_Voice> _shape = _load();
+
+  String get _key => '${widget.chat}/${widget.message.data}';
+
+  Future<_Voice> _load() async {
+    final bytes = await Vigil.instance.chatData(
+      widget.chat,
+      widget.message.data,
+    );
+
+    if (bytes == null) {
+      return _Voice(0, _voiceShape(widget.message.data));
+    }
+
+    return _voice(bytes, widget.message.data);
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    _playing.addListener(_changed);
+  }
+
+  @override
+  void dispose() {
+    _playing.removeListener(_changed);
+    _progress.dispose();
+    super.dispose();
+  }
+
+  void _changed() {
+    if (_playing.value != _key) {
+      _progress.reset();
+    }
+  }
+
+  Future<void> _toggle() async {
+    final vigil = Vigil.instance;
+
+    if (_playing.value == _key) {
+      _playing.value = null;
+      await vigil.stopVoice().catchError((Object _) {});
+      return;
+    }
+
+    final voice = await _shape;
+
+    _playing.value = _key;
+    _progress.duration = Duration(seconds: voice.seconds.clamp(1, 3600));
+    unawaited(_progress.forward(from: 0));
+
+    try {
+      await vigil.playVoice(widget.chat, widget.message.data);
+    } on VigilError catch (e) {
+      notify(e.message);
+    }
+
+    if (_playing.value == _key) {
+      _playing.value = null;
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final width = MediaQuery.sizeOf(context).width * 0.42;
+
+    return GestureDetector(
+      behavior: HitTestBehavior.opaque,
+      onTap: _toggle,
+      onLongPress: () => _save(widget.chat, widget.message),
+      child: FutureBuilder<_Voice>(
+        future: _shape,
+        builder: (context, snapshot) {
+          final voice = snapshot.data;
+
+          return ValueListenableBuilder<String?>(
+            valueListenable: _playing,
+            builder: (context, playing, _) {
+              final on = playing == _key;
+
+              return Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Semantics(
+                    button: true,
+                    label: on ? 'Stop voice message' : 'Play voice message',
+                    child: Container(
+                      width: 34,
+                      height: 34,
+                      decoration: BoxDecoration(
+                        border: Border.all(color: Palette.amberDim),
+                      ),
+                      child: Center(
+                        child: Glyph(
+                          on ? GlyphKind.stop : GlyphKind.play,
+                          size: 16,
+                          color: Palette.amber,
+                        ),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                  AnimatedBuilder(
+                    animation: _progress,
+                    builder: (context, _) => CustomPaint(
+                      size: Size(width, 28),
+                      painter: _WavePainter(
+                        bars: voice?.bars ?? _voiceShape(widget.message.data),
+                        played: _progress.value,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                  Text(
+                    voice == null ? '-:--' : _length(voice.seconds),
+                    style: Styles.detail.copyWith(fontSize: 10.5),
+                  ),
+                ],
+              );
+            },
+          );
+        },
+      ),
+    );
+  }
+}
+
+class _WavePainter extends CustomPainter {
+  const _WavePainter({required this.bars, required this.played});
+
+  final List<double> bars;
+  final double played;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final step = size.width / bars.length;
+    final lit = Paint()..color = Palette.amber;
+    final dim = Paint()..color = Palette.fg2.withValues(alpha: 0.45);
+
+    for (var i = 0; i < bars.length; i++) {
+      final h = size.height * bars[i];
+      final rect = Rect.fromLTWH(
+        i * step + step * 0.2,
+        (size.height - h) / 2,
+        step * 0.6,
+        h,
+      );
+
+      canvas.drawRect(rect, (i + 0.5) / bars.length <= played ? lit : dim);
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant _WavePainter oldDelegate) =>
+      oldDelegate.played != played || oldDelegate.bars != bars;
 }
 
 class _Utf8Limit extends TextInputFormatter {

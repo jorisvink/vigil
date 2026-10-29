@@ -202,6 +202,7 @@
 /* The kinds of data we send and how long the name of it may be. */
 #define VIGIL_CHAT_DATA_IMAGE		1
 #define VIGIL_CHAT_DATA_FILE		2
+#define VIGIL_CHAT_DATA_VOICE		3
 #define VIGIL_CHAT_DATA_NAME_MAX	126
 
 /* The different type of voice frames. */

@@ -13,6 +13,7 @@
 		5A0C0DE00000000000000001 /* VigilPlugin.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5A0C0DE0000000000000000C /* VigilPlugin.swift */; };
 		5A0C0DE000000000000000A1 /* VigilCall.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5A0C0DE000000000000000A2 /* VigilCall.swift */; };
 		5A0C0DE000000000000000D1 /* VigilVideo.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5A0C0DE000000000000000D2 /* VigilVideo.swift */; };
+		5A0C0DE000000000000000F1 /* VigilVoice.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5A0C0DE000000000000000F2 /* VigilVoice.swift */; };
 		5A0C0DE00000000000000002 /* TunnelKeychain.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5A0C0DE0000000000000000D /* TunnelKeychain.swift */; };
 		5A0C0DE000000000000000B2 /* ChatVault.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5A0C0DE000000000000000B1 /* ChatVault.swift */; };
 		5A0C0DE000000000000000B3 /* ChatVault.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5A0C0DE000000000000000B1 /* ChatVault.swift */; };
@@ -84,6 +85,7 @@
 		5A0C0DE0000000000000000C /* VigilPlugin.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VigilPlugin.swift; sourceTree = "<group>"; };
 		5A0C0DE000000000000000A2 /* VigilCall.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VigilCall.swift; sourceTree = "<group>"; };
 		5A0C0DE000000000000000D2 /* VigilVideo.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VigilVideo.swift; sourceTree = "<group>"; };
+		5A0C0DE000000000000000F2 /* VigilVoice.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VigilVoice.swift; sourceTree = "<group>"; };
 		5A0C0DE0000000000000000D /* TunnelKeychain.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TunnelKeychain.swift; sourceTree = "<group>"; };
 		5A0C0DE000000000000000B1 /* ChatVault.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatVault.swift; sourceTree = "<group>"; };
 		5A0C0DE000000000000000E1 /* TunnelLink.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TunnelLink.swift; sourceTree = "<group>"; };
@@ -219,6 +221,7 @@
 				5A0C0DE0000000000000000C /* VigilPlugin.swift */,
 				5A0C0DE000000000000000A2 /* VigilCall.swift */,
 				5A0C0DE000000000000000D2 /* VigilVideo.swift */,
+				5A0C0DE000000000000000F2 /* VigilVoice.swift */,
 				5A0C0DE00000000000000014 /* Runner.entitlements */,
 				74858FAD1ED2DC5600515810 /* Runner-Bridging-Header.h */,
 			);
@@ -426,6 +429,7 @@
 				5A0C0DE00000000000000001 /* VigilPlugin.swift in Sources */,
 				5A0C0DE000000000000000A1 /* VigilCall.swift in Sources */,
 				5A0C0DE000000000000000D1 /* VigilVideo.swift in Sources */,
+				5A0C0DE000000000000000F1 /* VigilVoice.swift in Sources */,
 				5A0C0DE00000000000000002 /* TunnelKeychain.swift in Sources */,
 				5A0C0DE000000000000000B2 /* ChatVault.swift in Sources */,
 				5A0C0DE000000000000000E2 /* TunnelLink.swift in Sources */,

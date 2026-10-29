@@ -117,6 +117,7 @@ usage(void)
 {
 	fprintf(stderr, "usage: chatter [-n nick] [-m peer:text] [-g group] "
 	    "[-G text] [-i peer:file] [-I file] [-f peer:file] [-F file] "
+	    "[-a peer:file] [-A file] "
 	    "[-o dir] [-t peer] [-T] [-O peer] [-e count] [-x secs] "
 	    "[-l count] [-D datadir] <gospel>\n");
 	exit(1);
@@ -143,7 +144,7 @@ main(int argc, char **argv)
 	delivered = 0;
 
 	while ((ch = getopt(argc, argv,
-	    "D:e:f:F:g:G:i:I:l:m:n:o:O:t:Tx:")) != -1) {
+	    "a:A:D:e:f:F:g:G:i:I:l:m:n:o:O:t:Tx:")) != -1) {
 		switch (ch) {
 		case 'D':
 			datadir = optarg;
@@ -185,6 +186,7 @@ main(int argc, char **argv)
 			if (vigil_chat_nick(optarg) == -1)
 				usage();
 			break;
+		case 'a':
 		case 'f':
 		case 'i':
 			if (data_count == CHATTER_MESSAGES_MAX)
@@ -198,10 +200,13 @@ main(int argc, char **argv)
 			data_path[data_count] = ep + 1;
 			if (ch == 'i')
 				data_kind[data_count] = VIGIL_CHAT_DATA_IMAGE;
+			else if (ch == 'a')
+				data_kind[data_count] = VIGIL_CHAT_DATA_VOICE;
 			else
 				data_kind[data_count] = VIGIL_CHAT_DATA_FILE;
 			data_count++;
 			break;
+		case 'A':
 		case 'F':
 		case 'I':
 			if (group_data_count == CHATTER_MESSAGES_MAX)
@@ -210,6 +215,8 @@ main(int argc, char **argv)
 			group_data_path[idx] = optarg;
 			if (ch == 'I')
 				group_data_kind[idx] = VIGIL_CHAT_DATA_IMAGE;
+			else if (ch == 'A')
+				group_data_kind[idx] = VIGIL_CHAT_DATA_VOICE;
 			else
 				group_data_kind[idx] = VIGIL_CHAT_DATA_FILE;
 			break;
