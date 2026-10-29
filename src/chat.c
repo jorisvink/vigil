@@ -131,7 +131,7 @@
 
 /* If we talk to gospel, don't send images. */
 #define CHAT_DATA_GOSPEL		\
-    "I sent you %s, but you are on gospel so you cannot see it, too bad."
+    "I sent you %s, but you are on gospel so you cannot open it, too bad."
 
 /*
  * A data block we could be sending.
