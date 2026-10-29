@@ -322,7 +322,7 @@ object Chats {
         service: VigilVpnService, id: String, peer: Int, nick: String, text: String, time: Long
     ) {
         val named = PeerNames.load(service).has(Calls.hex(peer))
-        val name = if (named || nick.isEmpty()) Calls.name(peer) else nick
+        val name = if (named || nick.isEmpty()) Calls.name(peer) else "~$nick"
         val messages = shown.getOrPut(id) { mutableListOf() }
 
         messages.add(Shown(if (preview(service)) text else "New message", time, name, Calls.hex(peer)))

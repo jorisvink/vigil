@@ -580,7 +580,7 @@ class _PeerRow extends StatelessWidget {
               children: [
                 Text(
                   vigil.name(peer),
-                  style: Styles.cardTitle,
+                  style: peerStyle(Styles.cardTitle, vigil.picked(peer)),
                   overflow: TextOverflow.ellipsis,
                 ),
                 if (vigil.name(peer) != 'Peer $peer')

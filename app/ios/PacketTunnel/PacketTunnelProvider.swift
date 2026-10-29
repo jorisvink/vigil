@@ -486,7 +486,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         let content = UNMutableNotificationContent()
         let body = preview ? text : "New message"
         let named = ChatVault.names()[ChatVault.hex(peer)] != nil
-        let sender = named || nick.isEmpty ? ChatVault.name(peer) : nick
+        let sender = named || nick.isEmpty ? ChatVault.name(peer) : "~\(nick)"
 
         content.title = ChatVault.group(chat) == nil ? sender : ChatVault.name(chat: chat)
         content.body = ChatVault.group(chat) == nil ? body : "\(sender): \(body)"

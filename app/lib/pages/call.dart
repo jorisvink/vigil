@@ -37,11 +37,44 @@ Future<void> renamePeer(String peer) async {
   }
 
   final vigil = Vigil.instance;
-  final controller = TextEditingController(text: vigil.names[peer] ?? '');
+  final name = await sheet<String>(context, (context) => _NamePrompt(peer));
 
-  final name = await sheet<String>(
-    context,
-    (context) => Column(
+  if (name == null) {
+    return;
+  }
+
+  try {
+    await vigil.rename(peer, name);
+  } on VigilError catch (e) {
+    notify(e.message);
+  }
+}
+
+class _NamePrompt extends StatefulWidget {
+  const _NamePrompt(this.peer);
+
+  final String peer;
+
+  @override
+  State<_NamePrompt> createState() => _NamePromptState();
+}
+
+class _NamePromptState extends State<_NamePrompt> {
+  late final _name = TextEditingController(
+    text: Vigil.instance.names[widget.peer] ?? '',
+  );
+
+  @override
+  void dispose() {
+    _name.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final peer = widget.peer;
+
+    return Column(
       mainAxisSize: MainAxisSize.min,
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -51,7 +84,7 @@ Future<void> renamePeer(String peer) async {
         const SizedBox(height: 16),
         Pre(
           child: TextField(
-            controller: controller,
+            controller: _name,
             autofocus: true,
             maxLength: 32,
             textCapitalization: TextCapitalization.words,
@@ -78,23 +111,11 @@ Future<void> renamePeer(String peer) async {
           second: Btn(
             label: 'Save',
             expand: true,
-            onTap: () => Navigator.of(context).pop(controller.text),
+            onTap: () => Navigator.of(context).pop(_name.text),
           ),
         ),
       ],
-    ),
-  );
-
-  controller.dispose();
-
-  if (name == null) {
-    return;
-  }
-
-  try {
-    await vigil.rename(peer, name);
-  } on VigilError catch (e) {
-    notify(e.message);
+    );
   }
 }
 
@@ -682,7 +703,10 @@ class _VideoCallState extends State<_VideoCall> {
               children: [
                 Text(
                   vigil.name(widget.call.peer),
-                  style: Styles.cardTitle.copyWith(color: Colors.white),
+                  style: peerStyle(
+                    Styles.cardTitle.copyWith(color: Colors.white),
+                    vigil.picked(widget.call.peer),
+                  ),
                   overflow: TextOverflow.ellipsis,
                 ),
                 const SizedBox(height: 4),

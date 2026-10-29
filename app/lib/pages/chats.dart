@@ -110,7 +110,21 @@ String sender(ChatMessage message) {
     return vigil.name(from);
   }
 
-  return message.nick;
+  return chosen(message.nick);
+}
+
+bool senderPicked(ChatMessage message) {
+  final vigil = Vigil.instance;
+
+  if (vigil.names.containsKey(message.from)) {
+    return false;
+  }
+
+  if (message.nick.isEmpty) {
+    return vigil.picked(message.from);
+  }
+
+  return true;
 }
 
 String memberLine(ChatMessage message) {
@@ -344,7 +358,7 @@ Future<void> newChat(Status status) async {
                       children: [
                         Text(
                           vigil.name(id),
-                          style: Styles.cardTitle,
+                          style: peerStyle(Styles.cardTitle, vigil.picked(id)),
                           overflow: TextOverflow.ellipsis,
                         ),
                         if (vigil.name(id) != 'Peer $id')
@@ -611,7 +625,7 @@ class ChatRow extends StatelessWidget {
               children: [
                 Text(
                   vigil.name(chat.peer),
-                  style: Styles.cardTitle,
+                  style: peerStyle(Styles.cardTitle, vigil.picked(chat.peer)),
                   overflow: TextOverflow.ellipsis,
                 ),
                 const SizedBox(height: 3),
@@ -718,7 +732,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
           if (vigil.names.containsKey(m.id) || m.nick.isEmpty)
             vigil.name(m.id)
           else
-            m.nick,
+            chosen(m.nick),
     ];
 
     if (names.isEmpty) {
@@ -1293,7 +1307,10 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
                                   const SizedBox(height: 2),
                                   Text(
                                     vigil.name(peer),
-                                    style: Styles.barTitle,
+                                    style: peerStyle(
+                                      Styles.barTitle,
+                                      vigil.picked(peer),
+                                    ),
                                     overflow: TextOverflow.ellipsis,
                                   ),
                                 ],
@@ -1521,14 +1538,17 @@ class _Member extends StatelessWidget {
                 Text(
                   named || member.nick.isEmpty
                       ? vigil.name(member.id)
-                      : member.nick,
-                  style: Styles.cardTitle,
+                      : chosen(member.nick),
+                  style: peerStyle(
+                    Styles.cardTitle,
+                    !named && member.nick.isNotEmpty,
+                  ),
                   overflow: TextOverflow.ellipsis,
                 ),
                 const SizedBox(height: 2),
                 Text(
                   named && member.nick.isNotEmpty
-                      ? '$label · ${member.nick}'
+                      ? '$label · ${chosen(member.nick)}'
                       : '$label · PEER ${member.id}',
                   style: Styles.rubric.copyWith(color: color),
                   overflow: TextOverflow.ellipsis,
@@ -1858,8 +1878,11 @@ class _Bubble extends StatelessWidget {
                                       child: Text(
                                         sender!,
                                         overflow: TextOverflow.ellipsis,
-                                        style: Styles.rubric.copyWith(
-                                          color: Palette.amber,
+                                        style: peerStyle(
+                                          Styles.rubric.copyWith(
+                                            color: Palette.amber,
+                                          ),
+                                          senderPicked(message),
                                         ),
                                       ),
                                     ),
@@ -2726,74 +2749,20 @@ Future<void> joinGroup() async {
 
   final vigil = Vigil.instance;
   final current = vigil.status.chats.group;
-  final id = TextEditingController();
-  final name = TextEditingController();
-
-  final join = await sheet<bool>(
+  final join = await sheet<(String, String)>(
     context,
-    (context) => Column(
-      mainAxisSize: MainAxisSize.min,
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        sheetTitle(current == null ? 'Join a group' : 'Swap group'),
-        const SizedBox(height: 8),
-        const Text(
-          'A group is a 4 digit hex id, everyone in your flock who joins '
-          'the same id is in it. You can be in one group at a time.',
-          style: Styles.detail,
-        ),
-        const SizedBox(height: 16),
-        Text('GROUP ID', style: Styles.key),
-        const SizedBox(height: 6),
-        Pre(
-          child: TextField(
-            controller: id,
-            autofocus: true,
-            maxLength: 4,
-            style: Styles.pre,
-            cursorColor: Palette.amber,
-            inputFormatters: [
-              FilteringTextInputFormatter.allow(RegExp('[0-9A-Fa-f]')),
-            ],
-            decoration: InputDecoration.collapsed(
-              hintText: '1a2b',
-              hintStyle: Styles.pre.copyWith(color: Palette.dim),
-            ).copyWith(counterText: ''),
-          ),
-        ),
-        const SizedBox(height: 14),
-        Text('NAME', style: Styles.key),
-        const SizedBox(height: 6),
-        Pre(
-          child: TextField(
-            controller: name,
-            maxLength: 32,
-            textCapitalization: TextCapitalization.words,
-            style: Styles.pre,
-            cursorColor: Palette.amber,
-            decoration: InputDecoration.collapsed(
-              hintText: 'Only on this device',
-              hintStyle: Styles.pre.copyWith(color: Palette.dim),
-            ).copyWith(counterText: ''),
-          ),
-        ),
-        const SizedBox(height: 20),
-        Btn(
-          label: 'Join',
-          expand: true,
-          onTap: () => Navigator.of(context).pop(true),
-        ),
-      ],
-    ),
+    (context) => _GroupPrompt(swap: current != null),
   );
 
-  final raw = id.text;
-  final hex = raw.toLowerCase().padLeft(4, '0');
-  final label = name.text.trim();
-  id.dispose();
-  name.dispose();
+  if (join == null) {
+    return;
+  }
 
-  if (join != true || raw.isEmpty) {
+  final (raw, given) = join;
+  final hex = raw.toLowerCase().padLeft(4, '0');
+  final label = given.trim();
+
+  if (raw.isEmpty) {
     return;
   }
 
@@ -2825,6 +2794,85 @@ Future<void> joinGroup() async {
     await push(ChatPage(peer: chat));
   } on VigilError catch (e) {
     notify(e.message);
+  }
+}
+
+class _GroupPrompt extends StatefulWidget {
+  const _GroupPrompt({required this.swap});
+
+  final bool swap;
+
+  @override
+  State<_GroupPrompt> createState() => _GroupPromptState();
+}
+
+class _GroupPromptState extends State<_GroupPrompt> {
+  final _id = TextEditingController();
+  final _name = TextEditingController();
+
+  @override
+  void dispose() {
+    _id.dispose();
+    _name.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        sheetTitle(widget.swap ? 'Swap group' : 'Join a group'),
+        const SizedBox(height: 8),
+        const Text(
+          'A group is a 4 digit hex id, everyone in your flock who joins '
+          'the same id is in it. You can be in one group at a time.',
+          style: Styles.detail,
+        ),
+        const SizedBox(height: 16),
+        Text('GROUP ID', style: Styles.key),
+        const SizedBox(height: 6),
+        Pre(
+          child: TextField(
+            controller: _id,
+            autofocus: true,
+            maxLength: 4,
+            style: Styles.pre,
+            cursorColor: Palette.amber,
+            inputFormatters: [
+              FilteringTextInputFormatter.allow(RegExp('[0-9A-Fa-f]')),
+            ],
+            decoration: InputDecoration.collapsed(
+              hintText: '1a2b',
+              hintStyle: Styles.pre.copyWith(color: Palette.dim),
+            ).copyWith(counterText: ''),
+          ),
+        ),
+        const SizedBox(height: 14),
+        Text('NAME', style: Styles.key),
+        const SizedBox(height: 6),
+        Pre(
+          child: TextField(
+            controller: _name,
+            maxLength: 32,
+            textCapitalization: TextCapitalization.words,
+            style: Styles.pre,
+            cursorColor: Palette.amber,
+            decoration: InputDecoration.collapsed(
+              hintText: 'Only on this device',
+              hintStyle: Styles.pre.copyWith(color: Palette.dim),
+            ).copyWith(counterText: ''),
+          ),
+        ),
+        const SizedBox(height: 20),
+        Btn(
+          label: 'Join',
+          expand: true,
+          onTap: () => Navigator.of(context).pop((_id.text, _name.text)),
+        ),
+      ],
+    );
   }
 }
 

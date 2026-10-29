@@ -495,10 +495,26 @@ class Vigil {
 
   Map<String, String> get names => _names;
 
-  String name(String peer) =>
-      _names[peer] ??
-      _nicks[peer] ??
-      (isGroup(peer) ? 'Group ${peer.substring(1)}' : 'Peer $peer');
+  String name(String peer) {
+    final named = _names[peer];
+    if (named != null) {
+      return named;
+    }
+
+    final nick = _nicks[peer];
+    if (nick != null) {
+      return chosen(nick);
+    }
+
+    if (isGroup(peer)) {
+      return 'Group ${peer.substring(1)}';
+    }
+
+    return 'Peer $peer';
+  }
+
+  bool picked(String peer) =>
+      !_names.containsKey(peer) && _nicks.containsKey(peer);
 
   void start() {
     _poll ??= Timer.periodic(const Duration(seconds: 1), (_) => refresh());
@@ -970,6 +986,8 @@ class Vigil {
     }
   }
 }
+
+String chosen(String nick) => '~$nick';
 
 String bytes(int value) {
   const units = ['B', 'KiB', 'MiB', 'GiB', 'TiB'];

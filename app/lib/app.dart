@@ -450,6 +450,14 @@ void notify(String message, {bool warn = true}) {
   });
 }
 
+TextStyle peerStyle(TextStyle style, bool picked) {
+  if (!picked) {
+    return style;
+  }
+
+  return style.copyWith(fontStyle: FontStyle.italic);
+}
+
 Future<bool> confirm({
   required String title,
   required String text,
