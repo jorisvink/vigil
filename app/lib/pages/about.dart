@@ -1,8 +1,11 @@
+import 'dart:io';
+
 import 'package:flutter/widgets.dart';
 
 import '../app.dart';
 import '../vigil.dart';
 import '../theme.dart';
+import '../widgets/buttons.dart';
 import '../widgets/marks.dart';
 import '../widgets/ui.dart';
 
@@ -53,7 +56,11 @@ class AboutPage extends StatelessWidget {
             ],
           ),
         ),
-        const GroupLabel('The Community', index: 1),
+        if (Platform.isIOS) ...[
+          const GroupLabel('On this device', index: 1),
+          const Panel(child: _Candle()),
+        ],
+        GroupLabel('The Community', index: Platform.isIOS ? 2 : 1),
         LinkList(
           rows: [
             LinkRow(
@@ -81,6 +88,60 @@ class AboutPage extends StatelessWidget {
             ],
           ),
         ),
+      ],
+    );
+  }
+}
+
+class _Candle extends StatefulWidget {
+  const _Candle();
+
+  @override
+  State<_Candle> createState() => _CandleState();
+}
+
+class _CandleState extends State<_Candle> {
+  static const _key = 'candleOff';
+
+  bool _on = true;
+
+  @override
+  void initState() {
+    super.initState();
+
+    Vigil.instance.flag(_key).then((off) {
+      if (mounted) {
+        setState(() => _on = !off);
+      }
+    }, onError: (Object _) {});
+  }
+
+  Future<void> _toggle() async {
+    final on = !_on;
+
+    setState(() => _on = on);
+    await Vigil.instance.flag(_key, !on).catchError((Object _) => !on);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      children: [
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text('Lock Screen candle', style: Styles.cardTitle),
+              const SizedBox(height: 3),
+              const Text(
+                'A Live Activity on the Lock Screen while a tunnel or '
+                'Gospel runs.',
+                style: Styles.detail,
+              ),
+            ],
+          ),
+        ),
+        Toggle(on: _on, label: 'Lock Screen candle', onTap: _toggle),
       ],
     );
   }

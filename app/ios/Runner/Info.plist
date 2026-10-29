@@ -37,6 +37,8 @@
 	<string>????</string>
 	<key>CFBundleVersion</key>
 	<string>$(FLUTTER_BUILD_NUMBER)</string>
+	<key>NSSupportsLiveActivities</key>
+	<true/>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>The microphone is used for calls and voice messages with peers in a liturgy.</string>
 	<key>UIBackgroundModes</key>

@@ -7,6 +7,11 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		5A0C0DE00000000000000101 /* VigilAttributes.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5A0C0DE00000000000000111 /* VigilAttributes.swift */; };
+		5A0C0DE00000000000000102 /* VigilAttributes.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5A0C0DE00000000000000111 /* VigilAttributes.swift */; };
+		5A0C0DE00000000000000103 /* VigilActivity.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5A0C0DE00000000000000112 /* VigilActivity.swift */; };
+		5A0C0DE00000000000000104 /* CandleActivity.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5A0C0DE00000000000000115 /* CandleActivity.swift */; };
+		5A0C0DE00000000000000105 /* VigilActivity.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = 5A0C0DE00000000000000114 /* VigilActivity.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		1498D2341E8E89220040F4C2 /* GeneratedPluginRegistrant.m in Sources */ = {isa = PBXBuildFile; fileRef = 1498D2331E8E89220040F4C2 /* GeneratedPluginRegistrant.m */; };
 		331C808B294A63AB00263BE5 /* RunnerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 331C807B294A618700263BE5 /* RunnerTests.swift */; };
 		3B3967161E833CAA004F5970 /* AppFrameworkInfo.plist in Resources */ = {isa = PBXBuildFile; fileRef = 3B3967151E833CAA004F5970 /* AppFrameworkInfo.plist */; };
@@ -36,6 +41,13 @@
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
+		5A0C0DE00000000000000108 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 97C146E61CF9000F007C117D /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 5A0C0DE00000000000000110;
+			remoteInfo = VigilActivity;
+		};
 		331C8085294A63A400263BE5 /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
 			containerPortal = 97C146E61CF9000F007C117D /* Project object */;
@@ -60,6 +72,7 @@
 			dstSubfolderSpec = 13;
 			files = (
 				5A0C0DE00000000000000005 /* PacketTunnel.appex in Embed Foundation Extensions */,
+				5A0C0DE00000000000000105 /* VigilActivity.appex in Embed Foundation Extensions */,
 			);
 			name = "Embed Foundation Extensions";
 			runOnlyForDeploymentPostprocessing = 0;
@@ -77,6 +90,11 @@
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
+		5A0C0DE00000000000000111 /* VigilAttributes.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VigilAttributes.swift; sourceTree = "<group>"; };
+		5A0C0DE00000000000000112 /* VigilActivity.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VigilActivity.swift; sourceTree = "<group>"; };
+		5A0C0DE00000000000000113 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		5A0C0DE00000000000000114 /* VigilActivity.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = VigilActivity.appex; sourceTree = BUILT_PRODUCTS_DIR; };
+		5A0C0DE00000000000000115 /* CandleActivity.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CandleActivity.swift; sourceTree = "<group>"; };
 		1498D2321E8E86230040F4C2 /* GeneratedPluginRegistrant.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = GeneratedPluginRegistrant.h; sourceTree = "<group>"; };
 		1498D2331E8E89220040F4C2 /* GeneratedPluginRegistrant.m */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.c.objc; path = GeneratedPluginRegistrant.m; sourceTree = "<group>"; };
 		331C807B294A618700263BE5 /* RunnerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RunnerTests.swift; sourceTree = "<group>"; };
@@ -112,6 +130,13 @@
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
+		5A0C0DE00000000000000119 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		5A0C0DE00000000000000015 /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
@@ -134,6 +159,15 @@
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
+		5A0C0DE00000000000000116 /* VigilActivity */ = {
+			isa = PBXGroup;
+			children = (
+				5A0C0DE00000000000000112 /* VigilActivity.swift */,
+				5A0C0DE00000000000000113 /* Info.plist */,
+			);
+			path = VigilActivity;
+			sourceTree = "<group>";
+		};
 		331C8082294A63A400263BE5 /* RunnerTests */ = {
 			isa = PBXGroup;
 			children = (
@@ -159,6 +193,7 @@
 				5A0C0DE0000000000000000D /* TunnelKeychain.swift */,
 				5A0C0DE000000000000000B1 /* ChatVault.swift */,
 				5A0C0DE000000000000000E1 /* TunnelLink.swift */,
+				5A0C0DE00000000000000111 /* VigilAttributes.swift */,
 			);
 			path = Shared;
 			sourceTree = "<group>";
@@ -191,6 +226,7 @@
 				97C146F01CF9000F007C117D /* Runner */,
 				97C146EF1CF9000F007C117D /* Products */,
 				5A0C0DE00000000000000016 /* PacketTunnel */,
+				5A0C0DE00000000000000116 /* VigilActivity */,
 				5A0C0DE00000000000000017 /* Shared */,
 				5A0C0DE00000000000000018 /* Frameworks */,
 				331C8082294A63A400263BE5 /* RunnerTests */,
@@ -203,6 +239,7 @@
 				97C146EE1CF9000F007C117D /* Runner.app */,
 				331C8081294A63A400263BE5 /* RunnerTests.xctest */,
 				5A0C0DE00000000000000010 /* PacketTunnel.appex */,
+				5A0C0DE00000000000000114 /* VigilActivity.appex */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -222,6 +259,7 @@
 				5A0C0DE000000000000000A2 /* VigilCall.swift */,
 				5A0C0DE000000000000000D2 /* VigilVideo.swift */,
 				5A0C0DE000000000000000F2 /* VigilVoice.swift */,
+				5A0C0DE00000000000000115 /* CandleActivity.swift */,
 				5A0C0DE00000000000000014 /* Runner.entitlements */,
 				74858FAD1ED2DC5600515810 /* Runner-Bridging-Header.h */,
 			);
@@ -231,6 +269,23 @@
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
+		5A0C0DE00000000000000110 /* VigilActivity */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 5A0C0DE00000000000000117 /* Build configuration list for PBXNativeTarget "VigilActivity" */;
+			buildPhases = (
+				5A0C0DE00000000000000118 /* Sources */,
+				5A0C0DE00000000000000119 /* Frameworks */,
+				5A0C0DE0000000000000011A /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = VigilActivity;
+			productName = VigilActivity;
+			productReference = 5A0C0DE00000000000000114 /* VigilActivity.appex */;
+			productType = "com.apple.product-type.app-extension";
+		};
 		331C8080294A63A400263BE5 /* RunnerTests */ = {
 			isa = PBXNativeTarget;
 			buildConfigurationList = 331C8087294A63A400263BE5 /* Build configuration list for PBXNativeTarget "RunnerTests" */;
@@ -281,6 +336,7 @@
 			);
 			dependencies = (
 				5A0C0DE00000000000000022 /* PBXTargetDependency */,
+				5A0C0DE0000000000000011B /* PBXTargetDependency */,
 			);
 			name = Runner;
 			packageProductDependencies = (
@@ -305,6 +361,9 @@
 						TestTargetID = 97C146ED1CF9000F007C117D;
 					};
 					5A0C0DE0000000000000001E = {
+						CreatedOnToolsVersion = 15.0;
+					};
+					5A0C0DE00000000000000110 = {
 						CreatedOnToolsVersion = 15.0;
 					};
 					97C146ED1CF9000F007C117D = {
@@ -332,11 +391,19 @@
 				97C146ED1CF9000F007C117D /* Runner */,
 				331C8080294A63A400263BE5 /* RunnerTests */,
 				5A0C0DE0000000000000001E /* PacketTunnel */,
+				5A0C0DE00000000000000110 /* VigilActivity */,
 			);
 		};
 /* End PBXProject section */
 
 /* Begin PBXResourcesBuildPhase section */
+		5A0C0DE0000000000000011A /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		331C807F294A63A400263BE5 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
@@ -399,6 +466,15 @@
 /* End PBXShellScriptBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
+		5A0C0DE00000000000000118 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				5A0C0DE00000000000000103 /* VigilActivity.swift in Sources */,
+				5A0C0DE00000000000000102 /* VigilAttributes.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		331C807D294A63A400263BE5 /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
@@ -433,12 +509,19 @@
 				5A0C0DE00000000000000002 /* TunnelKeychain.swift in Sources */,
 				5A0C0DE000000000000000B2 /* ChatVault.swift in Sources */,
 				5A0C0DE000000000000000E2 /* TunnelLink.swift in Sources */,
+				5A0C0DE00000000000000101 /* VigilAttributes.swift in Sources */,
+				5A0C0DE00000000000000104 /* CandleActivity.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXSourcesBuildPhase section */
 
 /* Begin PBXTargetDependency section */
+		5A0C0DE0000000000000011B /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 5A0C0DE00000000000000110 /* VigilActivity */;
+			targetProxy = 5A0C0DE00000000000000108 /* PBXContainerItemProxy */;
+		};
 		331C8086294A63A400263BE5 /* PBXTargetDependency */ = {
 			isa = PBXTargetDependency;
 			target = 97C146ED1CF9000F007C117D /* Runner */;
@@ -471,6 +554,77 @@
 /* End PBXVariantGroup section */
 
 /* Begin XCBuildConfiguration section */
+		5A0C0DE0000000000000011C /* Debug */ = {
+			isa = XCBuildConfiguration;
+			baseConfigurationReference = 9740EEB21CF90195004384FC /* Debug.xcconfig */;
+			buildSettings = {
+				APPLICATION_EXTENSION_API_ONLY = YES;
+				CLANG_ENABLE_MODULES = YES;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = "$(FLUTTER_BUILD_NUMBER)";
+				INFOPLIST_FILE = VigilActivity/Info.plist;
+				IPHONEOS_DEPLOYMENT_TARGET = 16.2;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = se.sanctorum.vigil.VigilActivity;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		5A0C0DE0000000000000011D /* Release */ = {
+			isa = XCBuildConfiguration;
+			baseConfigurationReference = 7AFA3C8E1D35360C0083082E /* Release.xcconfig */;
+			buildSettings = {
+				APPLICATION_EXTENSION_API_ONLY = YES;
+				CLANG_ENABLE_MODULES = YES;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = "$(FLUTTER_BUILD_NUMBER)";
+				INFOPLIST_FILE = VigilActivity/Info.plist;
+				IPHONEOS_DEPLOYMENT_TARGET = 16.2;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = se.sanctorum.vigil.VigilActivity;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
+		5A0C0DE0000000000000011E /* Profile */ = {
+			isa = XCBuildConfiguration;
+			baseConfigurationReference = 7AFA3C8E1D35360C0083082E /* Release.xcconfig */;
+			buildSettings = {
+				APPLICATION_EXTENSION_API_ONLY = YES;
+				CLANG_ENABLE_MODULES = YES;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = "$(FLUTTER_BUILD_NUMBER)";
+				INFOPLIST_FILE = VigilActivity/Info.plist;
+				IPHONEOS_DEPLOYMENT_TARGET = 16.2;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = se.sanctorum.vigil.VigilActivity;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Profile;
+		};
 		249021D3217E4FDB00AE95B9 /* Profile */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
@@ -537,6 +691,11 @@
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
+				);
+				OTHER_LDFLAGS = (
+					"$(inherited)",
+					"-weak_framework",
+					ActivityKit,
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = se.sanctorum.vigil;
 				PRODUCT_NAME = "$(TARGET_NAME)";
@@ -794,6 +953,11 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
+				OTHER_LDFLAGS = (
+					"$(inherited)",
+					"-weak_framework",
+					ActivityKit,
+				);
 				PRODUCT_BUNDLE_IDENTIFIER = se.sanctorum.vigil;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_OBJC_BRIDGING_HEADER = "Runner/Runner-Bridging-Header.h";
@@ -817,6 +981,11 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
+				OTHER_LDFLAGS = (
+					"$(inherited)",
+					"-weak_framework",
+					ActivityKit,
+				);
 				PRODUCT_BUNDLE_IDENTIFIER = se.sanctorum.vigil;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_OBJC_BRIDGING_HEADER = "Runner/Runner-Bridging-Header.h";
@@ -828,6 +997,16 @@
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
+		5A0C0DE00000000000000117 /* Build configuration list for PBXNativeTarget "VigilActivity" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				5A0C0DE0000000000000011C /* Debug */,
+				5A0C0DE0000000000000011D /* Release */,
+				5A0C0DE0000000000000011E /* Profile */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
 		331C8087294A63A400263BE5 /* Build configuration list for PBXNativeTarget "RunnerTests" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (

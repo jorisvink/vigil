@@ -914,6 +914,7 @@ final class VigilPlugin: NSObject, FlutterPlugin, UIDocumentPickerDelegate,
             guard let manager,
                   let session = manager.connection as? NETunnelProviderSession,
                   [.connected, .connecting, .reasserting].contains(session.status) else {
+                CandleActivity.update(since: nil)
                 VigilCall.shared.update(nil)
                 VigilCall.shared.send = nil
                 self.last = nil
@@ -921,6 +922,10 @@ final class VigilPlugin: NSObject, FlutterPlugin, UIDocumentPickerDelegate,
                 self.linking = false
                 result(idle)
                 return
+            }
+
+            if let since = session.connectedDate {
+                CandleActivity.update(since: since)
             }
 
             let id = self.tunnelId(manager)
