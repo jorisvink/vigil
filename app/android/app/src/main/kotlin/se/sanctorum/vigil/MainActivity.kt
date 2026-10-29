@@ -1,6 +1,7 @@
 package se.sanctorum.vigil
 
 import android.Manifest
+import android.content.ClipboardManager
 import android.content.Context
 import android.content.ActivityNotFoundException
 import android.content.Intent
@@ -257,6 +258,26 @@ class MainActivity : FlutterActivity() {
 
                     background(result) {
                         val image = Images.jpeg(this, path)
+
+                        try {
+                            dataSend(id, "image", Images.name(), image)
+                        } finally {
+                            image.fill(0)
+                        }
+                    }
+                }
+                "clipboardImage" -> {
+                    val description = getSystemService(ClipboardManager::class.java).primaryClipDescription
+                    result.success((description?.hasMimeType("image/*") == true).toString())
+                }
+                "chatImagePaste" -> {
+                    val id = chat(call.arguments as String)
+                    val clip = getSystemService(ClipboardManager::class.java).primaryClip
+                    val uri = clip?.takeIf { it.itemCount > 0 }?.getItemAt(0)?.uri
+                        ?: throw IllegalArgumentException("There is no image to paste.")
+
+                    background(result) {
+                        val image = Images.jpeg(this, uri)
 
                         try {
                             dataSend(id, "image", Images.name(), image)

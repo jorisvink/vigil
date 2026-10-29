@@ -334,7 +334,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
 
                     if defaults.string(forKey: "chatOpen") != chat {
                         unseen[chat, default: 0] += 1
-                        notifyChat(chat, peer, nick, text)
+                        notifyChat(chat, peer, nick, text, badge: unseen.values.reduce(0, +))
                     }
                 case "joined", "left":
                     try vault.deliver(chat: chat, peer: peer, nick: event["nick"] as? String ?? "",
@@ -362,7 +362,8 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
 
                     if defaults.string(forKey: "chatOpen") != chat {
                         unseen[chat, default: 0] += 1
-                        notifyChat(chat, peer, nick, Self.summary(media, name))
+                        notifyChat(chat, peer, nick, Self.summary(media, name),
+                                   badge: unseen.values.reduce(0, +))
                     }
                 case "sent", "delivered":
                     receipt(chat, ref: (event["ref"] as? NSNumber)?.int64Value ?? 0, kind: kind)
@@ -480,7 +481,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         }
     }
 
-    private func notifyChat(_ chat: String, _ peer: UInt8, _ nick: String, _ text: String) {
+    private func notifyChat(_ chat: String, _ peer: UInt8, _ nick: String, _ text: String, badge: Int) {
         let preview = ChatVault.defaults.object(forKey: "chatPreview") as? Bool ?? false
         let content = UNMutableNotificationContent()
         let body = preview ? text : "New message"
@@ -490,6 +491,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         content.title = ChatVault.group(chat) == nil ? sender : ChatVault.name(chat: chat)
         content.body = ChatVault.group(chat) == nil ? body : "\(sender): \(body)"
         content.sound = .default
+        content.badge = NSNumber(value: badge)
         content.threadIdentifier = "chat-\(chat)"
         content.userInfo = ["chat": chat]
 

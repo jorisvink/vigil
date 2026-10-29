@@ -778,6 +778,14 @@ class Vigil {
     await refresh();
   }
 
+  Future<bool> clipboardImage() async =>
+      await _invoke('clipboardImage', null) == 'true';
+
+  Future<void> pasteImage(String peer) async {
+    await _invoke('chatImagePaste', peer);
+    await refresh();
+  }
+
   Future<void> sendFile(String peer) async {
     await _invoke('chatFileSend', peer);
     await refresh();

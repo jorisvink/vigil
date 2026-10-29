@@ -347,6 +347,7 @@ object Chats {
             .setSmallIcon(R.drawable.ic_notification)
             .setCategory(Notification.CATEGORY_MESSAGE)
             .setStyle(style)
+            .setNumber(unseen[id] ?: 1)
             .setAutoCancel(true)
             .setVisibility(Notification.VISIBILITY_PRIVATE)
             .setPublicVersion(

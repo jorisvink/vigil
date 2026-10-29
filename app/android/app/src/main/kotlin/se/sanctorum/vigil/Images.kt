@@ -5,6 +5,7 @@ import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.Matrix
 import android.media.ExifInterface
+import android.net.Uri
 import java.io.ByteArrayOutputStream
 import java.io.File
 
@@ -51,6 +52,26 @@ object Images {
         }
     }
 
+    fun jpeg(context: Context, uri: Uri): ByteArray {
+        val file = File.createTempFile("paste", null, context.cacheDir)
+
+        try {
+            val input = context.contentResolver.openInputStream(uri)
+                ?: throw IllegalArgumentException("There is no image to paste.")
+
+            input.use { from ->
+                file.outputStream().use { to ->
+                    require(from.copyTo(to) <= PASTE_MAX) { "That image is too large to send." }
+                }
+            }
+        } catch (e: Exception) {
+            file.delete()
+            throw e
+        }
+
+        return jpeg(context, file.path)
+    }
+
     fun name(): String = "photo-%tY%<tm%<td-%<tH%<tM%<tS.jpg".format(System.currentTimeMillis())
 
     private fun rotation(path: String): Float =
@@ -64,4 +85,5 @@ object Images {
     private const val SIDE = 2048
     private const val QUALITY = 85
     private const val MAX = 4 * 1024 * 1024
+    private const val PASTE_MAX = 64L * 1024 * 1024
 }

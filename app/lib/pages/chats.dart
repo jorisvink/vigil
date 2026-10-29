@@ -561,6 +561,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
   bool _typing = false;
   bool _sending = false;
   bool _held = false;
+  bool _pastable = false;
   bool _discard = false;
   DateTime? _recording;
   Timer? _ticker;
@@ -615,6 +616,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
 
     _input.addListener(_changed);
     unawaited(Vigil.instance.openChat(peer, true).catchError((Object _) {}));
+    unawaited(_clipboard());
     _load();
   }
 
@@ -645,6 +647,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
       unawaited(Vigil.instance.openChat(peer, true).catchError((Object _) {}));
+      unawaited(_clipboard());
       _load();
     }
   }
@@ -778,6 +781,25 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
     }
 
     await _sendWith(() => Vigil.instance.sendImage(peer, picked.path));
+  }
+
+  Future<void> _clipboard() async {
+    final pastable = await Vigil.instance.clipboardImage().catchError(
+      (Object _) => false,
+    );
+
+    if (mounted && pastable != _pastable) {
+      setState(() => _pastable = pastable);
+    }
+  }
+
+  Future<void> _paste() async {
+    if (_sending) {
+      return;
+    }
+
+    await _sendWith(() => Vigil.instance.pasteImage(peer));
+    unawaited(_clipboard());
   }
 
   Future<void> _hold() async {
@@ -1240,6 +1262,8 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
                               discard: _discard,
                               onSend: _send,
                               onAttach: _attach,
+                              onPaste: _pastable ? _paste : null,
+                              onMenu: _clipboard,
                               onHold: _hold,
                               onSlide: _slide,
                               onRelease: _release,
@@ -1721,6 +1745,8 @@ class _Composer extends StatelessWidget {
     required this.discard,
     required this.onSend,
     required this.onAttach,
+    required this.onPaste,
+    required this.onMenu,
     required this.onHold,
     required this.onSlide,
     required this.onRelease,
@@ -1732,6 +1758,8 @@ class _Composer extends StatelessWidget {
   final bool discard;
   final VoidCallback onSend;
   final VoidCallback onAttach;
+  final VoidCallback? onPaste;
+  final VoidCallback onMenu;
   final VoidCallback onHold;
   final ValueChanged<Offset> onSlide;
   final Future<void> Function({bool cancel}) onRelease;
@@ -1769,6 +1797,28 @@ class _Composer extends StatelessWidget {
           ],
         ),
       ),
+    );
+  }
+
+  Widget _menu(BuildContext context, EditableTextState state) {
+    onMenu();
+
+    final items = state.contextMenuButtonItems;
+    final text = items.any((i) => i.type == ContextMenuButtonType.paste);
+
+    return AdaptiveTextSelectionToolbar.buttonItems(
+      anchors: state.contextMenuAnchors,
+      buttonItems: [
+        ...items,
+        if (onPaste != null && !text)
+          ContextMenuButtonItem(
+            type: ContextMenuButtonType.paste,
+            onPressed: () {
+              ContextMenuController.removeAny();
+              onPaste!();
+            },
+          ),
+      ],
     );
   }
 
@@ -1853,6 +1903,7 @@ class _Composer extends StatelessWidget {
                               keyboardType: TextInputType.multiline,
                               textCapitalization: TextCapitalization.sentences,
                               inputFormatters: const [_Utf8Limit(_messageMax)],
+                              contextMenuBuilder: _menu,
                               style: Styles.body.copyWith(color: Palette.fg),
                               cursorColor: Palette.amber,
                               decoration: InputDecoration.collapsed(

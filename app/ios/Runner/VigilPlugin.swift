@@ -29,6 +29,7 @@ final class VigilPlugin: NSObject, FlutterPlugin, UIDocumentPickerDelegate,
     private var last: String?
     private var silent: TimeInterval?
     private var linking = false
+    private var badged: Int?
 
     private static let silence: TimeInterval = 10
     private var picking: (String, FlutterResult)?
@@ -247,8 +248,10 @@ final class VigilPlugin: NSObject, FlutterPlugin, UIDocumentPickerDelegate,
             top.present(picker, animated: true)
         case "voiceRecord", "voiceSend", "voiceCancel", "voicePlay", "voiceStop":
             voice(call, result: result)
+        case "clipboardImage":
+            result(UIPasteboard.general.hasImages ? "true" : "false")
         case "chats", "chat", "chatSend", "chatImageSend", "chatRead", "chatOpen", "chatTyping",
-             "chatDelete", "chatSettings", "chatGroup":
+             "chatImagePaste", "chatDelete", "chatSettings", "chatGroup":
             do {
                 result(try chat(call))
             } catch let error as ChatVault.Locked {
@@ -478,7 +481,7 @@ final class VigilPlugin: NSObject, FlutterPlugin, UIDocumentPickerDelegate,
 
         if voice != nil {
             AVAudioSession.sharedInstance().requestRecordPermission { _ in }
-            UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { _, _ in }
+            UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge]) { _, _ in }
         }
 
         manager { existing in
@@ -883,13 +886,28 @@ final class VigilPlugin: NSObject, FlutterPlugin, UIDocumentPickerDelegate,
             }
         }
 
+        return try jpeg(CGImageSourceCreateWithURL(URL(fileURLWithPath: path) as CFURL, nil))
+    }
+
+    private static func pasted() throws -> Data {
+        let board = UIPasteboard.general
+
+        guard let type = board.types.first(where: { UTType($0)?.conforms(to: .image) ?? false }),
+              let data = board.data(forPasteboardType: type) else {
+            throw ChatVault.Failure(description: "There is no image to paste.")
+        }
+
+        return try jpeg(CGImageSourceCreateWithData(data as CFData, nil))
+    }
+
+    private static func jpeg(_ source: CGImageSource?) throws -> Data {
         let options: [CFString: Any] = [
             kCGImageSourceCreateThumbnailFromImageAlways: true,
             kCGImageSourceCreateThumbnailWithTransform: true,
             kCGImageSourceThumbnailMaxPixelSize: 2048,
         ]
 
-        guard let source = CGImageSourceCreateWithURL(URL(fileURLWithPath: path) as CFURL, nil),
+        guard let source,
               let image = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary),
               let jpeg = UIImage(cgImage: image).jpegData(compressionQuality: 0.85) else {
             throw ChatVault.Failure(description: "That is not an image.")
@@ -1068,6 +1086,8 @@ final class VigilPlugin: NSObject, FlutterPlugin, UIDocumentPickerDelegate,
         case "chatImageSend":
             let image = try Self.jpeg(args["path"] as? String ?? "")
             return try dataSend(hex, media: "image", name: Self.photoName(), data: image)
+        case "chatImagePaste":
+            return try dataSend(hex, media: "image", name: Self.photoName(), data: try Self.pasted())
         case "chatRead":
             try vault.read(hex)
             seen(hex)
@@ -1144,12 +1164,26 @@ final class VigilPlugin: NSObject, FlutterPlugin, UIDocumentPickerDelegate,
         }
     }
 
+    private func badge(_ count: Int) {
+        guard count != badged else { return }
+
+        badged = count
+
+        if #available(iOS 16.0, *) {
+            UNUserNotificationCenter.current().setBadgeCount(count)
+        } else {
+            UIApplication.shared.applicationIconBadgeNumber = count
+        }
+    }
+
     private func chats() -> String {
         let defaults = ChatVault.defaults
         let unseen = defaults.dictionary(forKey: "chatUnseen") as? [String: Int] ?? [:]
         let open = Self.requested
         let group = defaults.integer(forKey: "chatGroup")
         Self.requested = nil
+
+        badge(unseen.values.reduce(0, +))
 
         return json([
             "version": defaults.integer(forKey: "chatVersion") + version,
