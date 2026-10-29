@@ -212,7 +212,9 @@ class VigilVpnService : VpnService() {
         }
 
         if (running == voice) {
-            if (store.gospel) return START_STICKY
+            if (store.gospel) {
+                return START_STICKY
+            }
 
             disconnect()
             idle()
@@ -272,18 +274,25 @@ class VigilVpnService : VpnService() {
         }
 
         try {
-            if (type != 0) startForeground(NOTIFICATION, notification, type)
-            else startForeground(NOTIFICATION, notification)
+            if (type != 0) {
+                startForeground(NOTIFICATION, notification, type)
+            } else {
+                startForeground(NOTIFICATION, notification)
+            }
         } catch (e: Exception) {
             Log.w(TAG, "failed to start as foreground service ($type)", e)
 
-            if (call) startForeground(notification, false)
+            if (call) {
+                startForeground(notification, false)
+            }
         }
     }
 
     private fun refresh() {
         val summary = summary ?: return
-        if (active == null) return
+        if (active == null) {
+            return
+        }
 
         val status = status()
         Calls.update(status, voice())
@@ -316,7 +325,9 @@ class VigilVpnService : VpnService() {
         }
 
     private fun state(status: JSONObject?): String {
-        if (status?.optBoolean("running") != true) return "Connecting…"
+        if (status?.optBoolean("running") != true) {
+            return "Connecting…"
+        }
 
         if (summary?.let { voiceOnly(it) } == true) {
             return if (status.optJSONObject("call")?.optBoolean("alive") == true) {
@@ -397,7 +408,9 @@ class VigilVpnService : VpnService() {
         }
 
         val dns = summary.getJSONArray("dns")
-        for (i in 0 until dns.length()) builder.addDnsServer(dns.getString(i))
+        for (i in 0 until dns.length()) {
+            builder.addDnsServer(dns.getString(i))
+        }
 
         if (full(summary) && summary.optBoolean("block_ipv6", true)) {
             builder.addAddress(IPV6_SINK, 128)
@@ -425,6 +438,10 @@ class VigilVpnService : VpnService() {
             builder.setConfigureIntent(
                 PendingIntent.getActivity(this, 0, it, PendingIntent.FLAG_IMMUTABLE)
             )
+        }
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            builder.setMetered(false)
         }
 
         return builder

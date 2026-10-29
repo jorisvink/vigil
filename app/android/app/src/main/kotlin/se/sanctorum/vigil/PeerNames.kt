@@ -16,7 +16,9 @@ object PeerNames {
 
         for (key in names.keys()) {
             val name = names.optString(key).trim().take(MAX)
-            if (key.matches(Regex("[0-9a-f]{2}|g[0-9a-f]{4}")) && name.isNotEmpty()) clean.put(key, name)
+            if (key.matches(Regex("[0-9a-f]{2}|g[0-9a-f]{4}")) && name.isNotEmpty()) {
+                clean.put(key, name)
+            }
         }
 
         prefs(context).edit().putString(KEY, clean.toString()).apply()

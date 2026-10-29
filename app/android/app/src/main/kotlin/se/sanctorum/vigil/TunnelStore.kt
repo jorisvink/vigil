@@ -43,7 +43,9 @@ class TunnelStore(context: Context) {
     fun summary(id: String): JSONObject = parse(file(id, SUMMARY).readText())
 
     private fun parse(text: String): JSONObject = JSONObject(text).apply {
-        if (optString("mode") == "voice") put("mode", "gospel")
+        if (optString("mode") == "voice") {
+            put("mode", "gospel")
+        }
     }
 
     fun voice(): String? {
@@ -66,7 +68,9 @@ class TunnelStore(context: Context) {
     fun import(config: ByteArray): JSONObject {
         val summary = JSONObject(Vigil.check(config))
 
-        if (summary.has("error")) throw Invalid(summary.getString("error"))
+        if (summary.has("error")) {
+            throw Invalid(summary.getString("error"))
+        }
 
         if (summary.optString("mode") == "gospel" && voice() != null) {
             throw Invalid("There is already a Gospel configuration, remove it first.")
@@ -92,7 +96,9 @@ class TunnelStore(context: Context) {
         try {
             val summary = JSONObject(Vigil.check(config))
 
-            if (summary.has("error")) throw Invalid(summary.getString("error"))
+            if (summary.has("error")) {
+                throw Invalid(summary.getString("error"))
+            }
 
             val imported = file(id, SUMMARY).lastModified()
             seal(id, config, summary)
@@ -134,7 +140,9 @@ class TunnelStore(context: Context) {
 
         file(id, SUMMARY).delete()
 
-        if (last == id) last = null
+        if (last == id) {
+            last = null
+        }
     }
 
     var last: String?

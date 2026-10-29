@@ -13,12 +13,16 @@ object Files {
     fun name(name: String): String {
         val clean = name.substringAfterLast('/').filter { it >= ' ' && it != '\u007f' && it != '\\' }
             .trimStart('.').ifEmpty { "file" }
-        if (clean.toByteArray().size <= NAME_MAX) return clean
+        if (clean.toByteArray().size <= NAME_MAX) {
+            return clean
+        }
 
         val ext = clean.substringAfterLast('.', "").take(16)
         var stem = clean.removeSuffix(".$ext")
 
-        while ("$stem.$ext".toByteArray().size > NAME_MAX) stem = stem.dropLast(1)
+        while ("$stem.$ext".toByteArray().size > NAME_MAX) {
+            stem = stem.dropLast(1)
+        }
 
         return if (ext.isEmpty()) stem else "$stem.$ext"
     }
@@ -43,7 +47,9 @@ object Files {
 
     fun file(context: Context, uri: Uri): File? {
         val id = uri.pathSegments.firstOrNull() ?: return null
-        if (!id.matches(Regex("[0-9a-f]{32}"))) return null
+        if (!id.matches(Regex("[0-9a-f]{32}"))) {
+            return null
+        }
 
         return File(folder(context), id).takeIf { it.exists() }
     }

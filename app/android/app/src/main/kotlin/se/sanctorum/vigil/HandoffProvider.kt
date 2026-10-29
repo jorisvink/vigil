@@ -18,7 +18,9 @@ class HandoffProvider : ContentProvider() {
             throw SecurityException("not allowed to hand over configurations")
         }
 
-        if (method != METHOD) return null
+        if (method != METHOD) {
+            return null
+        }
 
         val config = extras?.getByteArray(EXTRA) ?: return null
         Handoff.put(config)

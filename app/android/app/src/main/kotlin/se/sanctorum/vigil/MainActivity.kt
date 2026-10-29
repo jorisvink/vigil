@@ -124,8 +124,13 @@ class MainActivity : FlutterActivity() {
                     val status = JSONObject(Vigil.status())
                     val voice = JSONObject(Vigil.voiceStatus())
 
-                    if (VigilVpnService.active != null) Calls.update(status, voice)
-                    if (locked && !Calls.busy) unlocked()
+                    if (VigilVpnService.active != null) {
+                        Calls.update(status, voice)
+                    }
+
+                    if (locked && !Calls.busy) {
+                        unlocked()
+                    }
 
                     result.success(
                     JSONObject()
@@ -237,7 +242,9 @@ class MainActivity : FlutterActivity() {
                     }
 
                     vault.send(id, text, ref)
-                    if (group == null) Vigil.chatSend(id.toInt(16), ref, bytes)
+                    if (group == null) {
+                        Vigil.chatSend(id.toInt(16), ref, bytes)
+                    }
 
                     Chats.changed()
                     result.success(ref.toString())
@@ -312,7 +319,9 @@ class MainActivity : FlutterActivity() {
                 "chatDelete" -> {
                     val id = chat(call.arguments as String)
                     Chats.vault(this).delete(id)
-                    if (ChatVault.group(id) == null) Vigil.chatForget(id.toInt(16))
+                    if (ChatVault.group(id) == null) {
+                        Vigil.chatForget(id.toInt(16))
+                    }
                     Chats.changed()
                     result.success("")
                 }
@@ -387,7 +396,9 @@ class MainActivity : FlutterActivity() {
             wanted.add(Manifest.permission.RECORD_AUDIO)
         }
 
-        if (wanted.isNotEmpty()) requestPermissions(wanted.toTypedArray(), REQUEST_NOTIFY)
+        if (wanted.isNotEmpty()) {
+            requestPermissions(wanted.toTypedArray(), REQUEST_NOTIFY)
+        }
 
         withVpn(result) { start(id, result) }
     }
@@ -451,7 +462,9 @@ class MainActivity : FlutterActivity() {
             return
         }
 
-        if (requestCode != REQUEST_VPN) return
+        if (requestCode != REQUEST_VPN) {
+            return
+        }
 
         val (result, then) = pending ?: return
         pending = null
@@ -493,7 +506,9 @@ class MainActivity : FlutterActivity() {
 
     private fun withMicrophone(intent: Intent, result: MethodChannel.Result?, camera: Boolean = false) {
         val wanted = mutableListOf(Manifest.permission.RECORD_AUDIO)
-        if (camera) wanted.add(Manifest.permission.CAMERA)
+        if (camera) {
+            wanted.add(Manifest.permission.CAMERA)
+        }
 
         if (wanted.all { granted(it) }) {
             startService(intent)
@@ -553,7 +568,9 @@ class MainActivity : FlutterActivity() {
     ) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
 
-        if (requestCode != REQUEST_MICROPHONE) return
+        if (requestCode != REQUEST_MICROPHONE) {
+            return
+        }
 
         val (intent, result) = microphone ?: return
         microphone = null
@@ -595,7 +612,9 @@ class MainActivity : FlutterActivity() {
         }
 
         vault.sendData(id, media, name, data, ref)
-        if (group == null && !Vigil.chatDataSend(id.toInt(16), ref, kind, label, data)) Chats.refused(ref)
+        if (group == null && !Vigil.chatDataSend(id.toInt(16), ref, kind, label, data)) {
+            Chats.refused(ref)
+        }
 
         Chats.changed()
 
@@ -609,10 +628,14 @@ class MainActivity : FlutterActivity() {
         contentResolver.query(uri, null, null, null, null)?.use {
             if (it.moveToFirst()) {
                 val column = it.getColumnIndex(OpenableColumns.DISPLAY_NAME)
-                if (column >= 0) name = it.getString(column) ?: name
+                if (column >= 0) {
+                    name = it.getString(column) ?: name
+                }
 
                 val length = it.getColumnIndex(OpenableColumns.SIZE)
-                if (length >= 0 && !it.isNull(length)) size = it.getLong(length)
+                if (length >= 0 && !it.isNull(length)) {
+                    size = it.getLong(length)
+                }
             }
         }
 
@@ -624,7 +647,9 @@ class MainActivity : FlutterActivity() {
 
             while (true) {
                 val n = input.read(buf)
-                if (n == -1) break
+                if (n == -1) {
+                    break
+                }
 
                 out.write(buf, 0, n)
                 require(out.size() <= DATA_MAX) { "A file is at most 4 MB." }

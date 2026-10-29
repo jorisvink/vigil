@@ -35,7 +35,9 @@ class OpenProvider : ContentProvider() {
     }
 
     override fun openFile(uri: Uri, mode: String): ParcelFileDescriptor {
-        if (mode != "r") throw FileNotFoundException("read only")
+        if (mode != "r") {
+            throw FileNotFoundException("read only")
+        }
 
         val file = Files.file(context ?: throw FileNotFoundException(), uri) ?: throw FileNotFoundException()
 

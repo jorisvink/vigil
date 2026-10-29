@@ -96,7 +96,9 @@ object Chats {
         val pending = receipts.toList()
         receipts.clear()
 
-        for (receipt in pending) receipt(vault, receipt)
+        for (receipt in pending) {
+            receipt(vault, receipt)
+        }
 
         val events = JSONArray(String(Vigil.chatEvents(), Charsets.UTF_8))
 
@@ -167,7 +169,9 @@ object Chats {
 
     fun refused(ref: Long?) {
         ref?.let { waiting.add(it) }
-        if (resubmit == 0L) resubmit = System.currentTimeMillis() + RESUBMIT_MS
+        if (resubmit == 0L) {
+            resubmit = System.currentTimeMillis() + RESUBMIT_MS
+        }
     }
 
     private fun handover(vault: ChatVault, only: Set<Long>?) {
@@ -181,7 +185,9 @@ object Chats {
 
             refs.add(ref)
 
-            if (only != null && ref !in only) continue
+            if (only != null && ref !in only) {
+                continue
+            }
 
             if (!entry.has("data")) {
                 Vigil.chatSend(chat.toInt(16), ref, entry.getString("text").toByteArray())
@@ -196,7 +202,11 @@ object Chats {
                     entry.getString("name").toByteArray(), data
                 )
 
-                if (sent) waiting.remove(ref) else refused(ref)
+                if (sent) {
+                    waiting.remove(ref)
+                } else {
+                    refused(ref)
+                }
             } finally {
                 data.fill(0)
             }
@@ -221,7 +231,9 @@ object Chats {
         opened = if (on) id else ""
 
         peer(id)?.let { Vigil.chatOpen(it, on) }
-        if (on) seen(context, id)
+        if (on) {
+            seen(context, id)
+        }
     }
 
     fun typing(id: String, on: Boolean) {
@@ -283,11 +295,15 @@ object Chats {
 
     fun settings(context: Context, nick: String?, preview: Boolean?): JSONObject {
         if (nick != null) {
-            if (!Vigil.chatNick(nick)) throw IllegalArgumentException("A name is 2 to 16 letters or digits.")
+            if (!Vigil.chatNick(nick)) {
+                throw IllegalArgumentException("A name is 2 to 16 letters or digits.")
+            }
             prefs(context).edit().putString("nick", nick).apply()
         }
 
-        if (preview != null) prefs(context).edit().putBoolean("preview", preview).apply()
+        if (preview != null) {
+            prefs(context).edit().putBoolean("preview", preview).apply()
+        }
 
         return JSONObject().put("nick", nick(context)).put("preview", preview(context))
     }
@@ -303,13 +319,17 @@ object Chats {
         val messages = shown.getOrPut(id) { mutableListOf() }
 
         messages.add(Shown(if (preview(service)) text else "New message", time, name, Calls.hex(peer)))
-        while (messages.size > SHOWN_MAX) messages.removeAt(0)
+        while (messages.size > SHOWN_MAX) {
+            messages.removeAt(0)
+        }
 
         val group = ChatVault.group(id) != null
         val me = Person.Builder().setName("You").build()
         val style = Notification.MessagingStyle(me)
 
-        if (group) style.setConversationTitle(PeerNames.chat(service, id)).setGroupConversation(true)
+        if (group) {
+            style.setConversationTitle(PeerNames.chat(service, id)).setGroupConversation(true)
+        }
 
         for (message in messages) {
             val sender = Person.Builder().setName(message.name).setKey(message.key).build()

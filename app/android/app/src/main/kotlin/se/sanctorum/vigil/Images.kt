@@ -18,7 +18,9 @@ object Images {
             require(bounds.outWidth > 0 && bounds.outHeight > 0) { "That is not an image." }
 
             var sample = 1
-            while (maxOf(bounds.outWidth, bounds.outHeight) / (sample * 2) >= SIDE) sample *= 2
+            while (maxOf(bounds.outWidth, bounds.outHeight) / (sample * 2) >= SIDE) {
+                sample *= 2
+            }
 
             val decoded = BitmapFactory.decodeFile(path, BitmapFactory.Options().apply { inSampleSize = sample })
                 ?: throw IllegalArgumentException("That is not an image.")
@@ -33,7 +35,9 @@ object Images {
 
             bitmap.compress(Bitmap.CompressFormat.JPEG, QUALITY, out)
 
-            if (bitmap !== decoded) bitmap.recycle()
+            if (bitmap !== decoded) {
+                bitmap.recycle()
+            }
             decoded.recycle()
 
             val jpeg = out.toByteArray()
@@ -41,7 +45,9 @@ object Images {
 
             return jpeg
         } finally {
-            if (file.canonicalPath.startsWith(context.cacheDir.canonicalPath)) file.delete()
+            if (file.canonicalPath.startsWith(context.cacheDir.canonicalPath)) {
+                file.delete()
+            }
         }
     }
 

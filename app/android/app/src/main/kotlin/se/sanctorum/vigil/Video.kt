@@ -125,7 +125,9 @@ object Video {
     @JvmStatic
     fun coreStart(): Boolean {
         synchronized(this) {
-            if (decoding) return true
+            if (decoding) {
+                return true
+            }
 
             decoding = true
             decoder = Thread({ decode() }, "vigil-video").apply { start() }
@@ -203,7 +205,9 @@ object Video {
         }
 
         handler?.post {
-            if (device != null) session()
+            if (device != null) {
+                session()
+            }
         }
     }
 
@@ -222,7 +226,9 @@ object Video {
         val context = context ?: return
 
         synchronized(this) {
-            if (capturing) return
+            if (capturing) {
+                return
+            }
             capturing = true
 
             thread = HandlerThread("vigil-camera").apply { start() }
@@ -269,7 +275,9 @@ object Video {
         val thread: HandlerThread
 
         synchronized(this) {
-            if (!capturing) return
+            if (!capturing) {
+                return
+            }
             capturing = false
 
             handler = this.handler ?: return
@@ -287,8 +295,13 @@ object Video {
             done.countDown()
         }
 
-        if (!done.await(2, TimeUnit.SECONDS)) Log.w(TAG, "camera did not close in time")
-        if (closing?.await(2, TimeUnit.SECONDS) == false) Log.w(TAG, "camera device did not close in time")
+        if (!done.await(2, TimeUnit.SECONDS)) {
+            Log.w(TAG, "camera did not close in time")
+        }
+
+        if (closing?.await(2, TimeUnit.SECONDS) == false) {
+            Log.w(TAG, "camera device did not close in time")
+        }
 
         thread.quitSafely()
         thread.join()
@@ -337,13 +350,17 @@ object Video {
 
             override fun onDisconnected(camera: CameraDevice) {
                 camera.close()
-                if (device === camera) device = null
+                if (device === camera) {
+                    device = null
+                }
             }
 
             override fun onError(camera: CameraDevice, error: Int) {
                 Log.w(TAG, "camera error $error")
                 camera.close()
-                if (device === camera) device = null
+                if (device === camera) {
+                    device = null
+                }
             }
         }, handler)
     }
@@ -428,20 +445,28 @@ object Video {
             return
         }
 
-        if (info.size == 0) return
+        if (info.size == 0) {
+            return
+        }
 
         val key = info.flags and MediaCodec.BUFFER_FLAG_KEY_FRAME != 0
         val prefix = if (key) config else null
         val total = (prefix?.size ?: 0) + info.size
 
-        if (total > FRAME_MAX) return
+        if (total > FRAME_MAX) {
+            return
+        }
 
         out.clear()
-        if (prefix != null) out.put(prefix)
+        if (prefix != null) {
+            out.put(prefix)
+        }
         out.put(buffer)
 
         var flags = (rotation and ROTATE_MASK) shl ROTATE_SHIFT
-        if (key) flags = flags or FLAG_KEY
+        if (key) {
+            flags = flags or FLAG_KEY
+        }
 
         produced = System.currentTimeMillis()
         input(out, total, flags)
@@ -542,13 +567,17 @@ object Video {
                 rotations.clear()
                 surface = wanted
                 waiting = true
-                if (surface != null) refresh()
+                if (surface != null) {
+                    refresh()
+                }
             }
 
             val next = take(buffer)
 
             if (next == 0L) {
-                if (codec != null) drain(codec, info, rotations)
+                if (codec != null) {
+                    drain(codec, info, rotations)
+                }
                 Thread.sleep(5)
                 continue
             }
@@ -559,8 +588,13 @@ object Video {
             val flags = (next ushr 32).toInt()
             val key = flags and FLAG_KEY != 0
 
-            if (surface == null) continue
-            if (waiting && !key) continue
+            if (surface == null) {
+                continue
+            }
+
+            if (waiting && !key) {
+                continue
+            }
 
             if (key) {
                 val changed = sps(buffer, len)
@@ -571,7 +605,9 @@ object Video {
                     rotations.clear()
                 }
 
-                if (changed != null) sps = changed
+                if (changed != null) {
+                    sps = changed
+                }
             }
 
             try {
@@ -653,16 +689,22 @@ object Video {
 
             if (start != -1) {
                 var end = idx
-                if (end > start && buffer.get(end - 1) == 0.toByte()) end--
+                if (end > start && buffer.get(end - 1) == 0.toByte()) {
+                    end--
+                }
                 return ByteArray(end - start) { buffer.get(start + it) }
             }
 
             idx += 3
 
-            if (idx < len && (buffer.get(idx).toInt() and 0x1f) == NAL_SPS) start = idx
+            if (idx < len && (buffer.get(idx).toInt() and 0x1f) == NAL_SPS) {
+                start = idx
+            }
         }
 
-        if (start == -1) return null
+        if (start == -1) {
+            return null
+        }
 
         return ByteArray(len - start) { buffer.get(start + it) }
     }
@@ -684,7 +726,9 @@ object Video {
                 continue
             }
 
-            if (index < 0) return
+            if (index < 0) {
+                return
+            }
 
             rotations.remove(info.presentationTimeUs)?.let { remoteRotation = it }
             codec.releaseOutputBuffer(index, true)
@@ -694,7 +738,9 @@ object Video {
     }
 
     private fun stop(codec: MediaCodec?): MediaCodec? {
-        if (codec == null) return null
+        if (codec == null) {
+            return null
+        }
 
         try {
             codec.stop()

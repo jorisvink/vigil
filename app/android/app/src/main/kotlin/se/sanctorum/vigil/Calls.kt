@@ -84,7 +84,9 @@ object Calls {
     }
 
     fun detach(service: VigilVpnService) {
-        if (this.service !== service) return
+        if (this.service !== service) {
+            return
+        }
 
         end(DisconnectCause.LOCAL)
         proximity()
@@ -133,7 +135,9 @@ object Calls {
 
     fun dial(peer: Int, video: Boolean) {
         val service = service ?: return
-        if (busy || peer <= 0 || peer >= 0xff) return
+        if (busy || peer <= 0 || peer >= 0xff) {
+            return
+        }
 
         begin(peer, false, Phase.DIALING)
         camera(video)
@@ -160,7 +164,9 @@ object Calls {
     }
 
     fun answer(video: Boolean) {
-        if (phase != Phase.RINGING) return
+        if (phase != Phase.RINGING) {
+            return
+        }
 
         phase = Phase.CONNECTING
         camera(video)
@@ -172,7 +178,9 @@ object Calls {
     }
 
     fun decline() {
-        if (phase != Phase.RINGING) return
+        if (phase != Phase.RINGING) {
+            return
+        }
 
         ignored.add(peer)
         Vigil.voiceHangup()
@@ -181,7 +189,9 @@ object Calls {
     }
 
     fun hangup() {
-        if (!busy) return
+        if (!busy) {
+            return
+        }
 
         if (phase == Phase.RINGING) {
             decline()
@@ -198,13 +208,17 @@ object Calls {
         video = on
         Video.camera(on)
 
-        if (on && !speaker) speaker(true)
+        if (on && !speaker) {
+            speaker(true)
+        }
 
         service?.callChanged()
     }
 
     fun mute(on: Boolean) {
-        if (!busy) return
+        if (!busy) {
+            return
+        }
 
         muted = on
         Vigil.voiceMute(on)
@@ -213,7 +227,9 @@ object Calls {
 
     @Suppress("DEPRECATION")
     fun speaker(on: Boolean) {
-        if (!busy) return
+        if (!busy) {
+            return
+        }
 
         speaker = on
 
@@ -235,7 +251,9 @@ object Calls {
         val callers = mutableSetOf<Int>()
 
         call?.optJSONArray("incoming")?.let { list ->
-            for (i in 0 until list.length()) callers.add(list.getString(i).toInt(16))
+            for (i in 0 until list.length()) {
+                callers.add(list.getString(i).toInt(16))
+            }
         }
 
         ignored.retainAll(callers)
@@ -291,7 +309,9 @@ object Calls {
     }
 
     fun notification(service: VigilVpnService): Notification? {
-        if (!busy || phase == Phase.RINGING) return null
+        if (!busy || phase == Phase.RINGING) {
+            return null
+        }
 
         val person = person(peer)
         val hangup = serviceIntent(service, VigilVpnService.ACTION_HANGUP, 1)
@@ -345,7 +365,9 @@ object Calls {
 
     internal fun showRing() {
         val service = service ?: return
-        if (phase != Phase.RINGING) return
+        if (phase != Phase.RINGING) {
+            return
+        }
 
         val person = person(peer)
         val answer = launch(service, VigilVpnService.ACTION_ANSWER, 3) ?: return
@@ -412,7 +434,9 @@ object Calls {
     }
 
     private fun end(cause: Int) {
-        if (!busy) return
+        if (!busy) {
+            return
+        }
 
         ignored.add(peer)
         phase = null

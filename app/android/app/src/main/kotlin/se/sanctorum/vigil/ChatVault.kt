@@ -54,7 +54,9 @@ class ChatVault(context: Context) {
     }
 
     fun lock() {
-        for (conversation in open.values) conversation.key.fill(0)
+        for (conversation in open.values) {
+            conversation.key.fill(0)
+        }
         open.clear()
     }
 
@@ -148,7 +150,9 @@ class ChatVault(context: Context) {
         }
 
         val receipts = File(dir, RECEIPTS)
-        if (!receipts.exists()) return
+        if (!receipts.exists()) {
+            return
+        }
 
         val list = JSONArray(String(unwrap(outbox(), RECEIPTS_AAD, receipts.readBytes())))
 
@@ -222,7 +226,9 @@ class ChatVault(context: Context) {
                         .put("name", record.optString("name"))
                         .put("state", if (incoming) "received" else "queued")
 
-                    if (incoming && seq >= conversation.read) unread++
+                    if (incoming && seq >= conversation.read) {
+                        unread++
+                    }
 
                     messages.add(message)
                     refs[message.getLong("ref")] = message
@@ -239,7 +245,9 @@ class ChatVault(context: Context) {
                         .put("state", "received")
                 )
                 "sent" -> refs[record.getLong("ref")]?.let {
-                    if (it.getString("state") == "queued") it.put("state", "sent")
+                    if (it.getString("state") == "queued") {
+                        it.put("state", "sent")
+                    }
                 }
                 "delivered" -> refs[record.getLong("ref")]?.put("state", "delivered")
                 "acks" -> refs[record.getLong("ref")]?.let {
@@ -278,7 +286,9 @@ class ChatVault(context: Context) {
                 .put("time", time)
         )
 
-        if (group(chat) != null) return ref
+        if (group(chat) != null) {
+            return ref
+        }
 
         val list = outboxList()
         list.put(JSONObject().put("peer", chat).put("ref", ref).put("text", text))
@@ -303,7 +313,9 @@ class ChatVault(context: Context) {
                 .put("time", System.currentTimeMillis())
         )
 
-        if (group(chat) != null) return ref
+        if (group(chat) != null) {
+            return ref
+        }
 
         val list = outboxList()
         list.put(
@@ -320,7 +332,9 @@ class ChatVault(context: Context) {
 
         val conversation = conversation(chat, false) ?: return null
         val path = File(dir, file)
-        if (!path.exists()) return null
+        if (!path.exists()) {
+            return null
+        }
 
         val sealed = path.readBytes()
 
@@ -333,7 +347,9 @@ class ChatVault(context: Context) {
 
     fun outboxList(): JSONArray {
         val file = File(dir, OUTBOX)
-        if (!file.exists()) return JSONArray()
+        if (!file.exists()) {
+            return JSONArray()
+        }
 
         val plain = unwrap(outbox(), OUTBOX_AAD, file.readBytes())
 
@@ -350,10 +366,14 @@ class ChatVault(context: Context) {
             val kept = JSONArray()
 
             for (i in 0 until list.length()) {
-                if (list.getJSONObject(i).getLong("ref") != ref) kept.put(list.getJSONObject(i))
+                if (list.getJSONObject(i).getLong("ref") != ref) {
+                    kept.put(list.getJSONObject(i))
+                }
             }
 
-            if (kept.length() != list.length()) outboxSave(kept)
+            if (kept.length() != list.length()) {
+                outboxSave(kept)
+            }
         }
 
         val file = File(dir, RECEIPTS)
@@ -395,7 +415,9 @@ class ChatVault(context: Context) {
             }
         }
 
-        if (kept.length() != list.length()) outboxSave(kept)
+        if (kept.length() != list.length()) {
+            outboxSave(kept)
+        }
     }
 
     private fun dataWrite(chat: String, ref: Long, data: ByteArray): String {
@@ -454,7 +476,9 @@ class ChatVault(context: Context) {
 
     private fun records(chat: String, conversation: Conversation, each: (Long, JSONObject?) -> Unit) {
         val file = File(dir, "$chat$LOG")
-        if (!file.exists()) return
+        if (!file.exists()) {
+            return
+        }
 
         val data = file.readBytes()
         val key = SecretKeySpec(conversation.key, "AES")
@@ -463,7 +487,9 @@ class ChatVault(context: Context) {
 
         while (offset + 4 <= data.size) {
             val len = ByteBuffer.wrap(data, offset, 4).int
-            if (len < NONCE + TAG / 8 || offset + 4 + len > data.size) break
+            if (len < NONCE + TAG / 8 || offset + 4 + len > data.size) {
+                break
+            }
 
             val plain = try {
                 Cipher.getInstance(GCM).run {
@@ -495,7 +521,9 @@ class ChatVault(context: Context) {
         val file = File(dir, "$chat$KEY")
 
         if (!file.exists()) {
-            if (!create) return null
+            if (!create) {
+                return null
+            }
 
             val conversation = Conversation(ByteArray(32).also(random::nextBytes), 0, 0, 0)
             try {
@@ -525,7 +553,9 @@ class ChatVault(context: Context) {
         val framed = framed(chat)
 
         if (framed != conversation.count) {
-            if (framed < conversation.count) conversation.flags = conversation.flags or FLAG_TRUNCATED
+            if (framed < conversation.count) {
+                conversation.flags = conversation.flags or FLAG_TRUNCATED
+            }
             conversation.count = framed
             save(chat, conversation)
         }
@@ -552,7 +582,9 @@ class ChatVault(context: Context) {
 
     private fun framed(chat: String): Long {
         val file = File(dir, "$chat$LOG")
-        if (!file.exists()) return 0
+        if (!file.exists()) {
+            return 0
+        }
 
         val data = file.readBytes()
         var offset = 0
@@ -560,7 +592,9 @@ class ChatVault(context: Context) {
 
         while (offset + 4 <= data.size) {
             val len = ByteBuffer.wrap(data, offset, 4).int
-            if (len < NONCE + TAG / 8 || offset + 4 + len > data.size) break
+            if (len < NONCE + TAG / 8 || offset + 4 + len > data.size) {
+                break
+            }
 
             offset += 4 + len
             count++
@@ -709,7 +743,9 @@ class ChatVault(context: Context) {
     }
 
     private fun agreement(): KeyStore.PrivateKeyEntry? {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) return null
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) {
+            return null
+        }
 
         val store = KeyStore.getInstance(KEYSTORE).apply { load(null) }
 
@@ -745,11 +781,15 @@ class ChatVault(context: Context) {
             it.fd.sync()
         }
 
-        if (!temp.renameTo(file)) throw IllegalStateException("failed to write ${file.name}")
+        if (!temp.renameTo(file)) {
+            throw IllegalStateException("failed to write ${file.name}")
+        }
     }
 
     private fun wipe(file: File) {
-        if (!file.exists()) return
+        if (!file.exists()) {
+            return
+        }
 
         FileOutputStream(file).use {
             it.write(ByteArray(file.length().toInt()))
