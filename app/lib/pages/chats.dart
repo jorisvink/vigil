@@ -1,11 +1,14 @@
 import 'dart:async';
 import 'dart:convert';
 
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:image_picker/image_picker.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import '../app.dart';
+import '../links.dart';
 import '../vigil.dart';
 import '../theme.dart';
 import '../widgets/buttons.dart';
@@ -1674,10 +1677,7 @@ class _Bubble extends StatelessWidget {
                                 ),
                               ),
                             if (message.data.isEmpty)
-                              SelectableText(
-                                message.text,
-                                style: Styles.body.copyWith(color: Palette.fg),
-                              )
+                              _Text(message.text)
                             else if (message.media == 'image')
                               _Photo(chat: chat, message: message)
                             else if (message.media == 'voice')
@@ -2226,6 +2226,123 @@ class _WavePainter extends CustomPainter {
   @override
   bool shouldRepaint(covariant _WavePainter oldDelegate) =>
       oldDelegate.played != played || oldDelegate.bars != bars;
+}
+
+class _Text extends StatefulWidget {
+  const _Text(this.text);
+
+  final String text;
+
+  @override
+  State<_Text> createState() => _TextState();
+}
+
+class _TextState extends State<_Text> {
+  final _taps = <TapGestureRecognizer>[];
+
+  @override
+  void dispose() {
+    _release();
+    super.dispose();
+  }
+
+  void _release() {
+    for (final tap in _taps) {
+      tap.dispose();
+    }
+
+    _taps.clear();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final text = widget.text;
+    final style = Styles.body.copyWith(color: Palette.fg);
+    final found = links(text);
+
+    if (found.isEmpty) {
+      return SelectableText(text, style: style);
+    }
+
+    _release();
+
+    final spans = <TextSpan>[];
+    var at = 0;
+
+    for (final link in found) {
+      final raw = text.substring(link.start, link.end);
+      final tap = TapGestureRecognizer()..onTap = () => _visit(raw);
+
+      _taps.add(tap);
+      spans.add(TextSpan(text: text.substring(at, link.start)));
+      spans.add(
+        TextSpan(
+          text: raw,
+          recognizer: tap,
+          style: const TextStyle(
+            color: Palette.amber,
+            decoration: TextDecoration.underline,
+            decorationColor: Palette.amber,
+          ),
+        ),
+      );
+      at = link.end;
+    }
+
+    spans.add(TextSpan(text: text.substring(at)));
+
+    return SelectableText.rich(TextSpan(style: style, children: spans));
+  }
+}
+
+Future<void> _visit(String raw) async {
+  final link = canonical(raw);
+
+  if (link == null) {
+    return;
+  }
+
+  final warnings = [
+    if (link.user)
+      'This link is suspicious, it contains "${link.uri.userInfo}" to '
+      'obfuscate the real address.',
+    if (link.foreign)
+      'This link is using special characters to imitate another website '
+      '("${link.shown}")',
+    if (link.address)
+      'This link does not contain a FQDN, this is usually not normal.',
+    if (link.plain)
+      'This link lacks TLS, anything sent between you and this site can be '
+      'read by anyone.',
+  ];
+
+  final go = await confirm(
+    title: 'Visit link?',
+    text: 'Check the link before you tap Visit',
+    action: 'Visit',
+    detail: Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(link.host, style: Styles.cardTitle.copyWith(color: Palette.amber)),
+        const SizedBox(height: 8),
+        SelectableText(link.uri.toString(), style: Styles.pre),
+        for (final warning in warnings) ...[
+          const SizedBox(height: 10),
+          Text(warning, style: Styles.detail.copyWith(color: Palette.amber2)),
+        ],
+      ],
+    ),
+  );
+
+  if (!go) {
+    return;
+  }
+
+  try {
+    await launchUrl(link.uri, mode: LaunchMode.externalApplication);
+  } on PlatformException catch (e) {
+    notify(e.message ?? 'That link cannot be opened.');
+  }
 }
 
 class _Utf8Limit extends TextInputFormatter {

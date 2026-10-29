@@ -449,6 +449,7 @@ Future<bool> confirm({
   required String title,
   required String text,
   required String action,
+  Widget? detail,
 }) async {
   final context = navigatorKey.currentContext;
   if (context == null) {
@@ -486,6 +487,7 @@ Future<bool> confirm({
             ),
             const SizedBox(height: 12),
             Text(text, style: Styles.body),
+            if (detail != null) ...[const SizedBox(height: 16), detail],
             const SizedBox(height: 24),
             BtnPair(
               first: Btn(
