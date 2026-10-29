@@ -348,6 +348,7 @@ object Chats {
             .setCategory(Notification.CATEGORY_MESSAGE)
             .setStyle(style)
             .setNumber(unseen[id] ?: 1)
+            .setGroup(GROUP)
             .setAutoCancel(true)
             .setVisibility(Notification.VISIBILITY_PRIVATE)
             .setPublicVersion(
@@ -358,25 +359,60 @@ object Chats {
                     .build()
             )
 
-        service.packageManager.getLaunchIntentForPackage(service.packageName)?.let {
-            builder.setContentIntent(
-                PendingIntent.getActivity(
-                    service, notification(id),
-                    it.setAction(ACTION_CHAT)
-                        .putExtra(EXTRA_CHAT, id)
-                        .addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP),
-                    PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
-                )
-            )
-        }
+        launch(service, notification(id), id)?.let { builder.setContentIntent(it) }
 
         service.getSystemService(NotificationManager::class.java)
             .notify(notification(id), builder.build())
+
+        summary(service)
+    }
+
+    private fun summary(context: Context) {
+        val manager = context.getSystemService(NotificationManager::class.java)
+
+        if (shown.isEmpty()) {
+            manager.cancel(SUMMARY)
+            return
+        }
+
+        val style = Notification.InboxStyle()
+        for ((id, messages) in shown) {
+            style.addLine(if (ChatVault.group(id) != null) PeerNames.chat(context, id) else messages.last().name)
+        }
+
+        val builder = Notification.Builder(context, CHANNEL)
+            .setSmallIcon(R.drawable.ic_notification)
+            .setCategory(Notification.CATEGORY_MESSAGE)
+            .setStyle(style)
+            .setContentTitle("Vigil")
+            .setContentText("New messages")
+            .setGroup(GROUP)
+            .setGroupSummary(true)
+            .setGroupAlertBehavior(Notification.GROUP_ALERT_CHILDREN)
+            .setAutoCancel(true)
+            .setVisibility(Notification.VISIBILITY_PRIVATE)
+
+        launch(context, SUMMARY, shown.keys.singleOrNull() ?: CHAT_LIST)?.let { builder.setContentIntent(it) }
+
+        manager.notify(SUMMARY, builder.build())
+    }
+
+    private fun launch(context: Context, code: Int, id: String): PendingIntent? {
+        val intent = context.packageManager.getLaunchIntentForPackage(context.packageName) ?: return null
+
+        return PendingIntent.getActivity(
+            context, code,
+            intent.setAction(ACTION_CHAT)
+                .putExtra(EXTRA_CHAT, id)
+                .addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP),
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+        )
     }
 
     private fun dismiss(context: Context, id: String) {
         shown.remove(id)
         context.getSystemService(NotificationManager::class.java).cancel(notification(id))
+        summary(context)
     }
 
     private fun notification(id: String): Int =
@@ -387,11 +423,14 @@ object Chats {
 
     const val ACTION_CHAT = "se.sanctorum.vigil.CHAT"
     const val EXTRA_CHAT = "chat"
+    const val CHAT_LIST = "gospel"
 
     private const val TAG = "vigil"
     private const val CHANNEL = "messages"
     private const val NOTIFICATION_BASE = 0x1000
     private const val GROUP_NOTIFICATION_BASE = 0x10000
     private const val SHOWN_MAX = 6
+    private const val SUMMARY = 0x0fff
+    private const val GROUP = "se.sanctorum.vigil.chats"
     private const val RESUBMIT_MS = 10_000L
 }

@@ -99,6 +99,7 @@ class Shell extends StatefulWidget {
 class _ShellState extends State<Shell> with WidgetsBindingObserver {
   StreamSubscription<List<Tunnel>>? _tunnels;
   StreamSubscription<Status>? _calls;
+  Chats? _opened;
 
   @override
   void initState() {
@@ -119,9 +120,13 @@ class _ShellState extends State<Shell> with WidgetsBindingObserver {
       }
 
       final peer = s.chats.open;
-      if (peer != null && s.phone == null) {
+      if (peer != null && s.phone == null && !identical(s.chats, _opened)) {
+        _opened = s.chats;
         goTab(NavTab.gospel);
-        push(ChatPage(peer: peer));
+
+        if (peer != 'gospel') {
+          push(ChatPage(peer: peer));
+        }
       }
     });
   }

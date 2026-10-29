@@ -925,9 +925,6 @@ final class VigilPlugin: NSObject, FlutterPlugin, UIDocumentPickerDelegate,
     }
 
     private func status(result: @escaping FlutterResult) {
-        let idle = "{\"tunnel\":null,\"status\":{\"running\":false},\"chats\":\(chats())," +
-            "\"gospel\":\(Self.gospelEnabled)}"
-
         manager { manager in
             guard let manager,
                   let session = manager.connection as? NETunnelProviderSession,
@@ -938,7 +935,8 @@ final class VigilPlugin: NSObject, FlutterPlugin, UIDocumentPickerDelegate,
                 self.last = nil
                 self.silent = nil
                 self.linking = false
-                result(idle)
+                result("{\"tunnel\":null,\"status\":{\"running\":false},\"chats\":\(self.chats())," +
+                       "\"gospel\":\(Self.gospelEnabled)}")
                 return
             }
 
