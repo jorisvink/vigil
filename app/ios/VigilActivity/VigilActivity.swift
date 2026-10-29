@@ -16,13 +16,13 @@ struct VigilCandle: Widget {
 
     var body: some WidgetConfiguration {
         ActivityConfiguration(for: VigilAttributes.self) { context in
-            Card(since: context.state.since, stale: context.isStale)
+            Card(since: context.state.since, lit: context.isStale ? nil : context.attributes.lit)
                 .activityBackgroundTint(Self.bg)
                 .activitySystemActionForegroundColor(Self.amber)
         } dynamicIsland: { context in
             DynamicIsland {
                 DynamicIslandExpandedRegion(.leading) {
-                    Candle(lit: !context.isStale).frame(width: 14, height: 30)
+                    Candle(lit: context.isStale ? nil : context.attributes.lit, scale: 0.7)
                 }
                 DynamicIslandExpandedRegion(.center) {
                     Line(since: context.state.since, stale: context.isStale)
@@ -40,18 +40,18 @@ struct VigilCandle: Widget {
 
 private struct Card: View {
     let since: Date
-    let stale: Bool
+    let lit: Date?
 
     var body: some View {
         HStack(spacing: 16) {
-            Candle(lit: !stale).frame(width: 18, height: 44)
+            Candle(lit: lit)
 
             VStack(alignment: .leading, spacing: 4) {
                 Text("VIGIL")
                     .font(.system(size: 13, weight: .semibold, design: .monospaced))
                     .tracking(3)
                     .foregroundColor(VigilCandle.amber)
-                Line(since: since, stale: stale)
+                Line(since: since, stale: lit == nil)
             }
 
             Spacer()
@@ -79,32 +79,50 @@ private struct Line: View {
 }
 
 private struct Candle: View {
-    let lit: Bool
+    let lit: Date?
+    var scale: CGFloat = 1
+
+    var body: some View {
+        VStack(spacing: 0) {
+            Flame()
+                .fill(lit == nil ? Color.clear : VigilCandle.amber)
+                .frame(width: 10 * scale, height: 16 * scale)
+                .shadow(color: VigilCandle.amber.opacity(lit == nil ? 0 : 0.7), radius: 5 * scale)
+            Rectangle()
+                .fill(VigilCandle.fg.opacity(0.6))
+                .frame(width: 1.5, height: 3 * scale)
+            Wax(lit: lit)
+                .frame(width: 18 * scale, height: 38 * scale)
+        }
+    }
+}
+
+private struct Wax: View {
+    static let bar: CGFloat = 4
+
+    let lit: Date?
 
     var body: some View {
         GeometryReader { geo in
-            let w = geo.size.width
-            let h = geo.size.height
-
-            ZStack(alignment: .top) {
-                if lit {
-                    Flame()
-                        .fill(VigilCandle.amber)
-                        .frame(width: w * 0.55, height: h * 0.36)
-                        .shadow(color: VigilCandle.amber.opacity(0.6), radius: 4)
+            if let lit {
+                ProgressView(timerInterval: lit...lit.addingTimeInterval(VigilAttributes.burn),
+                             countsDown: true) {
+                    EmptyView()
+                } currentValueLabel: {
+                    EmptyView()
                 }
-
-                Rectangle()
-                    .fill(VigilCandle.fg.opacity(0.6))
-                    .frame(width: 1.5, height: h * 0.08)
-                    .offset(y: h * 0.34)
-
+                .progressViewStyle(.linear)
+                .tint(VigilCandle.fg.opacity(0.85))
+                .frame(width: geo.size.height)
+                .scaleEffect(x: 1, y: geo.size.width / Self.bar)
+                .rotationEffect(.degrees(-90))
+                .frame(width: geo.size.width, height: geo.size.height)
+            } else {
                 Rectangle()
                     .fill(VigilCandle.fg.opacity(0.85))
-                    .frame(width: w, height: h * 0.58)
-                    .offset(y: h * 0.42)
+                    .frame(height: geo.size.height * 0.12)
+                    .frame(maxHeight: .infinity, alignment: .bottom)
             }
-            .frame(width: w, height: h, alignment: .top)
         }
     }
 }

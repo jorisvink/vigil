@@ -6,7 +6,6 @@ enum CandleActivity {
     static let offKey = "ui.candleOff"
 
     private static let relight: TimeInterval = 4 * 3600
-    private static let stale: TimeInterval = 7.5 * 3600
 
     static func update(since: Date?) {
         guard #available(iOS 16.2, *) else { return }
@@ -31,7 +30,7 @@ enum CandleActivity {
 
         let now = Date()
         let content = ActivityContent(state: VigilAttributes.ContentState(since: since),
-                                      staleDate: now.addingTimeInterval(stale))
+                                      staleDate: now.addingTimeInterval(VigilAttributes.burn))
 
         _ = try? Activity.request(attributes: VigilAttributes(lit: now), content: content, pushType: nil)
     }

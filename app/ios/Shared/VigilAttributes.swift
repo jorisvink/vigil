@@ -7,5 +7,7 @@ struct VigilAttributes: ActivityAttributes {
         var since: Date
     }
 
+    static let burn: TimeInterval = 7.5 * 3600
+
     var lit: Date
 }
