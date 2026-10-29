@@ -246,12 +246,21 @@ final class VigilPlugin: NSObject, FlutterPlugin, UIDocumentPickerDelegate,
             picker.delegate = self
             picking = (hex, result)
             top.present(picker, animated: true)
-        case "voiceRecord", "voiceSend", "voiceCancel", "voicePlay", "voiceStop":
+        case "voiceRecord", "voiceSend", "voiceCancel", "voicePlay", "voiceStop", "voiceSeek", "voiceSpeed",
+             "voicePosition":
             voice(call, result: result)
         case "clipboardImage":
             result(UIPasteboard.general.hasImages ? "true" : "false")
+        case "clipboardImageData":
+            do {
+                result(FlutterStandardTypedData(bytes: try Self.pasted()))
+            } catch let error as ChatVault.Failure {
+                result(FlutterError(code: "invalid", message: error.description, details: nil))
+            } catch {
+                result(FlutterError(code: "failed", message: "\(error)", details: nil))
+            }
         case "chats", "chat", "chatSend", "chatImageSend", "chatRead", "chatOpen", "chatTyping",
-             "chatImagePaste", "chatDelete", "chatSettings", "chatGroup":
+             "chatImageData", "chatDelete", "chatSettings", "chatGroup":
             do {
                 result(try chat(call))
             } catch let error as ChatVault.Locked {
@@ -661,7 +670,18 @@ final class VigilPlugin: NSObject, FlutterPlugin, UIDocumentPickerDelegate,
                     throw ChatVault.Failure(description: "That voice message is gone.")
                 }
 
-                try voice.play(data) { result("") }
+                let at = TimeInterval(args["at"] as? Int ?? 0) / 1000
+                let rate = Float(args["rate"] as? Double ?? 1)
+
+                try voice.play(data, at: at, rate: rate) { result("") }
+            case "voiceSeek":
+                voice.seek(TimeInterval(call.arguments as? Int ?? 0) / 1000)
+                result("")
+            case "voiceSpeed":
+                voice.speed(Float(call.arguments as? Double ?? 1))
+                result("")
+            case "voicePosition":
+                result(voice.position())
             default:
                 voice.stop()
                 result("")
@@ -1084,8 +1104,12 @@ final class VigilPlugin: NSObject, FlutterPlugin, UIDocumentPickerDelegate,
         case "chatImageSend":
             let image = try Self.jpeg(args["path"] as? String ?? "")
             return try dataSend(hex, media: "image", name: Self.photoName(), data: image)
-        case "chatImagePaste":
-            return try dataSend(hex, media: "image", name: Self.photoName(), data: try Self.pasted())
+        case "chatImageData":
+            guard let image = (args["data"] as? FlutterStandardTypedData)?.data else {
+                throw ChatVault.Failure(description: "That is not an image.")
+            }
+
+            return try dataSend(hex, media: "image", name: Self.photoName(), data: image)
         case "chatRead":
             try vault.read(hex)
             seen(hex)

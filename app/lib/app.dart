@@ -455,6 +455,7 @@ Future<bool> confirm({
   required String text,
   required String action,
   Widget? detail,
+  bool risky = false,
 }) async {
   final context = navigatorKey.currentContext;
   if (context == null) {
@@ -497,12 +498,13 @@ Future<bool> confirm({
             BtnPair(
               first: Btn(
                 label: 'Cancel',
-                kind: BtnKind.secondary,
+                kind: risky ? BtnKind.primary : BtnKind.secondary,
                 expand: true,
                 onTap: () => Navigator.of(context).pop(false),
               ),
               second: Btn(
                 label: action,
+                kind: risky ? BtnKind.secondary : BtnKind.primary,
                 expand: true,
                 onTap: () => Navigator.of(context).pop(true),
               ),

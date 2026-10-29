@@ -273,15 +273,18 @@ class MainActivity : FlutterActivity() {
                     val description = getSystemService(ClipboardManager::class.java).primaryClipDescription
                     result.success((description?.hasMimeType("image/*") == true).toString())
                 }
-                "chatImagePaste" -> {
-                    val id = chat(call.arguments as String)
+                "clipboardImageData" -> {
                     val clip = getSystemService(ClipboardManager::class.java).primaryClip
                     val uri = clip?.takeIf { it.itemCount > 0 }?.getItemAt(0)?.uri
                         ?: throw IllegalArgumentException("There is no image to paste.")
 
-                    background(result) {
-                        val image = Images.jpeg(this, uri)
+                    background(result) { Images.jpeg(this, uri) }
+                }
+                "chatImageData" -> {
+                    val id = chat(call.argument<String>("peer")!!)
+                    val image = call.argument<ByteArray>("data")!!
 
+                    background(result) {
                         try {
                             dataSend(id, "image", Images.name(), image)
                         } finally {
@@ -332,13 +335,24 @@ class MainActivity : FlutterActivity() {
                 "voicePlay" -> {
                     val id = chat(call.argument<String>("peer")!!)
                     val file = call.argument<String>("data")!!
+                    val at = call.argument<Int>("at") ?: 0
+                    val rate = call.argument<Double>("rate") ?: 1.0
 
-                    voicePlay(id, file, result)
+                    voicePlay(id, file, at, rate.toFloat(), result)
                 }
                 "voiceStop" -> {
                     Voice.stop()
                     result.success("")
                 }
+                "voiceSeek" -> {
+                    Voice.seek(call.arguments as Int)
+                    result.success("")
+                }
+                "voiceSpeed" -> {
+                    Voice.speed((call.arguments as Double).toFloat())
+                    result.success("")
+                }
+                "voicePosition" -> result.success(Voice.position())
                 "chatData" -> {
                     val id = chat(call.argument<String>("peer")!!)
                     val file = call.argument<String>("data")!!
@@ -752,11 +766,11 @@ class MainActivity : FlutterActivity() {
         return ""
     }
 
-    private fun voicePlay(id: String, file: String, result: MethodChannel.Result) {
+    private fun voicePlay(id: String, file: String, at: Int, rate: Float, result: MethodChannel.Result) {
         Thread {
             try {
                 val data = Chats.vault(this).data(id, file) ?: throw IllegalArgumentException("That voice message is gone.")
-                Voice.play(data) { runOnUiThread { result.success("") } }
+                Voice.play(this, data, at, rate) { runOnUiThread { result.success("") } }
             } catch (e: ChatVault.Locked) {
                 runOnUiThread { result.error("locked", e.message, null) }
             } catch (e: IllegalArgumentException) {

@@ -3,7 +3,7 @@ import Foundation
 import UIKit
 
 enum CandleActivity {
-    static let offKey = "ui.candleOff"
+    static let onKey = "ui.candle"
 
     private static let relight: TimeInterval = 4 * 3600
 
@@ -12,7 +12,7 @@ enum CandleActivity {
 
         let lit = Activity<VigilAttributes>.activities
 
-        guard let since, !UserDefaults.standard.bool(forKey: offKey) else {
+        guard let since, UserDefaults.standard.bool(forKey: onKey) else {
             end(lit)
             return
         }

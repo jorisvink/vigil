@@ -1,5 +1,6 @@
 import AVFoundation
 import Foundation
+import UIKit
 import Vigil
 
 final class VigilVoice: NSObject, AVAudioPlayerDelegate {
@@ -22,6 +23,7 @@ final class VigilVoice: NSObject, AVAudioPlayerDelegate {
 
     private var player: AVAudioPlayer?
     private var playing: (() -> Void)?
+    private var proximity: NSObjectProtocol?
 
     static func name() -> String {
         let format = DateFormatter()
@@ -107,12 +109,14 @@ final class VigilVoice: NSObject, AVAudioPlayerDelegate {
         return take()
     }
 
-    func play(_ data: Data, done: @escaping () -> Void) throws {
+    func play(_ data: Data, at: TimeInterval, rate: Float, done: @escaping () -> Void) throws {
         stop()
 
-        let session = AVAudioSession.sharedInstance()
-        try session.setCategory(.playback, mode: .spokenAudio)
-        try session.setActive(true)
+        guard !VigilCall.shared.busy else {
+            throw ChatVault.Failure(description: "Voice messages cannot be played during a call.")
+        }
+
+        try route(ear: false)
 
         guard let player = try? AVAudioPlayer(data: data, fileTypeHint: "public.aac-audio") else {
             release()
@@ -120,6 +124,10 @@ final class VigilVoice: NSObject, AVAudioPlayerDelegate {
         }
 
         player.delegate = self
+        player.enableRate = true
+        player.prepareToPlay()
+        player.rate = rate
+        player.currentTime = at
 
         guard player.play() else {
             release()
@@ -128,9 +136,36 @@ final class VigilVoice: NSObject, AVAudioPlayerDelegate {
 
         self.player = player
         playing = done
+
+        UIDevice.current.isProximityMonitoringEnabled = true
+        proximity = NotificationCenter.default.addObserver(
+            forName: UIDevice.proximityStateDidChangeNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            try? self?.route(ear: UIDevice.current.proximityState)
+        }
+    }
+
+    func seek(_ at: TimeInterval) {
+        player?.currentTime = at
+    }
+
+    func speed(_ rate: Float) {
+        player?.rate = rate
+    }
+
+    func position() -> String {
+        guard let player else { return "" }
+
+        return "\(Int(player.currentTime * 1000)) \(Int(player.duration * 1000))"
     }
 
     func stop() {
+        if let proximity {
+            NotificationCenter.default.removeObserver(proximity)
+            self.proximity = nil
+            UIDevice.current.isProximityMonitoringEnabled = false
+        }
+
         guard let player else { return }
 
         player.stop()
@@ -139,6 +174,19 @@ final class VigilVoice: NSObject, AVAudioPlayerDelegate {
 
         playing?()
         playing = nil
+    }
+
+    private func route(ear: Bool) throws {
+        let session = AVAudioSession.sharedInstance()
+
+        if ear {
+            try session.setCategory(.playAndRecord, mode: .default)
+            try session.overrideOutputAudioPort(.none)
+        } else {
+            try session.setCategory(.playback, mode: .spokenAudio)
+        }
+
+        try session.setActive(true)
     }
 
     func audioPlayerDidFinishPlaying(_ player: AVAudioPlayer, successfully flag: Bool) {

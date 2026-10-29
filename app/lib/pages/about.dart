@@ -101,17 +101,17 @@ class _Candle extends StatefulWidget {
 }
 
 class _CandleState extends State<_Candle> {
-  static const _key = 'candleOff';
+  static const _key = 'candle';
 
-  bool _on = true;
+  bool _on = false;
 
   @override
   void initState() {
     super.initState();
 
-    Vigil.instance.flag(_key).then((off) {
+    Vigil.instance.flag(_key).then((on) {
       if (mounted) {
-        setState(() => _on = !off);
+        setState(() => _on = on);
       }
     }, onError: (Object _) {});
   }
@@ -120,7 +120,7 @@ class _CandleState extends State<_Candle> {
     final on = !_on;
 
     setState(() => _on = on);
-    await Vigil.instance.flag(_key, !on).catchError((Object _) => !on);
+    await Vigil.instance.flag(_key, on).catchError((Object _) => on);
   }
 
   @override

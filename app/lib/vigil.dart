@@ -781,8 +781,22 @@ class Vigil {
   Future<bool> clipboardImage() async =>
       await _invoke('clipboardImage', null) == 'true';
 
-  Future<void> pasteImage(String peer) async {
-    await _invoke('chatImagePaste', peer);
+  Future<Uint8List> clipboardImageData() async {
+    try {
+      final data = await _channel.invokeMethod<Uint8List>('clipboardImageData');
+
+      if (data == null) {
+        throw VigilError('There is no image to paste.');
+      }
+
+      return data;
+    } on PlatformException catch (e) {
+      throw VigilError(e.message ?? e.code);
+    }
+  }
+
+  Future<void> sendImageData(String peer, Uint8List data) async {
+    await _invoke('chatImageData', {'peer': peer, 'data': data});
     await refresh();
   }
 
@@ -800,8 +814,38 @@ class Vigil {
 
   Future<void> cancelVoice() => _invoke('voiceCancel', null);
 
-  Future<void> playVoice(String peer, String data) =>
-      _invoke('voicePlay', {'peer': peer, 'data': data});
+  Future<void> playVoice(
+    String peer,
+    String data, {
+    int at = 0,
+    double rate = 1,
+  }) => _invoke('voicePlay', {
+    'peer': peer,
+    'data': data,
+    'at': at,
+    'rate': rate,
+  });
+
+  Future<void> seekVoice(int at) => _invoke('voiceSeek', at);
+
+  Future<void> speedVoice(double rate) => _invoke('voiceSpeed', rate);
+
+  Future<(int, int)?> voicePosition() async {
+    final parts = (await _invoke('voicePosition', null)).split(' ');
+
+    if (parts.length != 2) {
+      return null;
+    }
+
+    final at = int.tryParse(parts[0]);
+    final total = int.tryParse(parts[1]);
+
+    if (at == null || total == null) {
+      return null;
+    }
+
+    return (at, total);
+  }
 
   Future<void> stopVoice() => _invoke('voiceStop', null);
 
