@@ -464,6 +464,8 @@ Future<bool> confirm({
 
   final result = await showModalBottomSheet<bool>(
     context: context,
+    isScrollControlled: true,
+    useSafeArea: true,
     backgroundColor: const Color(0x00000000),
     barrierColor: const Color(0xcc0b0c0e),
     elevation: 0,
@@ -484,16 +486,25 @@ Future<bool> confirm({
               child: Container(width: 32, height: 3, color: Palette.amber),
             ),
             const SizedBox(height: 20),
-            Row(
-              children: [
-                const RubricCross(fill: Palette.bg2),
-                const SizedBox(width: 12),
-                Expanded(child: Text(title, style: Styles.cardTitle)),
-              ],
+            Flexible(
+              child: SingleChildScrollView(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        const RubricCross(fill: Palette.bg2),
+                        const SizedBox(width: 12),
+                        Expanded(child: Text(title, style: Styles.cardTitle)),
+                      ],
+                    ),
+                    const SizedBox(height: 12),
+                    Text(text, style: Styles.body),
+                    if (detail != null) ...[const SizedBox(height: 16), detail],
+                  ],
+                ),
+              ),
             ),
-            const SizedBox(height: 12),
-            Text(text, style: Styles.body),
-            if (detail != null) ...[const SizedBox(height: 16), detail],
             const SizedBox(height: 24),
             BtnPair(
               first: Btn(
