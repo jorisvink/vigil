@@ -41,6 +41,10 @@ enum TunnelLink {
         vigil_link_close()
     }
 
+    static var ready: Bool {
+        vigil_link_ready() == 1
+    }
+
     /// The caller must wipe the returned message.
     static func input(_ batch: Data) -> [UInt8]? {
         var msg = [UInt8](repeating: 0, count: Int(VIGIL_LINK_MESSAGE_MAX))

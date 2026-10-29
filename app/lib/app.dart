@@ -13,6 +13,7 @@ import 'pages/status.dart';
 import 'pages/tunnels.dart';
 import 'vigil.dart';
 import 'theme.dart';
+import 'widgets/background.dart';
 import 'widgets/buttons.dart';
 import 'widgets/marks.dart';
 import 'widgets/ui.dart';
@@ -48,7 +49,15 @@ class VigilApp extends StatelessWidget {
       theme: _theme(),
       builder: (context, child) => Material(
         type: MaterialType.transparency,
-        child: DefaultTextStyle(style: Styles.body, child: child!),
+        child: DefaultTextStyle(
+          style: Styles.body,
+          child: Stack(
+            children: [
+              child!,
+              const Positioned.fill(child: LinkOverlay()),
+            ],
+          ),
+        ),
       ),
       home: const Shell(),
     );

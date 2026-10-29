@@ -28,6 +28,7 @@ final class VigilPlugin: NSObject, FlutterPlugin, UIDocumentPickerDelegate,
     private var opened: String?
     private var last: String?
     private var silent: TimeInterval?
+    private var linking = false
 
     private static let silence: TimeInterval = 10
     private var picking: (String, FlutterResult)?
@@ -854,6 +855,7 @@ final class VigilPlugin: NSObject, FlutterPlugin, UIDocumentPickerDelegate,
                 VigilCall.shared.send = nil
                 self.last = nil
                 self.silent = nil
+                self.linking = false
                 result(idle)
                 return
             }
@@ -881,18 +883,25 @@ final class VigilPlugin: NSObject, FlutterPlugin, UIDocumentPickerDelegate,
                         let since = self.silent ?? now
                         self.silent = since
 
+                        let linked = now - since < Self.silence
+
+                        if !TunnelLink.ready {
+                            self.linking = true
+                        }
+
                         result(self.combined(tunnel, self.last ?? "{\"running\":true}",
-                                             linked: now - since < Self.silence))
+                                             linked: linked, linking: linked && self.linking))
                         return
                     }
 
                     self.last = status
                     self.silent = nil
+                    self.linking = false
 
                     VigilCall.shared.update(
                         (try? JSONSerialization.jsonObject(with: response)) as? [String: Any])
 
-                    result(self.combined(tunnel, status, linked: true))
+                    result(self.combined(tunnel, status, linked: true, linking: false))
                 }
             }
         }
@@ -919,13 +928,13 @@ final class VigilPlugin: NSObject, FlutterPlugin, UIDocumentPickerDelegate,
         version += 1
     }
 
-    private func combined(_ tunnel: String, _ status: String, linked: Bool) -> String {
+    private func combined(_ tunnel: String, _ status: String, linked: Bool, linking: Bool) -> String {
         let phone = VigilCall.shared.json().map { json($0) } ?? "null"
 
         return "{\"tunnel\":\(tunnel),\"status\":\(status)," +
             "\"voice\":\(voice()),\"phone\":\(phone)," +
             "\"chats\":\(chats()),\"gospel\":\(Self.gospelEnabled)," +
-            "\"link\":\(linked)}"
+            "\"link\":\(linked),\"linking\":\(linking)}"
     }
 
     private func chat(_ call: FlutterMethodCall) throws -> String {
