@@ -43,7 +43,6 @@ for target in ios-arm64 ios-simulator-arm64; do
 	cc="xcrun -sdk $sdk clang $cflags"
 	sodium=$TOPDIR/build/$target/libsodium
 
-	mkdir -p $sodium/include $sodium/lib
 	# Since 1.0.22 the headers are in a Clibsodium directory and the
 	# libraries carry arm64e as well, we only want arm64.
 	headers=$slice/Headers
