@@ -57,6 +57,9 @@ for abi in arm64-v8a x86_64; do
 
 		(cd $BUILD/libsodium-src && \
 		    env ANDROID_NDK_HOME=$NDK NDK_PLATFORM=android-$API \
+		    AR=$TOOLCHAIN/llvm-ar \
+		    RANLIB=$TOOLCHAIN/llvm-ranlib \
+		    STRIP=$TOOLCHAIN/llvm-strip \
 		    LIBSODIUM_FULL_BUILD=1 ./dist-build/$script)
 
 		cp -R $BUILD/libsodium-src/$sodium $BUILD/libsodium
