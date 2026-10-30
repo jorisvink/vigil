@@ -8,8 +8,6 @@ enum CandleActivity {
     private static let relight: TimeInterval = 4 * 3600
 
     static func update(since: Date?) {
-        guard #available(iOS 16.2, *) else { return }
-
         let lit = Activity<VigilAttributes>.activities
 
         guard let since, UserDefaults.standard.bool(forKey: onKey) else {
@@ -35,7 +33,6 @@ enum CandleActivity {
         _ = try? Activity.request(attributes: VigilAttributes(lit: now), content: content, pushType: nil)
     }
 
-    @available(iOS 16.2, *)
     private static func end(_ lit: [Activity<VigilAttributes>]) {
         for activity in lit {
             Task { await activity.end(nil, dismissalPolicy: .immediate) }

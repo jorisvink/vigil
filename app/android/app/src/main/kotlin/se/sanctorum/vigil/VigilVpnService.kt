@@ -4,6 +4,7 @@ import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
+import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.graphics.drawable.Icon
@@ -379,19 +380,6 @@ class VigilVpnService : VpnService() {
         return if (summary.optBoolean("shroud")) "$mode · Shroud" else mode
     }
 
-    private fun disconnect(): Thread? {
-        synchronized(lock) {
-            val worker = thread ?: return null
-
-            thread = null
-            active = null
-            split = null
-            Vigil.stop(run)
-
-            return worker
-        }
-    }
-
     private fun build(summary: JSONObject): Builder {
         val builder = Builder()
             .setSession(summary.getString("instance"))
@@ -475,6 +463,7 @@ class VigilVpnService : VpnService() {
         const val EXTRA_PEER = "peer"
         const val EXTRA_ON = "on"
         const val EXTRA_VIDEO = "video"
+        const val NOTIFIED = "se.sanctorum.vigil.Notified"
 
         private const val TAG = "vigil"
         private const val CHANNEL = "tunnel"
@@ -490,6 +479,23 @@ class VigilVpnService : VpnService() {
         @Volatile
         var active: String? = null
             private set
+
+        fun disconnect(): Thread? {
+            synchronized(lock) {
+                val worker = thread ?: return null
+
+                thread = null
+                active = null
+                split = null
+                Vigil.stop(run)
+
+                return worker
+            }
+        }
+
+        fun notified(context: Context, action: String): Intent =
+            Intent(action).setClassName(context, NOTIFIED)
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
 
         @Volatile
         private var split: VigilVpnService? = null

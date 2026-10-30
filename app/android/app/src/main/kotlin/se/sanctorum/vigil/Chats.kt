@@ -359,7 +359,7 @@ object Chats {
                     .build()
             )
 
-        launch(service, notification(id), id)?.let { builder.setContentIntent(it) }
+        builder.setContentIntent(launch(service, notification(id), id))
 
         service.getSystemService(NotificationManager::class.java)
             .notify(notification(id), builder.build())
@@ -392,22 +392,17 @@ object Chats {
             .setAutoCancel(true)
             .setVisibility(Notification.VISIBILITY_PRIVATE)
 
-        launch(context, SUMMARY, shown.keys.singleOrNull() ?: CHAT_LIST)?.let { builder.setContentIntent(it) }
+        builder.setContentIntent(launch(context, SUMMARY, shown.keys.singleOrNull() ?: CHAT_LIST))
 
         manager.notify(SUMMARY, builder.build())
     }
 
-    private fun launch(context: Context, code: Int, id: String): PendingIntent? {
-        val intent = context.packageManager.getLaunchIntentForPackage(context.packageName) ?: return null
-
-        return PendingIntent.getActivity(
+    private fun launch(context: Context, code: Int, id: String): PendingIntent =
+        PendingIntent.getActivity(
             context, code,
-            intent.setAction(ACTION_CHAT)
-                .putExtra(EXTRA_CHAT, id)
-                .addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP),
+            VigilVpnService.notified(context, ACTION_CHAT).putExtra(EXTRA_CHAT, id),
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
         )
-    }
 
     private fun dismiss(context: Context, id: String) {
         shown.remove(id)

@@ -3,7 +3,6 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:image_picker/image_picker.dart';
-import 'package:mobile_scanner/mobile_scanner.dart';
 
 import '../app.dart';
 import '../vigil.dart';
@@ -23,36 +22,113 @@ class ScanPage extends StatefulWidget {
   State<ScanPage> createState() => _ScanPageState();
 }
 
-class _ScanPageState extends State<ScanPage> {
-  final MobileScannerController _scanner = MobileScannerController(
-    formats: const [BarcodeFormat.qrCode],
-    detectionSpeed: DetectionSpeed.noDuplicates,
-    cameraResolution: const Size(1920, 1080),
-    autoZoom: true,
-  );
-
+class _ScanPageState extends State<ScanPage> with WidgetsBindingObserver {
+  Timer? _poll;
+  int? _texture;
+  Size _size = Size.zero;
+  String? _camera;
+  String? _rejected;
   bool _done = false;
   String? _problem;
 
   @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    _start();
+  }
+
+  @override
   void dispose() {
-    unawaited(_scanner.dispose());
+    WidgetsBinding.instance.removeObserver(this);
+    _stop();
     super.dispose();
   }
 
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      _start();
+    } else if (state == AppLifecycleState.paused) {
+      _stop();
+
+      if (mounted) {
+        setState(() => _texture = null);
+      }
+    }
+  }
+
+  Future<void> _start() async {
+    if (_done || _texture != null) {
+      return;
+    }
+
+    try {
+      final texture = await Vigil.instance.scanStart();
+
+      if (!mounted) {
+        unawaited(Vigil.instance.scanStop());
+        return;
+      }
+
+      setState(() {
+        _texture = texture;
+        _camera = null;
+      });
+
+      _poll?.cancel();
+      _poll = Timer.periodic(const Duration(milliseconds: 100), (_) => _check());
+    } on VigilError catch (e) {
+      if (!mounted) {
+        return;
+      }
+
+      setState(
+        () => _camera = e.code == 'denied'
+            ? 'Camera access was denied, allow it in the system settings or '
+                  'import the configuration another way.'
+            : 'The camera could not be started.',
+      );
+    }
+  }
+
+  void _stop() {
+    _poll?.cancel();
+    _poll = null;
+    _texture = null;
+    unawaited(Vigil.instance.scanStop());
+  }
+
+  Future<void> _check() async {
+    final state = await Vigil.instance.scanState();
+
+    if (!mounted) {
+      return;
+    }
+
+    final size = Size(state.width.toDouble(), state.height.toDouble());
+
+    if (size != _size) {
+      setState(() => _size = size);
+    }
+
+    _found(state.value);
+  }
+
   void _found(String? value) {
-    if (_done || value == null) {
+    if (_done || value == null || value == _rejected) {
       return;
     }
 
     if (!value.startsWith(_magic)) {
+      _rejected = value;
       setState(() => _problem = 'That QR code is not a vigil configuration.');
       return;
     }
 
     _done = true;
     HapticFeedback.mediumImpact();
-    unawaited(_scanner.stop());
+    _stop();
 
     replace<void>(ReviewPage(config: value)).ignore();
   }
@@ -63,15 +139,19 @@ class _ScanPageState extends State<ScanPage> {
       return;
     }
 
-    final capture = await _scanner.analyzeImage(image.path);
-    final codes = capture?.barcodes ?? const [];
+    try {
+      final value = await Vigil.instance.scanImage(image.path);
 
-    if (codes.isEmpty) {
-      setState(() => _problem = 'No QR code was found in that image.');
-      return;
+      if (value == null) {
+        setState(() => _problem = 'No QR code was found in that image.');
+        return;
+      }
+
+      _rejected = null;
+      _found(value);
+    } on VigilError catch (e) {
+      setState(() => _problem = e.message);
     }
-
-    _found(codes.first.rawValue);
   }
 
   @override
@@ -97,15 +177,9 @@ class _ScanPageState extends State<ScanPage> {
           return Stack(
             children: [
               Positioned.fill(
-                child: MobileScanner(
-                  controller: _scanner,
-                  onDetect: (capture) => _found(
-                    capture.barcodes.isEmpty
-                        ? null
-                        : capture.barcodes.first.rawValue,
-                  ),
-                  errorBuilder: (context, error) => _CameraProblem(error),
-                ),
+                child: _camera != null
+                    ? _CameraProblem(_camera!)
+                    : _Preview(texture: _texture, size: _size),
               ),
               Positioned.fill(
                 child: IgnorePointer(
@@ -207,22 +281,37 @@ class _ShadePainter extends CustomPainter {
       oldDelegate.window != window;
 }
 
-class _CameraProblem extends StatelessWidget {
-  const _CameraProblem(this.error);
+class _Preview extends StatelessWidget {
+  const _Preview({required this.texture, required this.size});
 
-  final MobileScannerException error;
+  final int? texture;
+  final Size size;
 
   @override
   Widget build(BuildContext context) {
-    final text = switch (error.errorCode) {
-      MobileScannerErrorCode.permissionDenied =>
-        'Camera access was denied, allow it in the system settings or '
-            'import the configuration another way.',
-      MobileScannerErrorCode.unsupported =>
-        'This device has no camera that can scan QR codes.',
-      _ => 'The camera could not be started.',
-    };
+    if (texture == null || size.isEmpty) {
+      return const SizedBox.shrink();
+    }
 
+    return ClipRect(
+      child: FittedBox(
+        fit: BoxFit.cover,
+        child: SizedBox.fromSize(
+          size: size,
+          child: Texture(textureId: texture!),
+        ),
+      ),
+    );
+  }
+}
+
+class _CameraProblem extends StatelessWidget {
+  const _CameraProblem(this.text);
+
+  final String text;
+
+  @override
+  Widget build(BuildContext context) {
     return ColoredBox(
       color: Palette.bg,
       child: Center(

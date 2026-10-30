@@ -4,21 +4,26 @@ set -e
 
 TOPDIR=`pwd`
 OUT=$TOPDIR/build/ios
+IOS_MIN=18.0
 
 ./dist-build/deps.sh
 
 mkdir -p $OUT
 
-if [ ! -d $OUT/Clibsodium.xcframework ]; then
+sodium_src="`cat $TOPDIR/build/src/libsodium/.vigil-fetched` $IOS_MIN"
+
+if [ ! -d $OUT/Clibsodium.xcframework ] ||
+    [ "`cat $OUT/.libsodium 2>/dev/null`" != "$sodium_src" ]; then
 	rm -rf $TOPDIR/build/ios-libsodium-src
 	cp -R $TOPDIR/build/src/libsodium $TOPDIR/build/ios-libsodium-src
 	(cd $TOPDIR/build/ios-libsodium-src && \
 	    env LIBSODIUM_FULL_BUILD=1 LIBSODIUM_SKIP_SIMULATORS= \
-	    IOS_VERSION_MIN=15.0.0 IOS_SIMULATOR_VERSION_MIN=15.0.0 \
+	    IOS_VERSION_MIN=$IOS_MIN.0 IOS_SIMULATOR_VERSION_MIN=$IOS_MIN.0 \
 	    ./dist-build/apple-xcframework.sh)
 	rm -rf $OUT/Clibsodium.xcframework
 	cp -r $TOPDIR/build/ios-libsodium-src/libsodium-apple/Clibsodium.xcframework \
 	    $OUT/
+	echo "$sodium_src" > $OUT/.libsodium
 fi
 
 for target in ios-arm64 ios-simulator-arm64; do
@@ -26,12 +31,12 @@ for target in ios-arm64 ios-simulator-arm64; do
 	ios-arm64)
 		sdk=iphoneos
 		slice=ios-arm64
-		cflags="-arch arm64 -mios-version-min=15.0"
+		cflags="-arch arm64 -mios-version-min=$IOS_MIN"
 		;;
 	ios-simulator-arm64)
 		sdk=iphonesimulator
 		slice=ios-arm64_x86_64-simulator
-		cflags="-arch arm64 -mios-simulator-version-min=15.0"
+		cflags="-arch arm64 -mios-simulator-version-min=$IOS_MIN"
 		;;
 	esac
 

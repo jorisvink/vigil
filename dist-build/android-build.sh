@@ -47,7 +47,10 @@ for abi in arm64-v8a x86_64; do
 	mkdir -p $BUILD
 	echo "$NDK" > $BUILD/.ndk
 
-	if [ ! -f $BUILD/libsodium/lib/libsodium.a ]; then
+	sodium_src=`cat $TOPDIR/build/src/libsodium/.vigil-fetched`
+
+	if [ ! -f $BUILD/libsodium/lib/libsodium.a ] ||
+	    [ "`cat $BUILD/libsodium/.vigil-fetched 2>/dev/null`" != "$sodium_src" ]; then
 		rm -rf $BUILD/libsodium-src $BUILD/libsodium
 		mkdir -p $BUILD
 		cp -R $TOPDIR/build/src/libsodium $BUILD/libsodium-src
@@ -57,6 +60,7 @@ for abi in arm64-v8a x86_64; do
 		    LIBSODIUM_FULL_BUILD=1 ./dist-build/$script)
 
 		cp -R $BUILD/libsodium-src/$sodium $BUILD/libsodium
+		echo "$sodium_src" > $BUILD/libsodium/.vigil-fetched
 	fi
 
 	if [ ! -f $BUILD/mbedtls/lib/libmbedcrypto.a ]; then

@@ -43,6 +43,7 @@ final class VigilPlugin: NSObject, FlutterPlugin, UIDocumentPickerDelegate,
         registrar.addMethodCallDelegate(plugin, channel: channel)
 
         VigilVideo.shared.registry = registrar.textures()
+        VigilScanner.shared.registry = registrar.textures()
         VigilVideo.install()
 
         for name in [UIApplication.didEnterBackgroundNotification,
@@ -97,6 +98,7 @@ final class VigilPlugin: NSObject, FlutterPlugin, UIDocumentPickerDelegate,
         }
 
         VigilVoice.shared.stop()
+        VigilScanner.shared.stop()
         ChatVault.shared.lock()
 
         if let chat = opened {
@@ -176,6 +178,19 @@ final class VigilPlugin: NSObject, FlutterPlugin, UIDocumentPickerDelegate,
         case "videoRelease":
             VigilVideo.shared.release()
             result("")
+        case "scanStart":
+            VigilScanner.shared.start(result: result)
+        case "scanState":
+            result(json(VigilScanner.shared.state()))
+        case "scanStop":
+            VigilScanner.shared.stop()
+            result("")
+        case "scanImage":
+            do {
+                result(try VigilScanner.shared.image(call.arguments as? String ?? ""))
+            } catch {
+                result(FlutterError(code: "invalid", message: "That image cannot be read.", details: nil))
+            }
         case "decline", "hangup":
             VigilCall.shared.hangup()
             result("")
@@ -279,6 +294,8 @@ final class VigilPlugin: NSObject, FlutterPlugin, UIDocumentPickerDelegate,
             }
 
             result(UserDefaults.standard.bool(forKey: key) ? "true" : "false")
+        case "eraseAll":
+            erase(result: result)
         case "version":
             result(String(cString: vigil_version()))
         case "kyrkaVersion":
@@ -1191,11 +1208,7 @@ final class VigilPlugin: NSObject, FlutterPlugin, UIDocumentPickerDelegate,
 
         badged = count
 
-        if #available(iOS 16.0, *) {
-            UNUserNotificationCenter.current().setBadgeCount(count)
-        } else {
-            UIApplication.shared.applicationIconBadgeNumber = count
-        }
+        UNUserNotificationCenter.current().setBadgeCount(count)
     }
 
     private func chats() -> String {
@@ -1235,6 +1248,74 @@ final class VigilPlugin: NSObject, FlutterPlugin, UIDocumentPickerDelegate,
                 }
             }
         }
+    }
+
+    private func erase(result: @escaping FlutterResult) {
+        if var data = VigilVoice.shared.finish() {
+            data.resetBytes(in: 0..<data.count)
+        }
+
+        VigilVoice.shared.stop()
+        VigilScanner.shared.stop()
+        VigilCall.shared.hangup()
+        CandleActivity.update(since: nil)
+
+        NETunnelProviderManager.loadAllFromPreferences { managers, _ in
+            let removed = DispatchGroup()
+
+            for manager in managers ?? [] {
+                manager.connection.stopVPNTunnel()
+                removed.enter()
+                manager.removeFromPreferences { _ in removed.leave() }
+            }
+
+            removed.notify(queue: .main) {
+                ChatVault.shared.lock()
+                Self.wipe()
+                result("")
+
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { exit(0) }
+            }
+        }
+    }
+
+    private static func wipe() {
+        for kind in [kSecClassGenericPassword, kSecClassInternetPassword, kSecClassKey,
+                     kSecClassCertificate, kSecClassIdentity] {
+            SecItemDelete([
+                kSecClass as String: kind,
+                kSecAttrSynchronizable as String: kSecAttrSynchronizableAny,
+            ] as CFDictionary)
+        }
+
+        if let bundle = Bundle.main.bundleIdentifier {
+            UserDefaults.standard.removePersistentDomain(forName: bundle)
+        }
+
+        UserDefaults(suiteName: TunnelKeychain.group)?.removePersistentDomain(forName: TunnelKeychain.group)
+
+        let files = FileManager.default
+        var folders = [files.temporaryDirectory]
+
+        for kind: FileManager.SearchPathDirectory in [.documentDirectory, .applicationSupportDirectory,
+                                                      .cachesDirectory] {
+            folders += files.urls(for: kind, in: .userDomainMask)
+        }
+
+        if let shared = files.containerURL(forSecurityApplicationGroupIdentifier: TunnelKeychain.group) {
+            folders.append(shared)
+        }
+
+        for folder in folders {
+            for item in (try? files.contentsOfDirectory(at: folder, includingPropertiesForKeys: nil)) ?? [] {
+                try? files.removeItem(at: item)
+            }
+        }
+
+        let center = UNUserNotificationCenter.current()
+        center.removeAllDeliveredNotifications()
+        center.removeAllPendingNotificationRequests()
+        center.setBadgeCount(0)
     }
 
     private func voice() -> String {

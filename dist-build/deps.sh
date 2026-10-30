@@ -12,9 +12,9 @@ LIBKYRKA_URL=https://github.com/jorisvink/libkyrka/archive/$LIBKYRKA_REV.tar.gz
 LIBKYRKA_SHA256=80a7def87b85d097c1f7a76868a69294f6531cde9f18a4e94291a26a3a67912c
 
 # libsodium, used by libkyrka for x25519, ed25519 and (on hosts) AES-GCM.
-LIBSODIUM_VERSION=1.0.20
+LIBSODIUM_VERSION=1.0.22
 LIBSODIUM_URL=https://download.libsodium.org/libsodium/releases/libsodium-$LIBSODIUM_VERSION.tar.gz
-LIBSODIUM_SHA256=ebb65ef6ca439333c2bb41a0c1990587288da07f6c7fd07cb3a18cc18d30ce19
+LIBSODIUM_SHA256=adbdd8f16149e81ac6078a03aca6fc03b592b89ef7b5ed83841c086191be3349
 
 # mbedtls, used by libkyrka for AES-GCM on Android.
 MBEDTLS_VERSION=3.6.7

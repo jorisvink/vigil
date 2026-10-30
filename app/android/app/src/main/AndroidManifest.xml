@@ -48,6 +48,10 @@
                 <category android:name="android.intent.category.LAUNCHER"/>
             </intent-filter>
         </activity>
+        <activity-alias
+            android:name=".Notified"
+            android:exported="false"
+            android:targetActivity=".MainActivity" />
         <service
             android:name=".VigilVpnService"
             android:exported="false"

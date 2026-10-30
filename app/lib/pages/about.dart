@@ -56,11 +56,10 @@ class AboutPage extends StatelessWidget {
             ],
           ),
         ),
-        if (Platform.isIOS) ...[
-          const GroupLabel('On this device', index: 1),
-          const Panel(child: _Candle()),
-        ],
-        GroupLabel('The Community', index: Platform.isIOS ? 2 : 1),
+        const GroupLabel('On this device', index: 1),
+        if (Platform.isIOS) const Panel(child: _Candle()),
+        const Panel(child: _Erase()),
+        const GroupLabel('The Community', index: 2),
         LinkList(
           rows: [
             LinkRow(
@@ -87,6 +86,68 @@ class AboutPage extends StatelessWidget {
               ),
             ],
           ),
+        ),
+      ],
+    );
+  }
+}
+
+class _Erase extends StatefulWidget {
+  const _Erase();
+
+  @override
+  State<_Erase> createState() => _EraseState();
+}
+
+class _EraseState extends State<_Erase> {
+  bool _busy = false;
+
+  Future<void> _erase() async {
+    if (!await confirm(
+      title: 'Erase all data',
+      text:
+          'This stops every tunnel and Gospel and wipes all configurations, '
+          'chats, files, keys, names and settings from this device. It '
+          'cannot be undone. Vigil then '
+          '${Platform.isIOS ? 'closes' : 'starts over'} as if it was just '
+          'installed.',
+      action: 'Erase',
+      risky: true,
+    )) {
+      return;
+    }
+
+    setState(() => _busy = true);
+
+    try {
+      await Vigil.instance.eraseAll();
+    } on VigilError catch (e) {
+      notify(e.message);
+
+      if (mounted) {
+        setState(() => _busy = false);
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text('Erase all data', style: Styles.cardTitle),
+        const SizedBox(height: 3),
+        const Text(
+          'Removes everything Vigil keeps on this device. Nothing is kept '
+          'anywhere else.',
+          style: Styles.detail,
+        ),
+        const SizedBox(height: 14),
+        Btn(
+          label: 'Erase all data',
+          kind: BtnKind.secondary,
+          expand: true,
+          onTap: _busy ? null : _erase,
         ),
       ],
     );

@@ -289,10 +289,8 @@ final class VigilVideo: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate {
     private func orient(_ output: AVCaptureVideoDataOutput) {
         guard let connection = output.connection(with: .video) else { return }
 
-        if #available(iOS 17.0, *), connection.isVideoRotationAngleSupported(0) {
+        if connection.isVideoRotationAngleSupported(0) {
             connection.videoRotationAngle = 0
-        } else if connection.isVideoOrientationSupported {
-            connection.videoOrientation = .landscapeRight
         }
 
         if connection.isVideoMirroringSupported {

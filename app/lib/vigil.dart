@@ -189,6 +189,16 @@ class VideoState {
   int get localHeight => json['localHeight'] as int? ?? 540;
 }
 
+class ScanState {
+  ScanState(this.json);
+
+  final Map<String, dynamic> json;
+
+  String? get value => json['value'] as String?;
+  int get width => json['width'] as int? ?? 0;
+  int get height => json['height'] as int? ?? 0;
+}
+
 class VoiceStatus {
   VoiceStatus(this.json);
 
@@ -453,9 +463,10 @@ class Status {
 }
 
 class VigilError implements Exception {
-  VigilError(this.message);
+  VigilError(this.message, [this.code = '']);
 
   final String message;
+  final String code;
 
   @override
   String toString() => message;
@@ -753,6 +764,24 @@ class Vigil {
 
   Future<void> videoRelease() => _invoke('videoRelease', null);
 
+  Future<int> scanStart() async {
+    final json = jsonDecode(await _invoke('scanStart', null));
+    return (json as Map<String, dynamic>)['texture'] as int;
+  }
+
+  Future<ScanState> scanState() async => ScanState(
+    jsonDecode(await _invoke('scanState', null)) as Map<String, dynamic>,
+  );
+
+  Future<void> scanStop() => _invoke('scanStop', null);
+
+  Future<void> eraseAll() => _invoke('eraseAll', null);
+
+  Future<String?> scanImage(String path) async {
+    final value = await _invoke('scanImage', path);
+    return value.isEmpty ? null : value;
+  }
+
   Future<void> decline() async {
     await _invoke('decline', null);
     await refresh();
@@ -982,7 +1011,7 @@ class Vigil {
     try {
       return await _channel.invokeMethod<String>(method, arg) ?? '';
     } on PlatformException catch (e) {
-      throw VigilError(e.message ?? e.code);
+      throw VigilError(e.message ?? e.code, e.code);
     }
   }
 }

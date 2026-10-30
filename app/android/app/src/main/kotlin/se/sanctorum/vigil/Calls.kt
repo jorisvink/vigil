@@ -330,7 +330,7 @@ object Calls {
                 }
             )
 
-        launch(service, VigilVpnService.ACTION_SHOW, 2)?.let { builder.setContentIntent(it) }
+        builder.setContentIntent(launch(service, VigilVpnService.ACTION_SHOW, 2))
 
         if (phase == Phase.ACTIVE) {
             builder.setWhen(started).setUsesChronometer(true).setShowWhen(true)
@@ -370,7 +370,7 @@ object Calls {
         }
 
         val person = person(peer)
-        val answer = launch(service, VigilVpnService.ACTION_ANSWER, 3) ?: return
+        val answer = launch(service, VigilVpnService.ACTION_ANSWER, 3)
         val decline = serviceIntent(service, VigilVpnService.ACTION_DECLINE, 4)
 
         val builder = Notification.Builder(service, CHANNEL_RING)
@@ -473,13 +473,11 @@ object Calls {
     private fun person(peer: Int): Person =
         Person.Builder().setName(name(peer)).setImportant(true).build()
 
-    private fun launch(service: VigilVpnService, action: String, code: Int): PendingIntent? =
-        service.packageManager.getLaunchIntentForPackage(service.packageName)?.let {
-            PendingIntent.getActivity(
-                service, code, it.setAction(action).addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP),
-                PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
-            )
-        }
+    private fun launch(service: VigilVpnService, action: String, code: Int): PendingIntent =
+        PendingIntent.getActivity(
+            service, code, VigilVpnService.notified(service, action),
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+        )
 
     private fun serviceIntent(service: VigilVpnService, action: String, code: Int): PendingIntent =
         PendingIntent.getService(

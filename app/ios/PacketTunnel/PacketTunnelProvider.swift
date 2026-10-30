@@ -550,14 +550,10 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             let content = UNMutableNotificationContent()
             content.title = UInt8(peer, radix: 16).map { ChatVault.name($0) } ?? "Peer \(peer)"
             content.body = "Incoming call"
-            content.sound = .default
+            content.sound = .defaultRingtone
             content.interruptionLevel = .timeSensitive
             content.categoryIdentifier = ChatVault.callCategory
             content.userInfo = ["call": peer]
-
-            if #available(iOS 15.2, *) {
-                content.sound = .defaultRingtone
-            }
 
             UNUserNotificationCenter.current().add(
                 UNNotificationRequest(identifier: "call-\(peer)", content: content, trigger: nil))

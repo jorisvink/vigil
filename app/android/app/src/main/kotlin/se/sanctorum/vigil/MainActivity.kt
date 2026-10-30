@@ -1,6 +1,7 @@
 package se.sanctorum.vigil
 
 import android.Manifest
+import android.app.NotificationManager
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.ActivityNotFoundException
@@ -9,6 +10,7 @@ import android.net.Uri
 import android.provider.OpenableColumns
 import android.provider.Settings
 import java.io.ByteArrayOutputStream
+import java.io.File
 import java.io.IOException
 import android.content.pm.PackageManager
 import android.net.VpnService
@@ -23,6 +25,7 @@ import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.view.TextureRegistry
 import io.flutter.plugin.common.MethodCall
 import io.flutter.plugin.common.MethodChannel
+import java.security.KeyStore
 import org.json.JSONObject
 
 /**
@@ -37,6 +40,8 @@ class MainActivity : FlutterActivity() {
     private var textures: TextureRegistry? = null
     private var remoteTexture: TextureRegistry.SurfaceTextureEntry? = null
     private var localTexture: TextureRegistry.SurfaceTextureEntry? = null
+    private var scanTexture: TextureRegistry.SurfaceTextureEntry? = null
+    private var scanning: MethodChannel.Result? = null
     private var locked = false
 
     @Volatile
@@ -65,6 +70,7 @@ class MainActivity : FlutterActivity() {
     override fun onStop() {
         Voice.finish()?.fill(0)
         Voice.stop()
+        scanStop()
         Chats.background(this)
         super.onStop()
     }
@@ -186,6 +192,25 @@ class MainActivity : FlutterActivity() {
                 "videoRelease" -> {
                     videoRelease()
                     result.success("")
+                }
+                "scanStart" -> {
+                    if (granted(Manifest.permission.CAMERA)) {
+                        scanStart(result)
+                        return
+                    }
+
+                    scanning?.error("cancelled", "The scanner was started again.", null)
+                    scanning = result
+                    requestPermissions(arrayOf(Manifest.permission.CAMERA), REQUEST_SCAN)
+                }
+                "scanState" -> result.success(Scanner.state().toString())
+                "scanStop" -> {
+                    scanStop()
+                    result.success("")
+                }
+                "scanImage" -> {
+                    val path = call.arguments as String
+                    background(result) { Scanner.image(path) }
                 }
                 "decline" -> {
                     startService(service(VigilVpnService.ACTION_DECLINE))
@@ -422,6 +447,19 @@ class MainActivity : FlutterActivity() {
                     call.argument<Boolean>("value")?.let { prefs.edit().putBoolean(key, it).apply() }
                     result.success(prefs.getBoolean(key, false).toString())
                 }
+                "eraseAll" -> {
+                    Voice.finish()?.fill(0)
+                    Voice.stop()
+                    scanStop()
+
+                    Thread {
+                        erase()
+                        runOnUiThread {
+                            result.success("")
+                            restart()
+                        }
+                    }.start()
+                }
                 "allowBackground" -> {
                     allowBackground()
                     result.success("")
@@ -452,6 +490,25 @@ class MainActivity : FlutterActivity() {
         } catch (e: ActivityNotFoundException) {
             startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
         }
+    }
+
+    private fun erase() {
+        VigilVpnService.disconnect()?.join(ERASE_WAIT_MS)
+        stopService(Intent(this, VigilVpnService::class.java))
+        getSystemService(NotificationManager::class.java).cancelAll()
+
+        val keys = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
+        keys.aliases().toList().forEach { keys.deleteEntry(it) }
+
+        File(dataDir, "shared_prefs").list()?.forEach { deleteSharedPreferences(it.removeSuffix(".xml")) }
+        dataDir.listFiles()?.filter { it.name != "lib" }?.forEach { it.deleteRecursively() }
+    }
+
+    private fun restart() {
+        val launch = packageManager.getLaunchIntentForPackage(packageName) ?: return
+
+        startActivity(launch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK))
+        Runtime.getRuntime().exit(0)
     }
 
     private fun wiped(config: ByteArray, work: (ByteArray) -> Unit) {
@@ -556,7 +613,11 @@ class MainActivity : FlutterActivity() {
     }
 
     private fun calling(intent: Intent?) {
-        when (intent?.action) {
+        if (intent?.component?.className != VigilVpnService.NOTIFIED) {
+            return
+        }
+
+        when (intent.action) {
             VigilVpnService.ACTION_ANSWER -> {
                 show()
                 withMicrophone(service(VigilVpnService.ACTION_ANSWER), null)
@@ -630,6 +691,27 @@ class MainActivity : FlutterActivity() {
             .put("localWidth", Video.localWidth)
             .put("localHeight", Video.localHeight)
 
+    private fun scanStart(result: MethodChannel.Result) {
+        val registry = textures ?: throw IllegalStateException("No textures.")
+        val entry = scanTexture ?: registry.createSurfaceTexture().also { scanTexture = it }
+
+        Scanner.start(this, entry.surfaceTexture()) { e ->
+            if (e == null) {
+                result.success(JSONObject().put("texture", entry.id()).toString())
+            } else {
+                Log.w("vigil", "failed to start the scanner", e)
+                scanStop()
+                result.error("unsupported", "The camera could not be started.", null)
+            }
+        }
+    }
+
+    private fun scanStop() {
+        Scanner.stop()
+        scanTexture?.release()
+        scanTexture = null
+    }
+
     private fun videoRelease() {
         Video.remoteSurface(null)
         Video.localSurface(null)
@@ -646,6 +728,18 @@ class MainActivity : FlutterActivity() {
         grantResults: IntArray
     ) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+
+        if (requestCode == REQUEST_SCAN) {
+            val result = scanning ?: return
+            scanning = null
+
+            if (granted(Manifest.permission.CAMERA)) {
+                scanStart(result)
+            } else {
+                result.error("denied", "Camera access was denied.", null)
+            }
+            return
+        }
 
         if (requestCode != REQUEST_MICROPHONE) {
             return
@@ -833,6 +927,8 @@ class MainActivity : FlutterActivity() {
         const val REQUEST_FILE = 0x5d
         const val REQUEST_SAVE = 0x5e
         const val REQUEST_VOICE = 0x5f
+        const val REQUEST_SCAN = 0x60
+        const val ERASE_WAIT_MS = 3000L
         const val DATA_MAX = 4 * 1024 * 1024
         const val MESSAGE_MAX = 512
         const val VIDEO_WIDTH = 960
