@@ -113,7 +113,8 @@ record in the log. This means:
 - A record from another conversation cannot be inserted.
 
 The number of records is stored together with the conversation key, in
-its protected form. If the log has fewer records than expected, someone
+its protected form. So are the number of unread messages and a copy of
+the last message, which the chat list shows. If the log has fewer records than expected, someone
 removed messages from the end. The app then shows a warning. If a record
 cannot be decrypted, the app shows the messages before it and warns that
 the chat was damaged or tampered with.
@@ -141,8 +142,10 @@ soon as they are delivered.
 
 ## Locking
 
-While you read a chat, its conversation key is kept in memory. The app
-drops all of these keys when the vault locks.
+While you read a chat, its conversation key is kept in memory, and so
+are the messages of that chat that were already decrypted. Only new
+records are decrypted after that. The app drops all keys and messages
+when the vault locks.
 
 On iOS this happens when the app goes to the background or when iOS
 announces that protected data is about to become unavailable. On Android

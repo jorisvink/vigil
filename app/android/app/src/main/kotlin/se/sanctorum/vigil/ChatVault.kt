@@ -11,6 +11,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
 import java.io.FileOutputStream
+import java.io.RandomAccessFile
 import java.nio.ByteBuffer
 import java.security.KeyFactory
 import java.security.KeyPairGenerator
@@ -44,36 +45,57 @@ class ChatVault(context: Context) {
         val key: ByteArray,
         var count: Long,
         var read: Long,
-        var flags: Long
+        var flags: Long,
+        var unread: Long = -1,
+        var last: String? = null
     )
+
+    private class History(val chat: String, val epoch: Long) {
+        var offset = 0L
+        var seq = 0L
+        var stamp = 0L
+        var pinned = 0L
+        var unread = 0L
+        var damaged = false
+        val messages = mutableListOf<JSONObject>()
+        val stamps = mutableListOf<Long>()
+        val index = mutableMapOf<Long, Int>()
+        val digests = mutableMapOf<Int, String>()
+    }
 
     private val dir = File(context.noBackupFilesDir, "chats").apply { mkdirs() }
     private val inbox = File(dir, "inbox").apply { mkdirs() }
     private val random = SecureRandom()
     private val open = mutableMapOf<String, Conversation>()
+    private var history: History? = null
     private var refs = 0L
 
     val hardware: Boolean
         get() = Build.VERSION.SDK_INT >= Build.VERSION_CODES.S
 
+    @Synchronized
     fun prepare() {
         history()
         outbox()
         agreement()
     }
 
+    @Synchronized
     fun lock() {
         for (conversation in open.values) {
             conversation.key.fill(0)
         }
         open.clear()
+        history = null
     }
 
+    @Synchronized
     fun ref(): Long {
         refs = maxOf(refs + 1, System.currentTimeMillis() * 1000)
         return refs
     }
 
+    @Synchronized
     fun deliver(
         chat: String, peer: Int, nick: String, text: String, time: Long, kind: String = "",
         data: ByteArray? = null, media: String = "", name: String = "", quote: Quote? = null
@@ -109,6 +131,7 @@ class ChatVault(context: Context) {
         }
     }
 
+    @Synchronized
     fun merge() {
         val pending = inbox.listFiles { f -> f.name.endsWith(".box") }?.sortedBy { it.name }
 
@@ -194,115 +217,70 @@ class ChatVault(context: Context) {
         wipe(receipts)
     }
 
+    @Synchronized
     fun conversations(): JSONArray {
         val out = JSONArray()
         val files = dir.listFiles { f -> f.name.matches(Regex("($CHAT)\\$KEY")) } ?: return out
 
         for (file in files) {
             val id = file.name.removeSuffix(KEY)
-            val chat = messages(id)
-            val list = chat.getJSONArray("messages")
-            val last = if (list.length() > 0) list.getJSONObject(list.length() - 1) else null
+            val conversation = conversation(id, false) ?: continue
+
+            if (conversation.unread < 0) {
+                val full = History(id, 0)
+
+                load(id, conversation, full)
+                summarize(id, conversation, full)
+            }
 
             out.put(
                 JSONObject()
                     .put("peer", id)
-                    .put("unread", chat.getInt("unread"))
-                    .put("last", last ?: JSONObject.NULL)
+                    .put("unread", conversation.unread)
+                    .put("last", conversation.last?.let { JSONObject(it) } ?: JSONObject.NULL)
             )
         }
 
         return out
     }
 
-    fun messages(chat: String): JSONObject {
+    @Synchronized
+    fun messages(chat: String, epoch: Long = 0, stamp: Long = 0): JSONObject {
         val conversation = conversation(chat, false)
             ?: return JSONObject().put("messages", JSONArray()).put("unread", 0)
 
-        val messages = mutableListOf<JSONObject>()
-        val refs = mutableMapOf<Long, JSONObject>()
-        var damaged = false
-        var pinned = 0L
-        var unread = 0
+        val current = cached(chat)
+        val fresh = current.offset == 0L
 
-        records(chat, conversation) { seq, record ->
-            if (record == null) {
-                damaged = true
-                return@records
+        load(chat, conversation, current)
+
+        if (fresh && conversation.unread < 0) {
+            summarize(chat, conversation, current)
+        }
+
+        val list = JSONArray()
+        val out = JSONObject()
+            .put("unread", conversation.unread)
+            .put("epoch", current.epoch)
+            .put("stamp", current.stamp)
+
+        if (epoch == current.epoch) {
+            for (i in current.messages.indices) {
+                if (current.stamps[i] > stamp) {
+                    list.put(current.messages[i])
+                }
             }
 
-            when (record.optString("t")) {
-                "msg" -> {
-                    val incoming = record.optString("dir") == "in"
-                    val message = JSONObject()
-                        .put("ref", record.getLong("ref"))
-                        .put("dir", record.getString("dir"))
-                        .put("text", record.getString("text"))
-                        .put("time", record.getLong("time"))
-                        .put("nick", record.optString("nick"))
-                        .put("peer", record.optString("peer"))
-                        .put("data", record.optString("data"))
-                        .put("media", record.optString("media"))
-                        .put("name", record.optString("name"))
-                        .put("state", if (incoming) "received" else "queued")
-
-                    if (record.has("qh")) {
-                        message.put("qa", record.getString("qa"))
-                        message.put("qh", record.getString("qh"))
-                    }
-
-                    if (incoming && seq >= conversation.read) {
-                        unread++
-                    }
-
-                    messages.add(message)
-                    refs[message.getLong("ref")] = message
-                }
-                "member" -> messages.add(
-                    JSONObject()
-                        .put("ref", record.getLong("ref"))
-                        .put("dir", "in")
-                        .put("kind", record.getString("kind"))
-                        .put("text", "")
-                        .put("time", record.getLong("time"))
-                        .put("nick", record.optString("nick"))
-                        .put("peer", record.optString("peer"))
-                        .put("state", "received")
-                )
-                "sent" -> refs[record.getLong("ref")]?.let {
-                    if (it.getString("state") == "queued") {
-                        it.put("state", "sent")
-                    }
-                }
-                "delivered" -> refs[record.getLong("ref")]?.put("state", "delivered")
-                "acks" -> refs[record.getLong("ref")]?.let {
-                    val pending = record.optInt("pending")
-
-                    it.put("acked", record.optInt("acked"))
-                    it.put("pending", pending)
-                    it.put("state", if (pending == 0) "delivered" else "sent")
-                }
-                "fav" -> refs[record.getLong("ref")]?.put("fav", record.optBoolean("on"))
-                "pin" -> {
-                    val ref = record.getLong("ref")
-
-                    if (record.optBoolean("on")) {
-                        pinned = ref
-                    } else if (pinned == ref) {
-                        pinned = 0
-                    }
-                }
+            out.put("delta", true)
+        } else {
+            for (message in current.messages) {
+                list.put(message)
             }
         }
 
-        refs[pinned]?.put("pinned", true)
-        replies(messages)
+        out.put("messages", list)
 
-        val out = JSONObject()
-            .put("messages", JSONArray(messages))
-            .put("unread", unread)
-
-        if (damaged) {
+        if (current.damaged) {
             out.put("warning", "Part of this chat could not be read, it was damaged or tampered with.")
         } else if (conversation.flags and FLAG_TRUNCATED != 0L) {
             out.put("warning", "Messages were removed from the end of this chat outside of Vigil.")
@@ -311,6 +289,7 @@ class ChatVault(context: Context) {
         return out
     }
 
+    @Synchronized
     fun send(chat: String, text: String, ref: Long = ref(), quote: Quote? = null): Long {
         val time = System.currentTimeMillis()
         val record = JSONObject()
@@ -339,30 +318,24 @@ class ChatVault(context: Context) {
         return ref
     }
 
+    @Synchronized
     fun quoted(chat: String, ref: Long): Quote {
-        val list = messages(chat).getJSONArray("messages")
+        val conversation = conversation(chat, false) ?: throw IllegalArgumentException("That message is gone.")
+        val current = cached(chat)
 
-        for (i in 0 until list.length()) {
-            val message = list.getJSONObject(i)
+        load(chat, conversation, current)
 
-            if (message.getLong("ref") != ref) {
-                continue
-            }
+        val at = current.index[ref] ?: throw IllegalArgumentException("That message is gone.")
+        val message = current.messages[at]
 
-            if (message.has("kind")) {
-                continue
-            }
-
-            if (message.getString("dir") == "out") {
-                return Quote(SELF, digest(message))
-            }
-
-            return Quote(message.getString("peer"), digest(message))
+        if (message.getString("dir") == "out") {
+            return Quote(SELF, digest(message))
         }
 
-        throw IllegalArgumentException("That message is gone.")
+        return Quote(message.getString("peer"), digest(message))
     }
 
+    @Synchronized
     fun sendData(chat: String, media: String, name: String, data: ByteArray, ref: Long = ref()): Long {
         val file = dataWrite(chat, ref, data)
 
@@ -393,6 +366,7 @@ class ChatVault(context: Context) {
         return ref
     }
 
+    @Synchronized
     fun data(chat: String, file: String): ByteArray? {
         require(file.matches(Regex(DATA)) && file.startsWith("$chat-")) { "There is no data $file." }
 
@@ -411,6 +385,7 @@ class ChatVault(context: Context) {
         }
     }
 
+    @Synchronized
     fun outboxList(): JSONArray {
         val file = File(dir, OUTBOX)
         if (!file.exists()) {
@@ -426,6 +401,7 @@ class ChatVault(context: Context) {
         }
     }
 
+    @Synchronized
     fun receipt(chat: String, ref: Long, kind: String, acked: Int = 0, pending: Int = 0) {
         if (kind == "delivered") {
             val list = outboxList()
@@ -456,27 +432,36 @@ class ChatVault(context: Context) {
         write(file, wrap(outbox(), RECEIPTS_AAD, list.toString().toByteArray()))
     }
 
+    @Synchronized
     fun read(chat: String) {
         val conversation = conversation(chat, false) ?: return
 
         conversation.read = conversation.count
+        conversation.unread = 0
         save(chat, conversation)
     }
 
+    @Synchronized
     fun favorite(chat: String, ref: Long, on: Boolean) {
         conversation(chat, false) ?: return
 
         append(chat, JSONObject().put("t", "fav").put("ref", ref).put("on", on))
     }
 
+    @Synchronized
     fun pin(chat: String, ref: Long, on: Boolean) {
         conversation(chat, false) ?: return
 
         append(chat, JSONObject().put("t", "pin").put("ref", ref).put("on", on))
     }
 
+    @Synchronized
     fun delete(chat: String) {
         open.remove(chat)?.key?.fill(0)
+
+        if (history?.chat == chat) {
+            history = null
+        }
 
         wipe(File(dir, "$chat$KEY"))
         wipe(File(dir, "$chat$LOG"))
@@ -498,33 +483,189 @@ class ChatVault(context: Context) {
         }
     }
 
-    private fun replies(messages: List<JSONObject>) {
-        val digests = mutableMapOf<Int, String>()
+    private fun cached(chat: String): History {
+        val current = history
 
-        for ((at, message) in messages.withIndex()) {
-            val hash = message.optString("qh")
-            if (hash.isEmpty()) {
+        if (current != null && current.chat == chat && File(dir, "$chat$LOG").length() >= current.offset) {
+            return current
+        }
+
+        return History(chat, random.nextLong()).also { history = it }
+    }
+
+    private fun summarize(chat: String, conversation: Conversation, full: History) {
+        conversation.unread = full.unread
+        conversation.last = full.messages.lastOrNull()?.toString()
+        save(chat, conversation)
+    }
+
+    private fun load(chat: String, conversation: Conversation, current: History) {
+        current.stamp++
+
+        val file = File(dir, "$chat$LOG")
+        val size = file.length()
+        if (size <= current.offset) {
+            return
+        }
+
+        val data = RandomAccessFile(file, "r").use {
+            val buffer = ByteArray((size - current.offset).toInt())
+
+            it.seek(current.offset)
+            it.readFully(buffer)
+            buffer
+        }
+
+        val key = SecretKeySpec(conversation.key, "AES")
+        var offset = 0
+
+        while (offset + 4 <= data.size) {
+            val len = ByteBuffer.wrap(data, offset, 4).int
+            if (len < NONCE + TAG / 8 || offset + 4 + len > data.size) {
+                break
+            }
+
+            val plain = try {
+                Cipher.getInstance(GCM).run {
+                    init(Cipher.DECRYPT_MODE, key, GCMParameterSpec(TAG, data, offset + 4, NONCE))
+                    updateAAD(recordAad(chat, current.seq))
+                    doFinal(data, offset + 4 + NONCE, len - NONCE)
+                }
+            } catch (e: AEADBadTagException) {
+                current.damaged = true
+                break
+            }
+
+            try {
+                apply(current, JSONObject(String(plain)), conversation.read)
+            } finally {
+                plain.fill(0)
+            }
+
+            offset += 4 + len
+            current.offset += 4 + len
+            current.seq++
+        }
+
+        data.fill(0)
+    }
+
+    private fun apply(current: History, record: JSONObject, read: Long) {
+        val ref = record.optLong("ref")
+
+        when (record.optString("t")) {
+            "msg" -> {
+                val message = message(record)
+
+                if (message.getString("dir") == "in" && current.seq >= read) {
+                    current.unread++
+                }
+
+                current.index[ref] = current.messages.size
+                current.messages.add(message)
+                current.stamps.add(current.stamp)
+
+                if (message.has("qh")) {
+                    quote(current, current.messages.size - 1)
+                }
+            }
+            "member" -> {
+                current.messages.add(message(record))
+                current.stamps.add(current.stamp)
+            }
+            "sent" -> change(current, ref) {
+                if (it.getString("state") == "queued") {
+                    it.put("state", "sent")
+                }
+            }
+            "delivered" -> change(current, ref) { it.put("state", "delivered") }
+            "acks" -> change(current, ref) {
+                val pending = record.optInt("pending")
+
+                it.put("acked", record.optInt("acked"))
+                it.put("pending", pending)
+                it.put("state", if (pending == 0) "delivered" else "sent")
+            }
+            "fav" -> change(current, ref) { it.put("fav", record.optBoolean("on")) }
+            "pin" -> {
+                val previous = current.pinned
+
+                if (record.optBoolean("on")) {
+                    current.pinned = ref
+                } else if (current.pinned == ref) {
+                    current.pinned = 0
+                }
+
+                if (previous != current.pinned) {
+                    change(current, previous) { it.remove("pinned") }
+                    change(current, current.pinned) { it.put("pinned", true) }
+                }
+            }
+        }
+    }
+
+    private fun change(current: History, ref: Long, edit: (JSONObject) -> Unit) {
+        val at = current.index[ref] ?: return
+
+        edit(current.messages[at])
+        current.stamps[at] = current.stamp
+    }
+
+    private fun message(record: JSONObject): JSONObject {
+        if (record.optString("t") == "member") {
+            return JSONObject()
+                .put("ref", record.getLong("ref"))
+                .put("dir", "in")
+                .put("kind", record.getString("kind"))
+                .put("text", "")
+                .put("time", record.getLong("time"))
+                .put("nick", record.optString("nick"))
+                .put("peer", record.optString("peer"))
+                .put("state", "received")
+        }
+
+        val incoming = record.optString("dir") == "in"
+        val message = JSONObject()
+            .put("ref", record.getLong("ref"))
+            .put("dir", record.getString("dir"))
+            .put("text", record.getString("text"))
+            .put("time", record.getLong("time"))
+            .put("nick", record.optString("nick"))
+            .put("peer", record.optString("peer"))
+            .put("data", record.optString("data"))
+            .put("media", record.optString("media"))
+            .put("name", record.optString("name"))
+            .put("state", if (incoming) "received" else "queued")
+
+        if (record.has("qh")) {
+            message.put("qa", record.getString("qa"))
+            message.put("qh", record.getString("qh"))
+        }
+
+        return message
+    }
+
+    private fun quote(current: History, at: Int) {
+        val message = current.messages[at]
+        val hash = message.getString("qh")
+        val author = message.getString("qa")
+
+        message.put("quoted", true)
+
+        for (i in at - 1 downTo 0) {
+            val other = current.messages[i]
+
+            if (other.has("kind")) {
                 continue
             }
 
-            val author = message.getString("qa")
-            message.put("quoted", true)
+            if (!wrote(other, author)) {
+                continue
+            }
 
-            for (i in at - 1 downTo 0) {
-                val other = messages[i]
-
-                if (other.has("kind")) {
-                    continue
-                }
-
-                if (!wrote(other, author)) {
-                    continue
-                }
-
-                if (digests.getOrPut(i) { digest(other) } == hash) {
-                    message.put("reply", other.getLong("ref"))
-                    break
-                }
+            if (current.digests.getOrPut(i) { digest(other) } == hash) {
+                message.put("reply", other.getLong("ref"))
+                break
             }
         }
     }
@@ -600,49 +741,18 @@ class ChatVault(context: Context) {
             it.fd.sync()
         }
 
+        val type = record.optString("t")
+
+        if (type == "msg" || type == "member") {
+            conversation.last = message(record).toString()
+        }
+
+        if (type == "msg" && record.optString("dir") == "in" && conversation.unread >= 0) {
+            conversation.unread++
+        }
+
         conversation.count++
         save(chat, conversation)
-    }
-
-    private fun records(chat: String, conversation: Conversation, each: (Long, JSONObject?) -> Unit) {
-        val file = File(dir, "$chat$LOG")
-        if (!file.exists()) {
-            return
-        }
-
-        val data = file.readBytes()
-        val key = SecretKeySpec(conversation.key, "AES")
-        var offset = 0
-        var seq = 0L
-
-        while (offset + 4 <= data.size) {
-            val len = ByteBuffer.wrap(data, offset, 4).int
-            if (len < NONCE + TAG / 8 || offset + 4 + len > data.size) {
-                break
-            }
-
-            val plain = try {
-                Cipher.getInstance(GCM).run {
-                    init(Cipher.DECRYPT_MODE, key, GCMParameterSpec(TAG, data, offset + 4, NONCE))
-                    updateAAD(recordAad(chat, seq))
-                    doFinal(data, offset + 4 + NONCE, len - NONCE)
-                }
-            } catch (e: AEADBadTagException) {
-                each(seq, null)
-                break
-            }
-
-            try {
-                each(seq, JSONObject(String(plain)))
-            } finally {
-                plain.fill(0)
-            }
-
-            offset += 4 + len
-            seq++
-        }
-
-        data.fill(0)
     }
 
     private fun conversation(chat: String, create: Boolean): Conversation? {
@@ -655,7 +765,7 @@ class ChatVault(context: Context) {
                 return null
             }
 
-            val conversation = Conversation(ByteArray(32).also(random::nextBytes), 0, 0, 0)
+            val conversation = Conversation(ByteArray(32).also(random::nextBytes), 0, 0, 0, 0)
             try {
                 save(chat, conversation)
             } catch (e: UserNotAuthenticatedException) {
@@ -678,6 +788,19 @@ class ChatVault(context: Context) {
         val conversation = Conversation(
             ByteArray(32).also { buffer.get(it) }, buffer.long, buffer.long, buffer.long
         )
+
+        if (buffer.remaining() >= 12) {
+            conversation.unread = buffer.long
+
+            val last = ByteArray(buffer.int).also { buffer.get(it) }
+
+            if (last.isNotEmpty()) {
+                conversation.last = String(last)
+            }
+
+            last.fill(0)
+        }
+
         plain.fill(0)
 
         val framed = framed(chat)
@@ -687,6 +810,8 @@ class ChatVault(context: Context) {
                 conversation.flags = conversation.flags or FLAG_TRUNCATED
             }
             conversation.count = framed
+            conversation.unread = -1
+            conversation.last = null
             save(chat, conversation)
         }
 
@@ -696,17 +821,22 @@ class ChatVault(context: Context) {
     }
 
     private fun save(chat: String, conversation: Conversation) {
-        val plain = ByteBuffer.allocate(56)
+        val last = conversation.last?.toByteArray() ?: ByteArray(0)
+        val plain = ByteBuffer.allocate(68 + last.size)
             .put(conversation.key)
             .putLong(conversation.count)
             .putLong(conversation.read)
             .putLong(conversation.flags)
+            .putLong(conversation.unread)
+            .putInt(last.size)
+            .put(last)
             .array()
 
         try {
             write(File(dir, "$chat$KEY"), wrap(history(), keyAad(chat), plain))
         } finally {
             plain.fill(0)
+            last.fill(0)
         }
     }
 

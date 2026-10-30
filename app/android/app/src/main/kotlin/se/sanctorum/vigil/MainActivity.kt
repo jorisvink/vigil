@@ -244,54 +244,63 @@ class MainActivity : FlutterActivity() {
                         else PeerNames.save(this, JSONObject(names))).toString()
                     )
                 }
-                "chats" -> {
+                "chats" -> background(result) {
                     val vault = Chats.vault(this)
                     vault.merge()
-                    result.success(vault.conversations().toString())
+                    vault.conversations().toString()
                 }
                 "chat" -> {
-                    val vault = Chats.vault(this)
-                    vault.merge()
-                    result.success(vault.messages(chat(call.arguments as String)).toString())
+                    val id = chat(call.argument<String>("peer")!!)
+                    val epoch = call.argument<Number>("epoch")?.toLong() ?: 0L
+                    val stamp = call.argument<Number>("stamp")?.toLong() ?: 0L
+
+                    background(result) {
+                        val vault = Chats.vault(this)
+                        vault.merge()
+                        vault.messages(id, epoch, stamp).toString()
+                    }
                 }
                 "chatSend" -> {
                     val id = chat(call.argument<String>("peer")!!)
                     val text = call.argument<String>("text")!!
                     val reply = call.argument<Number>("reply")?.toLong() ?: 0L
-                    val bytes = text.toByteArray()
-                    val group = ChatVault.group(id)
-                    val vault = Chats.vault(this)
-                    var max = MESSAGE_MAX
-                    var quote: ChatVault.Quote? = null
 
-                    if (reply != 0L) {
-                        quote = vault.quoted(id, reply)
-                        max = REPLY_MAX
+                    background(result) {
+                        val bytes = text.toByteArray()
+                        val group = ChatVault.group(id)
+                        val vault = Chats.vault(this)
+                        var max = MESSAGE_MAX
+                        var quote: ChatVault.Quote? = null
+
+                        if (reply != 0L) {
+                            quote = vault.quoted(id, reply)
+                            max = REPLY_MAX
+                        }
+
+                        require(bytes.isNotEmpty() && bytes.size <= max) {
+                            "A message is at most $max bytes."
+                        }
+
+                        require(group == null || group == Chats.group(this)) {
+                            "You are not in this group anymore."
+                        }
+
+                        val ref = vault.ref()
+                        val author = quote?.peer ?: 0
+                        val hash = quote?.digest ?: 0L
+
+                        require(group == null || Vigil.chatGroupSend(ref, bytes, author, hash)) {
+                            "Gospel is not running, group messages only go to members that are around."
+                        }
+
+                        vault.send(id, text, ref, quote)
+                        if (group == null) {
+                            Vigil.chatSend(id.toInt(16), ref, bytes, author, hash)
+                        }
+
+                        Chats.changed()
+                        ref.toString()
                     }
-
-                    require(bytes.isNotEmpty() && bytes.size <= max) {
-                        "A message is at most $max bytes."
-                    }
-
-                    require(group == null || group == Chats.group(this)) {
-                        "You are not in this group anymore."
-                    }
-
-                    val ref = vault.ref()
-                    val author = quote?.peer ?: 0
-                    val hash = quote?.digest ?: 0L
-
-                    require(group == null || Vigil.chatGroupSend(ref, bytes, author, hash)) {
-                        "Gospel is not running, group messages only go to members that are around."
-                    }
-
-                    vault.send(id, text, ref, quote)
-                    if (group == null) {
-                        Vigil.chatSend(id.toInt(16), ref, bytes, author, hash)
-                    }
-
-                    Chats.changed()
-                    result.success(ref.toString())
                 }
                 "chatImageSend" -> {
                     val id = chat(call.argument<String>("peer")!!)

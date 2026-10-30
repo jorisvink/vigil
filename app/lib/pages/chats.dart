@@ -702,6 +702,12 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
   int _flash = 0;
   StreamSubscription<Status>? _updates;
   ChatHistory? _history;
+  List<ChatMessage> _messages = [];
+  Map<int, int> _at = {};
+  bool _loading = false;
+  bool _again = false;
+  int _epoch = 0;
+  int _stamp = 0;
   String? _error;
   Timer? _idle;
   bool _typing = false;
@@ -806,23 +812,43 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
   }
 
   Future<void> _load() async {
-    final vigil = Vigil.instance;
     final state = WidgetsBinding.instance.lifecycleState;
 
     if (state != null && state != AppLifecycleState.resumed) {
       return;
     }
 
+    if (_loading) {
+      _again = true;
+      return;
+    }
+
+    _loading = true;
+
+    try {
+      do {
+        _again = false;
+        await _fetch();
+      } while (_again && mounted);
+    } finally {
+      _loading = false;
+    }
+  }
+
+  Future<void> _fetch() async {
+    final vigil = Vigil.instance;
+
     _version = vigil.status.chats.version;
 
     try {
-      final history = await vigil.chat(peer);
+      final history = await vigil.chat(peer, epoch: _epoch, stamp: _stamp);
       if (history.unread > 0) {
         await vigil.read(peer);
       }
 
       if (mounted) {
         setState(() {
+          _merge(history);
           _history = history;
           _error = null;
         });
@@ -832,6 +858,27 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
         setState(() => _error = e.message);
       }
     }
+  }
+
+  void _merge(ChatHistory history) {
+    if (!history.delta || history.epoch != _epoch) {
+      _messages = history.messages;
+      _at = {for (final (i, m) in _messages.indexed) m.ref: i};
+    } else {
+      for (final message in history.messages) {
+        final at = _at[message.ref];
+
+        if (at != null) {
+          _messages[at] = message;
+        } else {
+          _at[message.ref] = _messages.length;
+          _messages.add(message);
+        }
+      }
+    }
+
+    _epoch = history.epoch;
+    _stamp = history.stamp;
   }
 
   void _changed() {
@@ -879,6 +926,16 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
         setState(() => _sending = false);
       }
     }
+  }
+
+  ChatMessage? _quote(int ref) {
+    final at = _at[ref];
+
+    if (at == null) {
+      return null;
+    }
+
+    return _messages[at];
   }
 
   void _reply(ChatMessage message) {
@@ -1322,9 +1379,8 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
           final status = snapshot.data!;
           final joined = status.chats.group == peer;
           final callable = status.call?.peers.contains(peer) ?? false;
-          final messages = _history?.messages ?? const <ChatMessage>[];
+          final messages = _messages;
           final pinned = messages.where((m) => m.pinned).firstOrNull;
-          final refs = {for (final m in messages) m.ref: m};
           final keyboard = MediaQuery.viewInsetsOf(context).bottom;
           final inset = keyboard > 0
               ? 0.0
@@ -1526,7 +1582,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
                                           child: _Bubble(
                                             chat: peer,
                                             message: message,
-                                            quote: refs[message.reply],
+                                            quote: _quote(message.reply),
                                             flash: _flash == message.ref,
                                             onQuote: () => _jump(message.reply),
                                             onReply: () => _reply(message),

@@ -33,6 +33,7 @@ object Chats {
     private val receipts = mutableListOf<Receipt>()
     private val waiting = mutableSetOf<Long>()
 
+    @Volatile
     var version = 0L
         private set
     var foreground = false
@@ -161,7 +162,7 @@ object Chats {
                         )
                     )
                 }
-                version++
+                changed()
             } catch (e: Exception) {
                 Log.e(TAG, "failed to store a chat event", e)
             }
@@ -224,7 +225,7 @@ object Chats {
     private fun receipt(vault: ChatVault, receipt: Receipt) {
         try {
             vault.receipt(receipt.chat, receipt.ref, receipt.kind, receipt.acked, receipt.pending)
-            version++
+            changed()
         } catch (e: Exception) {
             Log.w(TAG, "failed to store a receipt, trying again", e)
             receipts.add(receipt)
@@ -281,6 +282,7 @@ object Chats {
             .put("group", if (group != 0) ChatVault.groupChat(group) else JSONObject.NULL)
     }
 
+    @Synchronized
     fun changed() {
         version++
     }

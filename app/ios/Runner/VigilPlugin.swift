@@ -25,6 +25,7 @@ final class VigilPlugin: NSObject, FlutterPlugin, UIDocumentPickerDelegate,
     static var requested: String?
 
     private var version = 0
+    private let reader = DispatchQueue(label: "se.sanctorum.vigil.chats")
     private var opened: String?
     private var last: String?
     private var silent: TimeInterval?
@@ -274,18 +275,15 @@ final class VigilPlugin: NSObject, FlutterPlugin, UIDocumentPickerDelegate,
             } catch {
                 result(FlutterError(code: "failed", message: "\(error)", details: nil))
             }
-        case "chats", "chat", "chatSend", "chatImageSend", "chatRead", "chatOpen", "chatTyping",
+        case "chats", "chat":
+            reader.async {
+                let reply = Self.reply { try self.chat(call) }
+                DispatchQueue.main.async { result(reply) }
+            }
+        case "chatSend", "chatImageSend", "chatRead", "chatOpen", "chatTyping",
              "chatImageData", "chatDelete", "chatSettings", "chatGroup", "chatFavorite",
              "chatPin":
-            do {
-                result(try chat(call))
-            } catch let error as ChatVault.Locked {
-                result(FlutterError(code: "locked", message: error.description, details: nil))
-            } catch let error as ChatVault.Failure {
-                result(FlutterError(code: "invalid", message: error.description, details: nil))
-            } catch {
-                result(FlutterError(code: "failed", message: "\(error)", details: nil))
-            }
+            result(Self.reply { try chat(call) })
         case "flag":
             let args = call.arguments as? [String: Any] ?? [:]
             let key = "ui.\(args["key"] as? String ?? "")"
@@ -1089,8 +1087,11 @@ final class VigilPlugin: NSObject, FlutterPlugin, UIDocumentPickerDelegate,
             try vault.merge()
             return json(try vault.conversations())
         case "chat":
+            let epoch = (args["epoch"] as? NSNumber)?.int64Value ?? 0
+            let stamp = (args["stamp"] as? NSNumber)?.int64Value ?? 0
+
             try vault.merge()
-            return json(try vault.messages(hex))
+            return json(try vault.messages(hex, epoch: epoch, stamp: stamp))
         case "chatSend":
             let text = args["text"] as? String ?? ""
             let size = text.utf8.count
@@ -1349,6 +1350,18 @@ final class VigilPlugin: NSObject, FlutterPlugin, UIDocumentPickerDelegate,
         var buf = [CChar](repeating: 0, count: 1024)
         guard vigil_voice_status(&buf, buf.count) > 0 else { return "{\"running\":false}" }
         return String(cString: buf)
+    }
+
+    private static func reply(_ body: () throws -> String) -> Any {
+        do {
+            return try body()
+        } catch let error as ChatVault.Locked {
+            return FlutterError(code: "locked", message: error.description, details: nil)
+        } catch let error as ChatVault.Failure {
+            return FlutterError(code: "invalid", message: error.description, details: nil)
+        } catch {
+            return FlutterError(code: "failed", message: "\(error)", details: nil)
+        }
     }
 
     private func json(_ value: Any) -> String {

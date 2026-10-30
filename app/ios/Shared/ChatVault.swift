@@ -31,6 +31,28 @@ final class ChatVault {
         var count: UInt64
         var read: UInt64
         var flags: UInt64
+        var unread: Int64 = -1
+        var last: Data?
+    }
+
+    private final class History {
+        let chat: String
+        let epoch: Int64
+        var offset: UInt64 = 0
+        var seq: UInt64 = 0
+        var stamp: Int64 = 0
+        var pinned: Int64 = 0
+        var unread: Int64 = 0
+        var damaged = false
+        var messages = [[String: Any]]()
+        var stamps = [Int64]()
+        var index = [Int64: Int]()
+        var digests = [Int: String]()
+
+        init(chat: String, epoch: Int64) {
+            self.chat = chat
+            self.epoch = epoch
+        }
     }
 
     static let shared = ChatVault()
@@ -50,7 +72,9 @@ final class ChatVault {
     private let dir: URL?
     private let inbox: URL?
     private var open = [String: Conversation]()
+    private var history: History?
     private var refs: Int64 = 0
+    private let mutex = NSRecursiveLock()
     private let owner = Bundle.main.bundleURL.pathExtension != "appex"
 
     var hardware: Bool { SecureEnclave.isAvailable }
@@ -74,284 +98,251 @@ final class ChatVault {
         }
     }
 
+    private func locked<T>(_ body: () throws -> T) rethrows -> T {
+        mutex.lock()
+        defer { mutex.unlock() }
+
+        return try body()
+    }
+
     func prepare() throws {
-        _ = try agreementPublic()
-        _ = try outboxKey()
+        try locked {
+            _ = try agreementPublic()
+            _ = try outboxKey()
+        }
     }
 
     func lock() {
-        open.removeAll()
+        locked {
+            open.removeAll()
+            history = nil
+        }
     }
 
     func ref() -> Int64 {
-        refs = max(refs + 1, Int64(Date().timeIntervalSince1970 * 1000) * 1000)
-        return refs
+        return locked {
+            refs = max(refs + 1, Int64(Date().timeIntervalSince1970 * 1000) * 1000)
+            return refs
+        }
     }
 
     func deliver(chat: String, peer: UInt8, nick: String, text: String, time: Int64,
                  kind: String = "", data: Data? = nil, media: String = "",
                  name: String = "", quote: Quote? = nil) throws {
-        var message: [String: Any] = [
-            "chat": chat, "peer": Self.hex(peer), "nick": nick, "text": text, "time": time,
-            "kind": kind,
-        ]
+        try locked {
+            var message: [String: Any] = [
+                "chat": chat, "peer": Self.hex(peer), "nick": nick, "text": text, "time": time,
+                "kind": kind,
+            ]
 
-        if let data {
-            message["data"] = data.base64EncodedString()
-            message["media"] = media
-            message["name"] = name
+            if let data {
+                message["data"] = data.base64EncodedString()
+                message["media"] = media
+                message["name"] = name
+            }
+
+            if let quote {
+                message["qa"] = quote.author
+                message["qh"] = quote.hash
+            }
+
+            let plain = try JSONSerialization.data(withJSONObject: message)
+
+            let sealed = try seal(plain, to: agreementPublic(), info: Self.inboxAad)
+            try write(try folder(inbox).appendingPathComponent(
+                String(format: "%016llx-%016llx.box", UInt64(time), UInt64.random(in: 0...UInt64.max))),
+                sealed)
         }
-
-        if let quote {
-            message["qa"] = quote.author
-            message["qh"] = quote.hash
-        }
-
-        let plain = try JSONSerialization.data(withJSONObject: message)
-
-        let sealed = try seal(plain, to: agreementPublic(), info: Self.inboxAad)
-        try write(try folder(inbox).appendingPathComponent(
-            String(format: "%016llx-%016llx.box", UInt64(time), UInt64.random(in: 0...UInt64.max))),
-            sealed)
     }
 
     func merge() throws {
-        let inbox = try folder(inbox)
-        let pending = (try? FileManager.default.contentsOfDirectory(atPath: inbox.path)) ?? []
+        try locked {
+            let inbox = try folder(inbox)
+            let pending = (try? FileManager.default.contentsOfDirectory(atPath: inbox.path)) ?? []
 
-        for name in pending.filter({ $0.hasSuffix(".box") }).sorted() {
-            let file = inbox.appendingPathComponent(name)
-            let plain: Data
+            for name in pending.filter({ $0.hasSuffix(".box") }).sorted() {
+                let file = inbox.appendingPathComponent(name)
+                let plain: Data
 
-            do {
-                plain = try unseal(Data(contentsOf: file), info: Self.inboxAad)
-            } catch let error as Locked {
-                throw error
-            } catch is CryptoKitError {
+                do {
+                    plain = try unseal(Data(contentsOf: file), info: Self.inboxAad)
+                } catch let error as Locked {
+                    throw error
+                } catch is CryptoKitError {
+                    wipe(file)
+                    continue
+                }
+
+                guard let message = try JSONSerialization.jsonObject(with: plain) as? [String: Any],
+                      let peer = message["peer"] as? String,
+                      let chat = Self.chat(message["chat"] as? String ?? peer),
+                      let text = message["text"] as? String else {
+                    wipe(file)
+                    continue
+                }
+
+                let kind = message["kind"] as? String ?? ""
+                let ref = ref()
+                var record: [String: Any] = [
+                    "t": kind.isEmpty ? "msg" : "member", "kind": kind, "dir": "in", "ref": ref,
+                    "peer": peer, "text": text, "nick": message["nick"] as? String ?? "",
+                    "time": (message["time"] as? NSNumber)?.int64Value ?? 0,
+                ]
+
+                if let data = (message["data"] as? String).flatMap({ Data(base64Encoded: $0) }) {
+                    record["data"] = try dataWrite(chat, ref: ref, data)
+                    record["media"] = message["media"] as? String ?? "file"
+                    record["name"] = message["name"] as? String ?? "file"
+                }
+
+                if let quote = Self.quote(message["qa"] as? String, message["qh"] as? String) {
+                    record["qa"] = quote.author
+                    record["qh"] = quote.hash
+                }
+
+                try append(chat, record)
+
                 wipe(file)
-                continue
             }
 
-            guard let message = try JSONSerialization.jsonObject(with: plain) as? [String: Any],
-                  let peer = message["peer"] as? String,
-                  let chat = Self.chat(message["chat"] as? String ?? peer),
-                  let text = message["text"] as? String else {
-                wipe(file)
-                continue
+            let receipts = try folder(dir).appendingPathComponent("receipts.box")
+
+            try exclusive {
+                guard FileManager.default.fileExists(atPath: receipts.path) else { return }
+
+                let list = try JSONSerialization.jsonObject(
+                    with: openBox(Data(contentsOf: receipts), key: outboxKey(), aad: Self.receiptsAad))
+                    as? [[String: Any]] ?? []
+
+                for receipt in list {
+                    guard let chat = (receipt["peer"] as? String).flatMap({ Self.chat($0) }),
+                          let kind = receipt["t"] as? String,
+                          let ref = (receipt["ref"] as? NSNumber)?.int64Value,
+                          try item("key.\(chat)") != nil else { continue }
+
+                    try append(chat, [
+                        "t": kind, "ref": ref,
+                        "acked": receipt["acked"] ?? 0, "pending": receipt["pending"] ?? 0,
+                    ])
+                }
+
+                wipe(receipts)
             }
-
-            let kind = message["kind"] as? String ?? ""
-            let ref = ref()
-            var record: [String: Any] = [
-                "t": kind.isEmpty ? "msg" : "member", "kind": kind, "dir": "in", "ref": ref,
-                "peer": peer, "text": text, "nick": message["nick"] as? String ?? "",
-                "time": (message["time"] as? NSNumber)?.int64Value ?? 0,
-            ]
-
-            if let data = (message["data"] as? String).flatMap({ Data(base64Encoded: $0) }) {
-                record["data"] = try dataWrite(chat, ref: ref, data)
-                record["media"] = message["media"] as? String ?? "file"
-                record["name"] = message["name"] as? String ?? "file"
-            }
-
-            if let quote = Self.quote(message["qa"] as? String, message["qh"] as? String) {
-                record["qa"] = quote.author
-                record["qh"] = quote.hash
-            }
-
-            try append(chat, record)
-
-            wipe(file)
-        }
-
-        let receipts = try folder(dir).appendingPathComponent("receipts.box")
-
-        try exclusive {
-            guard FileManager.default.fileExists(atPath: receipts.path) else { return }
-
-            let list = try JSONSerialization.jsonObject(
-                with: openBox(Data(contentsOf: receipts), key: outboxKey(), aad: Self.receiptsAad))
-                as? [[String: Any]] ?? []
-
-            for receipt in list {
-                guard let chat = (receipt["peer"] as? String).flatMap({ Self.chat($0) }),
-                      let kind = receipt["t"] as? String,
-                      let ref = (receipt["ref"] as? NSNumber)?.int64Value,
-                      try item("key.\(chat)") != nil else { continue }
-
-                try append(chat, [
-                    "t": kind, "ref": ref,
-                    "acked": receipt["acked"] ?? 0, "pending": receipt["pending"] ?? 0,
-                ])
-            }
-
-            wipe(receipts)
         }
     }
 
     func conversations() throws -> [[String: Any]] {
-        let names = (try? FileManager.default.contentsOfDirectory(atPath: folder(dir).path)) ?? []
-        var out = [[String: Any]]()
+        return try locked {
+            let names = (try? FileManager.default.contentsOfDirectory(atPath: folder(dir).path)) ?? []
+            var out = [[String: Any]]()
 
-        for name in names where name.hasSuffix(".log") {
-            guard let id = Self.chat(String(name.dropLast(4))) else { continue }
+            for name in names where name.hasSuffix(".log") {
+                guard let id = Self.chat(String(name.dropLast(4))) else { continue }
+                guard var conversation = try conversation(id, create: false) else { continue }
 
-            let chat = try messages(id)
-            let list = chat["messages"] as? [[String: Any]] ?? []
+                if conversation.unread < 0 {
+                    let full = History(chat: id, epoch: 0)
 
-            out.append([
-                "peer": id,
-                "unread": chat["unread"] ?? 0,
-                "last": list.last.map { $0 as Any } ?? NSNull(),
-            ])
+                    try load(id, conversation, full)
+                    try summarize(id, &conversation, full)
+                }
+
+                var last: Any = NSNull()
+
+                if let data = conversation.last, let message = try? JSONSerialization.jsonObject(with: data) {
+                    last = message
+                }
+
+                out.append(["peer": id, "unread": conversation.unread, "last": last])
+            }
+
+            return out
         }
-
-        return out
     }
 
-    func messages(_ chat: String) throws -> [String: Any] {
-        guard let conversation = try conversation(chat, create: false) else {
-            return ["messages": [], "unread": 0]
-        }
-
-        var messages = [[String: Any]]()
-        var index = [Int64: Int]()
-        var pinned: Int64 = 0
-        var damaged = false
-        var unread = 0
-
-        try records(chat, conversation) { seq, record in
-            guard let record else {
-                damaged = true
-                return
+    func messages(_ chat: String, epoch: Int64 = 0, stamp: Int64 = 0) throws -> [String: Any] {
+        return try locked {
+            guard var conversation = try conversation(chat, create: false) else {
+                return ["messages": [], "unread": 0]
             }
 
-            switch record["t"] as? String {
-            case "msg":
-                guard let ref = (record["ref"] as? NSNumber)?.int64Value else { return }
-                let incoming = record["dir"] as? String == "in"
+            let current = try cached(chat)
+            let fresh = current.offset == 0
 
-                if incoming && seq >= conversation.read { unread += 1 }
+            try load(chat, conversation, current)
 
-                index[ref] = messages.count
-                messages.append([
-                    "ref": ref,
-                    "dir": record["dir"] ?? "in",
-                    "text": record["text"] ?? "",
-                    "time": record["time"] ?? 0,
-                    "nick": record["nick"] ?? "",
-                    "peer": record["peer"] ?? "",
-                    "data": record["data"] ?? "",
-                    "media": record["media"] ?? "",
-                    "name": record["name"] ?? "",
-                    "state": incoming ? "received" : "queued",
-                ])
-
-                if let quote = Self.quote(record["qa"] as? String, record["qh"] as? String) {
-                    messages[messages.count - 1]["qa"] = quote.author
-                    messages[messages.count - 1]["qh"] = quote.hash
-                }
-            case "member":
-                messages.append([
-                    "ref": record["ref"] ?? 0,
-                    "dir": "in",
-                    "kind": record["kind"] ?? "",
-                    "text": "",
-                    "time": record["time"] ?? 0,
-                    "nick": record["nick"] ?? "",
-                    "peer": record["peer"] ?? "",
-                    "state": "received",
-                ])
-            case "sent":
-                if let ref = (record["ref"] as? NSNumber)?.int64Value, let at = index[ref],
-                   messages[at]["state"] as? String == "queued" {
-                    messages[at]["state"] = "sent"
-                }
-            case "delivered":
-                if let ref = (record["ref"] as? NSNumber)?.int64Value, let at = index[ref] {
-                    messages[at]["state"] = "delivered"
-                }
-            case "failed":
-                if let ref = (record["ref"] as? NSNumber)?.int64Value, let at = index[ref],
-                   messages[at]["state"] as? String == "queued" {
-                    messages[at]["state"] = "failed"
-                }
-            case "acks":
-                if let ref = (record["ref"] as? NSNumber)?.int64Value, let at = index[ref] {
-                    let pending = (record["pending"] as? NSNumber)?.intValue ?? 0
-
-                    messages[at]["acked"] = (record["acked"] as? NSNumber)?.intValue ?? 0
-                    messages[at]["pending"] = pending
-                    messages[at]["state"] = pending == 0 ? "delivered" : "sent"
-                }
-            case "fav":
-                if let ref = (record["ref"] as? NSNumber)?.int64Value, let at = index[ref] {
-                    messages[at]["fav"] = record["on"] as? Bool ?? false
-                }
-            case "pin":
-                if let ref = (record["ref"] as? NSNumber)?.int64Value {
-                    if record["on"] as? Bool == true {
-                        pinned = ref
-                    } else if pinned == ref {
-                        pinned = 0
-                    }
-                }
-            default:
-                break
+            if fresh, conversation.unread < 0 {
+                try summarize(chat, &conversation, current)
             }
+
+            var out: [String: Any] = [
+                "unread": conversation.unread, "epoch": current.epoch, "stamp": current.stamp,
+            ]
+
+            if epoch == current.epoch {
+                out["messages"] = current.messages.indices
+                    .filter { current.stamps[$0] > stamp }
+                    .map { current.messages[$0] }
+                out["delta"] = true
+            } else {
+                out["messages"] = current.messages
+            }
+
+            if current.damaged {
+                out["warning"] = "Part of this chat could not be read, it was damaged or tampered with."
+            } else if conversation.flags & Self.truncated != 0 {
+                out["warning"] = "Messages were removed from the end of this chat outside of Vigil."
+            }
+
+            return out
         }
-
-        if let at = index[pinned] {
-            messages[at]["pinned"] = true
-        }
-
-        Self.replies(&messages)
-
-        var out: [String: Any] = ["messages": messages, "unread": unread]
-
-        if damaged {
-            out["warning"] = "Part of this chat could not be read, it was damaged or tampered with."
-        } else if conversation.flags & Self.truncated != 0 {
-            out["warning"] = "Messages were removed from the end of this chat outside of Vigil."
-        }
-
-        return out
     }
 
     func send(_ chat: String, text: String, quote: Quote? = nil) throws -> Int64 {
-        let ref = ref()
-        var record: [String: Any] = [
-            "t": "msg", "dir": "out", "ref": ref, "text": text,
-            "time": Int64(Date().timeIntervalSince1970 * 1000),
-        ]
-        var entry: [String: Any] = ["peer": chat, "ref": ref, "text": text]
+        return try locked {
+            let ref = ref()
+            var record: [String: Any] = [
+                "t": "msg", "dir": "out", "ref": ref, "text": text,
+                "time": Int64(Date().timeIntervalSince1970 * 1000),
+            ]
+            var entry: [String: Any] = ["peer": chat, "ref": ref, "text": text]
 
-        if let quote {
-            record["qa"] = quote.author
-            record["qh"] = quote.hash
-            entry["qa"] = quote.author
-            entry["qh"] = quote.hash
+            if let quote {
+                record["qa"] = quote.author
+                record["qh"] = quote.hash
+                entry["qa"] = quote.author
+                entry["qh"] = quote.hash
+            }
+
+            try append(chat, record)
+
+            guard Self.group(chat) == nil else { return ref }
+
+            try exclusive {
+                var list = try outboxList()
+                list.append(entry)
+                try outboxSave(list)
+            }
+
+            return ref
         }
-
-        try append(chat, record)
-
-        guard Self.group(chat) == nil else { return ref }
-
-        try exclusive {
-            var list = try outboxList()
-            list.append(entry)
-            try outboxSave(list)
-        }
-
-        return ref
     }
 
     func quoted(_ chat: String, ref: Int64) throws -> Quote {
-        let list = try messages(chat)["messages"] as? [[String: Any]] ?? []
+        return try locked {
+            guard let conversation = try conversation(chat, create: false) else {
+                throw Failure(description: "That message is gone.")
+            }
 
-        for message in list {
-            guard (message["ref"] as? NSNumber)?.int64Value == ref else { continue }
-            guard message["kind"] == nil else { continue }
+            let current = try cached(chat)
+
+            try load(chat, conversation, current)
+
+            guard let at = current.index[ref] else {
+                throw Failure(description: "That message is gone.")
+            }
+
+            let message = current.messages[at]
 
             if message["dir"] as? String == "out" {
                 return Quote(author: Self.selfAuthor, hash: Self.digest(message))
@@ -359,8 +350,6 @@ final class ChatVault {
 
             return Quote(author: message["peer"] as? String ?? "", hash: Self.digest(message))
         }
-
-        throw Failure(description: "That message is gone.")
     }
 
     static func quote(_ author: String?, _ hash: String?) -> Quote? {
@@ -369,28 +358,186 @@ final class ChatVault {
         return Quote(author: author, hash: hash)
     }
 
-    private static func replies(_ messages: inout [[String: Any]]) {
-        var digests = [Int: String]()
+    private func cached(_ chat: String) throws -> History {
+        let path = try folder(dir).appendingPathComponent("\(chat).log").path
+        let size = (try? FileManager.default.attributesOfItem(atPath: path))?[.size] as? UInt64 ?? 0
 
-        for at in messages.indices {
-            guard let quote = quote(messages[at]["qa"] as? String, messages[at]["qh"] as? String) else {
-                continue
+        if let current = history, current.chat == chat, size >= current.offset {
+            return current
+        }
+
+        let current = History(chat: chat, epoch: Int64.random(in: 1...Int64.max))
+        history = current
+
+        return current
+    }
+
+    private func summarize(_ chat: String, _ conversation: inout Conversation, _ full: History) throws {
+        conversation.unread = full.unread
+        conversation.last = try full.messages.last.map { try JSONSerialization.data(withJSONObject: $0) }
+        open[chat] = conversation
+        try save(chat, conversation)
+    }
+
+    private func load(_ chat: String, _ conversation: Conversation, _ current: History) throws {
+        current.stamp += 1
+
+        let file = try folder(dir).appendingPathComponent("\(chat).log")
+        guard let handle = try? FileHandle(forReadingFrom: file) else { return }
+        defer { try? handle.close() }
+
+        try handle.seek(toOffset: current.offset)
+        guard let data = try handle.readToEnd() else { return }
+
+        let bytes = [UInt8](data)
+        var offset = 0
+
+        while offset + 4 <= bytes.count {
+            let len = Int(bytes[offset]) << 24 | Int(bytes[offset + 1]) << 16 |
+                Int(bytes[offset + 2]) << 8 | Int(bytes[offset + 3])
+            guard len >= 28, offset + 4 + len <= bytes.count else { break }
+
+            let sealed = Data(bytes[(offset + 4)..<(offset + 4 + len)])
+
+            guard let plain = try? openBox(sealed, key: conversation.key,
+                                           aad: Self.aad(chat, seq: current.seq)) else {
+                current.damaged = true
+                break
             }
 
-            messages[at]["quoted"] = true
+            if let record = try JSONSerialization.jsonObject(with: plain) as? [String: Any] {
+                Self.apply(current, record, read: conversation.read)
+            }
 
-            for other in stride(from: at - 1, through: 0, by: -1) {
-                guard messages[other]["kind"] == nil else { continue }
-                guard wrote(messages[other], quote.author) else { continue }
+            offset += 4 + len
+            current.offset += UInt64(4 + len)
+            current.seq += 1
+        }
+    }
 
-                if digests[other] == nil {
-                    digests[other] = digest(messages[other])
+    private static func apply(_ current: History, _ record: [String: Any], read: UInt64) {
+        let ref = (record["ref"] as? NSNumber)?.int64Value ?? 0
+
+        switch record["t"] as? String {
+        case "msg":
+            let message = Self.message(record)
+
+            if message["dir"] as? String == "in", current.seq >= read {
+                current.unread += 1
+            }
+
+            current.index[ref] = current.messages.count
+            current.messages.append(message)
+            current.stamps.append(current.stamp)
+
+            if message["qh"] != nil {
+                Self.quote(current, current.messages.count - 1)
+            }
+        case "member":
+            current.messages.append(Self.message(record))
+            current.stamps.append(current.stamp)
+        case "sent":
+            change(current, ref) {
+                if $0["state"] as? String == "queued" {
+                    $0["state"] = "sent"
                 }
-
-                if digests[other] == quote.hash {
-                    messages[at]["reply"] = messages[other]["ref"]
-                    break
+            }
+        case "delivered":
+            change(current, ref) { $0["state"] = "delivered" }
+        case "failed":
+            change(current, ref) {
+                if $0["state"] as? String == "queued" {
+                    $0["state"] = "failed"
                 }
+            }
+        case "acks":
+            let pending = (record["pending"] as? NSNumber)?.intValue ?? 0
+
+            change(current, ref) {
+                $0["acked"] = (record["acked"] as? NSNumber)?.intValue ?? 0
+                $0["pending"] = pending
+                $0["state"] = pending == 0 ? "delivered" : "sent"
+            }
+        case "fav":
+            change(current, ref) { $0["fav"] = record["on"] as? Bool ?? false }
+        case "pin":
+            let previous = current.pinned
+
+            if record["on"] as? Bool == true {
+                current.pinned = ref
+            } else if current.pinned == ref {
+                current.pinned = 0
+            }
+
+            if previous != current.pinned {
+                change(current, previous) { $0["pinned"] = nil }
+                change(current, current.pinned) { $0["pinned"] = true }
+            }
+        default:
+            break
+        }
+    }
+
+    private static func change(_ current: History, _ ref: Int64, _ edit: (inout [String: Any]) -> Void) {
+        guard let at = current.index[ref] else { return }
+
+        edit(&current.messages[at])
+        current.stamps[at] = current.stamp
+    }
+
+    private static func message(_ record: [String: Any]) -> [String: Any] {
+        if record["t"] as? String == "member" {
+            return [
+                "ref": record["ref"] ?? 0,
+                "dir": "in",
+                "kind": record["kind"] ?? "",
+                "text": "",
+                "time": record["time"] ?? 0,
+                "nick": record["nick"] ?? "",
+                "peer": record["peer"] ?? "",
+                "state": "received",
+            ]
+        }
+
+        let incoming = record["dir"] as? String == "in"
+        var message: [String: Any] = [
+            "ref": record["ref"] ?? 0,
+            "dir": record["dir"] ?? "in",
+            "text": record["text"] ?? "",
+            "time": record["time"] ?? 0,
+            "nick": record["nick"] ?? "",
+            "peer": record["peer"] ?? "",
+            "data": record["data"] ?? "",
+            "media": record["media"] ?? "",
+            "name": record["name"] ?? "",
+            "state": incoming ? "received" : "queued",
+        ]
+
+        if let found = Self.quote(record["qa"] as? String, record["qh"] as? String) {
+            message["qa"] = found.author
+            message["qh"] = found.hash
+        }
+
+        return message
+    }
+
+    private static func quote(_ current: History, _ at: Int) {
+        guard let wanted = Self.quote(current.messages[at]["qa"] as? String,
+                                      current.messages[at]["qh"] as? String) else { return }
+
+        current.messages[at]["quoted"] = true
+
+        for other in stride(from: at - 1, through: 0, by: -1) {
+            guard current.messages[other]["kind"] == nil else { continue }
+            guard wrote(current.messages[other], wanted.author) else { continue }
+
+            if current.digests[other] == nil {
+                current.digests[other] = digest(current.messages[other])
+            }
+
+            if current.digests[other] == wanted.hash {
+                current.messages[at]["reply"] = current.messages[other]["ref"]
+                break
             }
         }
     }
@@ -417,48 +564,56 @@ final class ChatVault {
     }
 
     func sendData(_ chat: String, media: String, name: String, data: Data) throws -> (Int64, String) {
-        let ref = ref()
-        let file = try dataWrite(chat, ref: ref, data)
+        try locked {
+            let ref = ref()
+            let file = try dataWrite(chat, ref: ref, data)
 
-        try append(chat, [
-            "t": "msg", "dir": "out", "ref": ref, "text": "", "data": file, "media": media,
-            "name": name, "time": Int64(Date().timeIntervalSince1970 * 1000),
-        ])
+            try append(chat, [
+                "t": "msg", "dir": "out", "ref": ref, "text": "", "data": file, "media": media,
+                "name": name, "time": Int64(Date().timeIntervalSince1970 * 1000),
+            ])
 
-        guard Self.group(chat) == nil else { return (ref, file) }
+            guard Self.group(chat) == nil else { return (ref, file) }
 
-        try exclusive {
-            var list = try outboxList()
-            list.append(["peer": chat, "ref": ref, "data": file, "media": media, "name": name])
-            try outboxSave(list)
+            try exclusive {
+                var list = try outboxList()
+                list.append(["peer": chat, "ref": ref, "data": file, "media": media, "name": name])
+                try outboxSave(list)
+            }
+
+            return (ref, file)
         }
-
-        return (ref, file)
     }
 
     func data(_ chat: String, file: String) throws -> Data? {
-        guard Self.data(file, of: chat) else {
-            throw Failure(description: "There is no data \(file).")
+        return try locked {
+            guard Self.data(file, of: chat) else {
+                throw Failure(description: "There is no data \(file).")
+            }
+
+            guard let conversation = try conversation(chat, create: false) else { return nil }
+
+            let path = try folder(dir).appendingPathComponent(file)
+            guard let sealed = try? Data(contentsOf: path) else { return nil }
+
+            return try openBox(sealed, key: conversation.key, aad: Self.dataAad(chat, file))
         }
-
-        guard let conversation = try conversation(chat, create: false) else { return nil }
-
-        let path = try folder(dir).appendingPathComponent(file)
-        guard let sealed = try? Data(contentsOf: path) else { return nil }
-
-        return try openBox(sealed, key: conversation.key, aad: Self.dataAad(chat, file))
     }
 
     func outboxList() throws -> [[String: Any]] {
-        let file = try folder(dir).appendingPathComponent("outbox.box")
-        guard FileManager.default.fileExists(atPath: file.path) else { return [] }
+        return try locked {
+            let file = try folder(dir).appendingPathComponent("outbox.box")
+            guard FileManager.default.fileExists(atPath: file.path) else { return [] }
 
-        let plain = try openBox(Data(contentsOf: file), key: outboxKey(), aad: Self.outboxAad)
-        return try JSONSerialization.jsonObject(with: plain) as? [[String: Any]] ?? []
+            let plain = try openBox(Data(contentsOf: file), key: outboxKey(), aad: Self.outboxAad)
+            return try JSONSerialization.jsonObject(with: plain) as? [[String: Any]] ?? []
+        }
     }
 
     func receipt(_ chat: String, ref: Int64, kind: String, acked: Int = 0, pending: Int = 0) throws {
-        try exclusive { try addReceipt(chat, ref: ref, kind: kind, acked: acked, pending: pending) }
+        try locked {
+            try exclusive { try addReceipt(chat, ref: ref, kind: kind, acked: acked, pending: pending) }
+        }
     }
 
     private func addReceipt(_ chat: String, ref: Int64, kind: String, acked: Int,
@@ -484,40 +639,53 @@ final class ChatVault {
     }
 
     func read(_ chat: String) throws {
-        guard var conversation = try conversation(chat, create: false) else { return }
+        try locked {
+            guard var conversation = try conversation(chat, create: false) else { return }
 
-        conversation.read = conversation.count
-        open[chat] = conversation
-        try save(chat, conversation)
+            conversation.read = conversation.count
+            conversation.unread = 0
+            open[chat] = conversation
+            try save(chat, conversation)
+        }
     }
 
     func favorite(_ chat: String, ref: Int64, on: Bool) throws {
-        guard try conversation(chat, create: false) != nil else { return }
+        try locked {
+            guard try conversation(chat, create: false) != nil else { return }
 
-        try append(chat, ["t": "fav", "ref": ref, "on": on])
+            try append(chat, ["t": "fav", "ref": ref, "on": on])
+        }
     }
 
     func pin(_ chat: String, ref: Int64, on: Bool) throws {
-        guard try conversation(chat, create: false) != nil else { return }
+        try locked {
+            guard try conversation(chat, create: false) != nil else { return }
 
-        try append(chat, ["t": "pin", "ref": ref, "on": on])
+            try append(chat, ["t": "pin", "ref": ref, "on": on])
+        }
     }
 
     func delete(_ chat: String) throws {
-        open[chat] = nil
-        remove("key.\(chat)")
-        wipe(try folder(dir).appendingPathComponent("\(chat).log"))
+        try locked {
+            open[chat] = nil
 
-        let names = (try? FileManager.default.contentsOfDirectory(atPath: try folder(dir).path)) ?? []
+            if history?.chat == chat {
+                history = nil
+            }
+            remove("key.\(chat)")
+            wipe(try folder(dir).appendingPathComponent("\(chat).log"))
 
-        for name in names where Self.data(name, of: chat) {
-            wipe(try folder(dir).appendingPathComponent(name))
-        }
+            let names = (try? FileManager.default.contentsOfDirectory(atPath: try folder(dir).path)) ?? []
 
-        try exclusive {
-            let list = try outboxList()
-            let kept = list.filter { $0["peer"] as? String != chat }
-            if kept.count != list.count { try outboxSave(kept) }
+            for name in names where Self.data(name, of: chat) {
+                wipe(try folder(dir).appendingPathComponent(name))
+            }
+
+            try exclusive {
+                let list = try outboxList()
+                let kept = list.filter { $0["peer"] as? String != chat }
+                if kept.count != list.count { try outboxSave(kept) }
+            }
         }
     }
 
@@ -603,38 +771,19 @@ final class ChatVault {
         try handle.write(contentsOf: frame)
         try handle.synchronize()
 
+        let type = record["t"] as? String
+
+        if type == "msg" || type == "member" {
+            conversation.last = try JSONSerialization.data(withJSONObject: Self.message(record))
+        }
+
+        if type == "msg", record["dir"] as? String == "in", conversation.unread >= 0 {
+            conversation.unread += 1
+        }
+
         conversation.count += 1
         open[chat] = conversation
         try save(chat, conversation)
-    }
-
-    private func records(_ chat: String, _ conversation: Conversation,
-                         _ each: (UInt64, [String: Any]?) throws -> Void) throws {
-        let file = try folder(dir).appendingPathComponent("\(chat).log")
-        guard let data = try? Data(contentsOf: file) else { return }
-
-        let bytes = [UInt8](data)
-        var offset = 0
-        var seq: UInt64 = 0
-
-        while offset + 4 <= bytes.count {
-            let len = Int(bytes[offset]) << 24 | Int(bytes[offset + 1]) << 16 |
-                Int(bytes[offset + 2]) << 8 | Int(bytes[offset + 3])
-            guard len >= 28, offset + 4 + len <= bytes.count else { break }
-
-            let sealed = Data(bytes[(offset + 4)..<(offset + 4 + len)])
-
-            guard let plain = try? openBox(sealed, key: conversation.key,
-                                           aad: Self.aad(chat, seq: seq)) else {
-                try each(seq, nil)
-                break
-            }
-
-            try each(seq, try JSONSerialization.jsonObject(with: plain) as? [String: Any])
-
-            offset += 4 + len
-            seq += 1
-        }
     }
 
     private func framed(_ chat: String) throws -> UInt64 {
@@ -663,7 +812,8 @@ final class ChatVault {
         guard let wrapped = try item("key.\(chat)") else {
             guard create else { return nil }
 
-            let conversation = Conversation(key: SymmetricKey(size: .bits256), count: 0, read: 0, flags: 0)
+            let conversation = Conversation(key: SymmetricKey(size: .bits256), count: 0, read: 0, flags: 0,
+                                            unread: 0)
             wipe(try folder(dir).appendingPathComponent("\(chat).log"))
             try save(chat, conversation)
             open[chat] = conversation
@@ -672,17 +822,31 @@ final class ChatVault {
         }
 
         let plain = [UInt8](try unseal(wrapped, info: Self.keyAad + Self.label(chat)))
-        guard plain.count == 56 else { throw Failure(description: "invalid conversation key") }
+        guard plain.count >= 56 else { throw Failure(description: "invalid conversation key") }
 
         var conversation = Conversation(
             key: SymmetricKey(data: plain[0..<32]),
             count: Self.number(plain, 32), read: Self.number(plain, 40), flags: Self.number(plain, 48))
+
+        if plain.count >= 68 {
+            let size = Int(plain[64]) << 24 | Int(plain[65]) << 16 | Int(plain[66]) << 8 | Int(plain[67])
+
+            guard plain.count == 68 + size else { throw Failure(description: "invalid conversation key") }
+
+            conversation.unread = Int64(bitPattern: Self.number(plain, 56))
+
+            if size > 0 {
+                conversation.last = Data(plain[68...])
+            }
+        }
 
         let count = try framed(chat)
 
         if count != conversation.count {
             if count < conversation.count { conversation.flags |= Self.truncated }
             conversation.count = count
+            conversation.unread = -1
+            conversation.last = nil
             try save(chat, conversation)
         }
 
@@ -696,6 +860,9 @@ final class ChatVault {
         plain.append(contentsOf: Self.bytes(conversation.count))
         plain.append(contentsOf: Self.bytes(conversation.read))
         plain.append(contentsOf: Self.bytes(conversation.flags))
+        plain.append(contentsOf: Self.bytes(UInt64(bitPattern: conversation.unread)))
+        plain.append(contentsOf: Self.bytes(UInt32(conversation.last?.count ?? 0)))
+        plain.append(conversation.last ?? Data())
 
         try store("key.\(chat)",
                   seal(plain, to: agreementPublic(), info: Self.keyAad + Self.label(chat)),

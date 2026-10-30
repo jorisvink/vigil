@@ -364,8 +364,11 @@ class ChatHistory {
 
   String? get warning => json['warning'] as String?;
   int get unread => json['unread'] as int? ?? 0;
+  int get epoch => json['epoch'] as int? ?? 0;
+  int get stamp => json['stamp'] as int? ?? 0;
+  bool get delta => json['delta'] as bool? ?? false;
 
-  List<ChatMessage> get messages =>
+  late final List<ChatMessage> messages =
       (json['messages'] as List<dynamic>? ?? const [])
           .map((m) => ChatMessage(m as Map<String, dynamic>))
           .toList();
@@ -813,9 +816,17 @@ class Vigil {
         .toList();
   }
 
-  Future<ChatHistory> chat(String peer) async => ChatHistory(
-    jsonDecode(await _invoke('chat', peer)) as Map<String, dynamic>,
-  );
+  Future<ChatHistory> chat(String peer, {int epoch = 0, int stamp = 0}) async =>
+      ChatHistory(
+        jsonDecode(
+              await _invoke('chat', {
+                'peer': peer,
+                'epoch': epoch,
+                'stamp': stamp,
+              }),
+            )
+            as Map<String, dynamic>,
+      );
 
   Future<void> send(String peer, String text, {int reply = 0}) async {
     await _invoke('chatSend', {'peer': peer, 'text': text, 'reply': reply});
