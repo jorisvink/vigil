@@ -87,7 +87,6 @@ class _NamePromptState extends State<_NamePrompt> {
             controller: _name,
             autofocus: true,
             maxLength: 32,
-            autocorrect: false,
             enableIMEPersonalizedLearning: false,
             textCapitalization: TextCapitalization.words,
             textInputAction: TextInputAction.done,

@@ -2178,7 +2178,6 @@ class _Composer extends StatelessWidget {
                               controller: input,
                               minLines: 1,
                               maxLines: 5,
-                              autocorrect: false,
                               enableIMEPersonalizedLearning: false,
                               keyboardType: TextInputType.multiline,
                               textCapitalization: TextCapitalization.sentences,
@@ -2858,7 +2857,6 @@ class _GroupPromptState extends State<_GroupPrompt> {
           child: TextField(
             controller: _name,
             maxLength: 32,
-            autocorrect: false,
             enableIMEPersonalizedLearning: false,
             textCapitalization: TextCapitalization.words,
             style: Styles.pre,
