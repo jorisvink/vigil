@@ -46,7 +46,9 @@ because only the app can use the microphone and camera.
 5. [gospel.md](gospel.md) describes how calls and messages work.
 6. [vault.md](vault.md) describes the chat vault, which keeps message
    history encrypted on the phone.
-7. [limitations.md](limitations.md) lists what Vigil does not protect
+7. [crypto.md](crypto.md) describes the keys Vigil creates itself and
+   how configurations and chats are encrypted on the phone.
+8. [limitations.md](limitations.md) lists what Vigil does not protect
    against.
 
 ## Who you trust
