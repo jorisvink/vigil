@@ -138,8 +138,7 @@ class _EraseState extends State<_Erase> {
         Text('Erase all data', style: Styles.cardTitle),
         const SizedBox(height: 3),
         const Text(
-          'Removes everything Vigil keeps on this device. Nothing is kept '
-          'anywhere else.',
+          'Removes everything Vigil keeps on this device. ',
           style: Styles.detail,
         ),
         const SizedBox(height: 14),

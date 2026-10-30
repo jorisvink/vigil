@@ -10,32 +10,14 @@ IOS_MIN=18.0
 
 mkdir -p $OUT
 
-sodium_src="`cat $TOPDIR/build/src/libsodium/.vigil-fetched` $IOS_MIN"
-
-if [ ! -d $OUT/Clibsodium.xcframework ] ||
-    [ "`cat $OUT/.libsodium 2>/dev/null`" != "$sodium_src" ]; then
-	rm -rf $TOPDIR/build/ios-libsodium-src
-	cp -R $TOPDIR/build/src/libsodium $TOPDIR/build/ios-libsodium-src
-	(cd $TOPDIR/build/ios-libsodium-src && \
-	    env LIBSODIUM_FULL_BUILD=1 LIBSODIUM_SKIP_SIMULATORS= \
-	    IOS_VERSION_MIN=$IOS_MIN.0 IOS_SIMULATOR_VERSION_MIN=$IOS_MIN.0 \
-	    ./dist-build/apple-xcframework.sh)
-	rm -rf $OUT/Clibsodium.xcframework
-	cp -r $TOPDIR/build/ios-libsodium-src/libsodium-apple/Clibsodium.xcframework \
-	    $OUT/
-	echo "$sodium_src" > $OUT/.libsodium
-fi
-
 for target in ios-arm64 ios-simulator-arm64; do
 	case $target in
 	ios-arm64)
 		sdk=iphoneos
-		slice=`ls -d $OUT/Clibsodium.xcframework/ios-arm64* | grep -v simulator`
 		cflags="-arch arm64 -mios-version-min=$IOS_MIN"
 		;;
 	ios-simulator-arm64)
 		sdk=iphonesimulator
-		slice=`ls -d $OUT/Clibsodium.xcframework/ios-*-simulator`
 		cflags="-arch arm64 -mios-simulator-version-min=$IOS_MIN"
 		;;
 	esac
@@ -43,23 +25,8 @@ for target in ios-arm64 ios-simulator-arm64; do
 	cc="xcrun -sdk $sdk clang $cflags"
 	sodium=$TOPDIR/build/$target/libsodium
 
-	# Since 1.0.22 the headers are in a Clibsodium directory and the
-	# libraries carry arm64e as well, we only want arm64.
-	headers=$slice/Headers
-	if [ -d $headers/Clibsodium ]; then
-		headers=$headers/Clibsodium
-	fi
-
-	rm -rf $sodium
-	mkdir -p $sodium/include $sodium/lib
-	cp -r $headers/* $sodium/include/
-
-	if lipo -info $slice/libsodium.a | grep -q "^Non-fat"; then
-		cp $slice/libsodium.a $sodium/lib/
-	else
-		lipo $slice/libsodium.a -thin arm64 \
-		    -output $sodium/lib/libsodium.a
-	fi
+	./dist-build/libsodium.sh $target \
+	    --host=aarch64-apple-darwin CC="$cc"
 
 	./dist-build/libkyrka.sh $target \
 	    OSNAME=ios CROSS_BUILD=1 CC="$cc" LIBSODIUM_PATH=$sodium
