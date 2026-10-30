@@ -30,12 +30,12 @@ for target in ios-arm64 ios-simulator-arm64; do
 	case $target in
 	ios-arm64)
 		sdk=iphoneos
-		slice=ios-arm64
+		slice=`ls -d $OUT/Clibsodium.xcframework/ios-arm64* | grep -v simulator`
 		cflags="-arch arm64 -mios-version-min=$IOS_MIN"
 		;;
 	ios-simulator-arm64)
 		sdk=iphonesimulator
-		slice=ios-arm64_x86_64-simulator
+		slice=`ls -d $OUT/Clibsodium.xcframework/ios-*-simulator`
 		cflags="-arch arm64 -mios-simulator-version-min=$IOS_MIN"
 		;;
 	esac
@@ -44,8 +44,23 @@ for target in ios-arm64 ios-simulator-arm64; do
 	sodium=$TOPDIR/build/$target/libsodium
 
 	mkdir -p $sodium/include $sodium/lib
-	cp -r $OUT/Clibsodium.xcframework/$slice/Headers/* $sodium/include/
-	cp $OUT/Clibsodium.xcframework/$slice/libsodium.a $sodium/lib/
+	# Since 1.0.22 the headers are in a Clibsodium directory and the
+	# libraries carry arm64e as well, we only want arm64.
+	headers=$slice/Headers
+	if [ -d $headers/Clibsodium ]; then
+		headers=$headers/Clibsodium
+	fi
+
+	rm -rf $sodium
+	mkdir -p $sodium/include $sodium/lib
+	cp -r $headers/* $sodium/include/
+
+	if lipo -info $slice/libsodium.a | grep -q "^Non-fat"; then
+		cp $slice/libsodium.a $sodium/lib/
+	else
+		lipo $slice/libsodium.a -thin arm64 \
+		    -output $sodium/lib/libsodium.a
+	fi
 
 	./dist-build/libkyrka.sh $target \
 	    OSNAME=ios CROSS_BUILD=1 CC="$cc" LIBSODIUM_PATH=$sodium
