@@ -68,9 +68,9 @@ static void		android_chat_open(JNIEnv *, jclass, jint, jboolean);
 static void		android_chat_typing(JNIEnv *, jclass, jint, jboolean);
 static void		android_chat_group_typing(JNIEnv *, jclass, jboolean);
 static jboolean		android_chat_send(JNIEnv *, jclass, jint, jlong,
-			    jbyteArray);
+			    jbyteArray, jint, jlong);
 static jboolean		android_chat_group_send(JNIEnv *, jclass, jlong,
-			    jbyteArray);
+			    jbyteArray, jint, jlong);
 static jboolean		android_chat_data_send(JNIEnv *, jclass, jint, jlong,
 			    jint, jbyteArray, jbyteArray);
 static jboolean		android_chat_group_data_send(JNIEnv *, jclass, jlong,
@@ -99,7 +99,7 @@ static JNINativeMethod	methods[] = {
 	{ "voiceMute", "(Z)V", (void *)android_voice_mute },
 	{ "voiceStatus", "()Ljava/lang/String;",
 	    (void *)android_voice_status },
-	{ "chatSend", "(IJ[B)Z", (void *)android_chat_send },
+	{ "chatSend", "(IJ[BIJ)Z", (void *)android_chat_send },
 	{ "chatForget", "(I)V", (void *)android_chat_forget },
 	{ "chatStored", "(J)V", (void *)android_chat_stored },
 	{ "chatOpen", "(IZ)V", (void *)android_chat_open },
@@ -107,7 +107,7 @@ static JNINativeMethod	methods[] = {
 	{ "chatNick", "(Ljava/lang/String;)Z", (void *)android_chat_nick },
 	{ "chatGroup", "(I)V", (void *)android_chat_group },
 	{ "chatGroupTyping", "(Z)V", (void *)android_chat_group_typing },
-	{ "chatGroupSend", "(J[B)Z", (void *)android_chat_group_send },
+	{ "chatGroupSend", "(J[BIJ)Z", (void *)android_chat_group_send },
 	{ "chatEvents", "()[B", (void *)android_chat_events },
 	{ "chatDataSend", "(IJI[B[B)Z", (void *)android_chat_data_send },
 	{ "chatGroupDataSend", "(JI[B[B)Z",
@@ -567,32 +567,48 @@ android_voice_status(JNIEnv *env, jclass cls)
 
 /*
  * Vigil.chatSend(), queues a message for the given peer. The text is
- * utf-8 in a byte array as JNI strings are not quite utf-8.
+ * utf-8 in a byte array as JNI strings are not quite utf-8. A hash that
+ * is not 0 makes it a reply to the message by author with that hash.
  */
 static jboolean
 android_chat_send(JNIEnv *env, jclass cls, jint peer, jlong ref,
-    jbyteArray text)
+    jbyteArray text, jint author, jlong hash)
 {
 	int		ret;
 	size_t		len;
+	size_t		max;
 	char		*buf;
 
 	if (peer <= 0 || peer >= KYRKA_PEERS_PER_FLOCK)
 		return (JNI_FALSE);
 
+	if (author < 0 || author >= KYRKA_PEERS_PER_FLOCK)
+		return (JNI_FALSE);
+
 	if (text == NULL)
 		return (JNI_FALSE);
+
+	if (hash != 0)
+		max = VIGIL_CHAT_REPLY_MAX;
+	else
+		max = VIGIL_CHAT_MESSAGE_MAX;
 
 	buf = android_bytes_copy(env, text, VIGIL_CONFIG_MAX, &len);
 	if (buf == NULL)
 		return (JNI_FALSE);
 
-	if (len == 0 || len > VIGIL_CHAT_MESSAGE_MAX) {
+	if (len == 0 || len > max) {
 		android_bytes_free(buf, len);
 		return (JNI_FALSE);
 	}
 
-	ret = vigil_chat_send(peer, (u_int64_t)ref, buf, len);
+	if (hash != 0) {
+		ret = vigil_chat_reply(peer, (u_int64_t)ref, author,
+		    (u_int64_t)hash, buf, len);
+	} else {
+		ret = vigil_chat_send(peer, (u_int64_t)ref, buf, len);
+	}
+
 	android_bytes_free(buf, len);
 
 	if (ret == -1)
@@ -686,28 +702,45 @@ android_chat_group_typing(JNIEnv *env, jclass cls, jboolean on)
 
 /*
  * Vigil.chatGroupSend(), queues a message for our group. The text is
- * utf-8 in a byte array as JNI strings are not quite utf-8.
+ * utf-8 in a byte array as JNI strings are not quite utf-8. A hash that
+ * is not 0 makes it a reply, see android_chat_send().
  */
 static jboolean
-android_chat_group_send(JNIEnv *env, jclass cls, jlong ref, jbyteArray text)
+android_chat_group_send(JNIEnv *env, jclass cls, jlong ref, jbyteArray text,
+    jint author, jlong hash)
 {
 	int		ret;
 	size_t		len;
+	size_t		max;
 	char		*buf;
+
+	if (author < 0 || author >= KYRKA_PEERS_PER_FLOCK)
+		return (JNI_FALSE);
 
 	if (text == NULL)
 		return (JNI_FALSE);
+
+	if (hash != 0)
+		max = VIGIL_CHAT_REPLY_MAX;
+	else
+		max = VIGIL_CHAT_MESSAGE_MAX;
 
 	buf = android_bytes_copy(env, text, VIGIL_CONFIG_MAX, &len);
 	if (buf == NULL)
 		return (JNI_FALSE);
 
-	if (len == 0 || len > VIGIL_CHAT_MESSAGE_MAX) {
+	if (len == 0 || len > max) {
 		android_bytes_free(buf, len);
 		return (JNI_FALSE);
 	}
 
-	ret = vigil_chat_group_send((u_int64_t)ref, buf, len);
+	if (hash != 0) {
+		ret = vigil_chat_group_reply((u_int64_t)ref, author,
+		    (u_int64_t)hash, buf, len);
+	} else {
+		ret = vigil_chat_group_send((u_int64_t)ref, buf, len);
+	}
+
 	android_bytes_free(buf, len);
 
 	if (ret == -1)

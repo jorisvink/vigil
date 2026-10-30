@@ -254,10 +254,18 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
                 }
             }
         case "chat-group-send":
-            if words.count == 3, let ref = UInt64(words[1]),
+            if words.count == 3 || words.count == 5, let ref = UInt64(words[1]),
                let text = Data(base64Encoded: String(words[2])) {
                 let bytes = [UInt8](text).map { CChar(bitPattern: $0) }
-                if !bytes.isEmpty, bytes.count <= Int(VIGIL_CHAT_MESSAGE_MAX) {
+                var quote: ChatVault.Quote?
+
+                if words.count == 5 {
+                    quote = ChatVault.quote(String(words[3]), String(words[4]))
+                }
+
+                if let quote, !bytes.isEmpty, bytes.count <= Int(VIGIL_CHAT_REPLY_MAX) {
+                    _ = vigil_chat_group_reply(ref, quote.peer, quote.digest, bytes, bytes.count)
+                } else if quote == nil, !bytes.isEmpty, bytes.count <= Int(VIGIL_CHAT_MESSAGE_MAX) {
                     _ = vigil_chat_group_send(ref, bytes, bytes.count)
                 }
             }
@@ -327,9 +335,10 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
                 case "message":
                     let text = event["text"] as? String ?? ""
                     let nick = event["nick"] as? String ?? ""
+                    let quote = ChatVault.quote(event["author"] as? String, event["hash"] as? String)
 
                     try vault.deliver(chat: chat, peer: peer, nick: nick, text: text,
-                                      time: Int64(Date().timeIntervalSince1970 * 1000))
+                                      time: Int64(Date().timeIntervalSince1970 * 1000), quote: quote)
                     vigil_chat_stored((event["token"] as? NSNumber)?.uint64Value ?? 0)
 
                     if defaults.string(forKey: "chatOpen") != chat {
@@ -460,6 +469,14 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             guard let text = entry["text"] as? String else { continue }
 
             let bytes = Array(text.utf8).map { CChar(bitPattern: $0) }
+
+            if let quote = ChatVault.quote(entry["qa"] as? String, entry["qh"] as? String) {
+                guard !bytes.isEmpty, bytes.count <= Int(VIGIL_CHAT_REPLY_MAX) else { continue }
+
+                _ = vigil_chat_reply(peer, ref, quote.peer, quote.digest, bytes, bytes.count)
+                continue
+            }
+
             guard !bytes.isEmpty, bytes.count <= Int(VIGIL_CHAT_MESSAGE_MAX) else { continue }
 
             _ = vigil_chat_send(peer, ref, bytes, bytes.count)

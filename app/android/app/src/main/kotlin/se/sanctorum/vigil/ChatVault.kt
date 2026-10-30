@@ -15,6 +15,7 @@ import java.nio.ByteBuffer
 import java.security.KeyFactory
 import java.security.KeyPairGenerator
 import java.security.KeyStore
+import java.security.MessageDigest
 import java.security.PublicKey
 import java.security.SecureRandom
 import java.security.spec.ECGenParameterSpec
@@ -30,6 +31,14 @@ import javax.crypto.spec.SecretKeySpec
 
 class ChatVault(context: Context) {
     class Locked : Exception("Unlock your device to read your chats.")
+
+    class Quote(val author: String, val hash: String) {
+        val peer: Int
+            get() = author.toInt(16)
+
+        val digest: Long
+            get() = java.lang.Long.parseUnsignedLong(hash, 16)
+    }
 
     private class Conversation(
         val key: ByteArray,
@@ -67,7 +76,7 @@ class ChatVault(context: Context) {
 
     fun deliver(
         chat: String, peer: Int, nick: String, text: String, time: Long, kind: String = "",
-        data: ByteArray? = null, media: String = "", name: String = ""
+        data: ByteArray? = null, media: String = "", name: String = "", quote: Quote? = null
     ) {
         val message = JSONObject()
             .put("chat", chat)
@@ -81,6 +90,11 @@ class ChatVault(context: Context) {
             message.put("data", Base64.encodeToString(data, Base64.NO_WRAP))
             message.put("media", media)
             message.put("name", name)
+        }
+
+        if (quote != null) {
+            message.put("qa", quote.author)
+            message.put("qh", quote.hash)
         }
 
         val plain = message.toString().toByteArray()
@@ -126,6 +140,11 @@ class ChatVault(context: Context) {
                     .put("text", message.getString("text"))
                     .put("nick", message.optString("nick"))
                     .put("time", message.getLong("time"))
+
+                if (message.has("qh")) {
+                    record.put("qa", message.getString("qa"))
+                    record.put("qh", message.getString("qh"))
+                }
 
                 val encoded = message.optString("data")
 
@@ -203,6 +222,7 @@ class ChatVault(context: Context) {
         val messages = mutableListOf<JSONObject>()
         val refs = mutableMapOf<Long, JSONObject>()
         var damaged = false
+        var pinned = 0L
         var unread = 0
 
         records(chat, conversation) { seq, record ->
@@ -225,6 +245,11 @@ class ChatVault(context: Context) {
                         .put("media", record.optString("media"))
                         .put("name", record.optString("name"))
                         .put("state", if (incoming) "received" else "queued")
+
+                    if (record.has("qh")) {
+                        message.put("qa", record.getString("qa"))
+                        message.put("qh", record.getString("qh"))
+                    }
 
                     if (incoming && seq >= conversation.read) {
                         unread++
@@ -257,8 +282,21 @@ class ChatVault(context: Context) {
                     it.put("pending", pending)
                     it.put("state", if (pending == 0) "delivered" else "sent")
                 }
+                "fav" -> refs[record.getLong("ref")]?.put("fav", record.optBoolean("on"))
+                "pin" -> {
+                    val ref = record.getLong("ref")
+
+                    if (record.optBoolean("on")) {
+                        pinned = ref
+                    } else if (pinned == ref) {
+                        pinned = 0
+                    }
+                }
             }
         }
+
+        refs[pinned]?.put("pinned", true)
+        replies(messages)
 
         val out = JSONObject()
             .put("messages", JSONArray(messages))
@@ -273,28 +311,56 @@ class ChatVault(context: Context) {
         return out
     }
 
-    fun send(chat: String, text: String, ref: Long = ref()): Long {
+    fun send(chat: String, text: String, ref: Long = ref(), quote: Quote? = null): Long {
         val time = System.currentTimeMillis()
+        val record = JSONObject()
+            .put("t", "msg")
+            .put("dir", "out")
+            .put("ref", ref)
+            .put("text", text)
+            .put("time", time)
+        val entry = JSONObject().put("peer", chat).put("ref", ref).put("text", text)
 
-        append(
-            chat,
-            JSONObject()
-                .put("t", "msg")
-                .put("dir", "out")
-                .put("ref", ref)
-                .put("text", text)
-                .put("time", time)
-        )
+        if (quote != null) {
+            record.put("qa", quote.author).put("qh", quote.hash)
+            entry.put("qa", quote.author).put("qh", quote.hash)
+        }
+
+        append(chat, record)
 
         if (group(chat) != null) {
             return ref
         }
 
         val list = outboxList()
-        list.put(JSONObject().put("peer", chat).put("ref", ref).put("text", text))
+        list.put(entry)
         outboxSave(list)
 
         return ref
+    }
+
+    fun quoted(chat: String, ref: Long): Quote {
+        val list = messages(chat).getJSONArray("messages")
+
+        for (i in 0 until list.length()) {
+            val message = list.getJSONObject(i)
+
+            if (message.getLong("ref") != ref) {
+                continue
+            }
+
+            if (message.has("kind")) {
+                continue
+            }
+
+            if (message.getString("dir") == "out") {
+                return Quote(SELF, digest(message))
+            }
+
+            return Quote(message.getString("peer"), digest(message))
+        }
+
+        throw IllegalArgumentException("That message is gone.")
     }
 
     fun sendData(chat: String, media: String, name: String, data: ByteArray, ref: Long = ref()): Long {
@@ -397,6 +463,18 @@ class ChatVault(context: Context) {
         save(chat, conversation)
     }
 
+    fun favorite(chat: String, ref: Long, on: Boolean) {
+        conversation(chat, false) ?: return
+
+        append(chat, JSONObject().put("t", "fav").put("ref", ref).put("on", on))
+    }
+
+    fun pin(chat: String, ref: Long, on: Boolean) {
+        conversation(chat, false) ?: return
+
+        append(chat, JSONObject().put("t", "pin").put("ref", ref).put("on", on))
+    }
+
     fun delete(chat: String) {
         open.remove(chat)?.key?.fill(0)
 
@@ -418,6 +496,58 @@ class ChatVault(context: Context) {
         if (kept.length() != list.length()) {
             outboxSave(kept)
         }
+    }
+
+    private fun replies(messages: List<JSONObject>) {
+        val digests = mutableMapOf<Int, String>()
+
+        for ((at, message) in messages.withIndex()) {
+            val hash = message.optString("qh")
+            if (hash.isEmpty()) {
+                continue
+            }
+
+            val author = message.getString("qa")
+            message.put("quoted", true)
+
+            for (i in at - 1 downTo 0) {
+                val other = messages[i]
+
+                if (other.has("kind")) {
+                    continue
+                }
+
+                if (!wrote(other, author)) {
+                    continue
+                }
+
+                if (digests.getOrPut(i) { digest(other) } == hash) {
+                    message.put("reply", other.getLong("ref"))
+                    break
+                }
+            }
+        }
+    }
+
+    private fun wrote(message: JSONObject, author: String): Boolean {
+        if (author == SELF) {
+            return message.getString("dir") == "out"
+        }
+
+        return message.getString("dir") == "in" && message.optString("peer") == author
+    }
+
+    private fun digest(message: JSONObject): String {
+        val content = if (message.optString("data").isEmpty()) {
+            message.getString("text")
+        } else {
+            message.optString("name")
+        }
+
+        val sum = MessageDigest.getInstance("SHA-256")
+            .digest((message.optString("media") + "\n" + content).toByteArray())
+
+        return sum.copyOf(8).joinToString("") { "%02x".format(it) }
     }
 
     private fun dataWrite(chat: String, ref: Long, data: ByteArray): String {
@@ -823,6 +953,14 @@ class ChatVault(context: Context) {
 
         fun groupChat(group: Int): String = "g%04x".format(group)
 
+        fun quote(author: String, hash: String): Quote? {
+            if (hash.isEmpty()) {
+                return null
+            }
+
+            return Quote(author, hash)
+        }
+
         fun kind(media: String): Int =
             when (media) {
                 "image" -> DATA_IMAGE
@@ -833,6 +971,8 @@ class ChatVault(context: Context) {
         const val DATA_IMAGE = 1
         const val DATA_FILE = 2
         const val DATA_VOICE = 3
+
+        const val SELF = "00"
 
         private const val CHAT = "[0-9a-f]{2}|g[0-9a-f]{4}"
         private const val DATA = "(?:[0-9a-f]{2}|g[0-9a-f]{4})-[0-9a-f]{16}\\.dat"

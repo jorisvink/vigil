@@ -13,6 +13,19 @@ final class ChatVault {
         let description: String
     }
 
+    struct Quote {
+        let author: String
+        let hash: String
+
+        var peer: UInt8 {
+            UInt8(author, radix: 16) ?? 0
+        }
+
+        var digest: UInt64 {
+            UInt64(hash, radix: 16) ?? 0
+        }
+    }
+
     private struct Conversation {
         var key: SymmetricKey
         var count: UInt64
@@ -21,6 +34,7 @@ final class ChatVault {
     }
 
     static let shared = ChatVault()
+    static let selfAuthor = "00"
 
     static let defaults = UserDefaults(suiteName: TunnelKeychain.group) ?? .standard
 
@@ -76,7 +90,7 @@ final class ChatVault {
 
     func deliver(chat: String, peer: UInt8, nick: String, text: String, time: Int64,
                  kind: String = "", data: Data? = nil, media: String = "",
-                 name: String = "") throws {
+                 name: String = "", quote: Quote? = nil) throws {
         var message: [String: Any] = [
             "chat": chat, "peer": Self.hex(peer), "nick": nick, "text": text, "time": time,
             "kind": kind,
@@ -86,6 +100,11 @@ final class ChatVault {
             message["data"] = data.base64EncodedString()
             message["media"] = media
             message["name"] = name
+        }
+
+        if let quote {
+            message["qa"] = quote.author
+            message["qh"] = quote.hash
         }
 
         let plain = try JSONSerialization.data(withJSONObject: message)
@@ -133,6 +152,11 @@ final class ChatVault {
                 record["data"] = try dataWrite(chat, ref: ref, data)
                 record["media"] = message["media"] as? String ?? "file"
                 record["name"] = message["name"] as? String ?? "file"
+            }
+
+            if let quote = Self.quote(message["qa"] as? String, message["qh"] as? String) {
+                record["qa"] = quote.author
+                record["qh"] = quote.hash
             }
 
             try append(chat, record)
@@ -192,6 +216,7 @@ final class ChatVault {
 
         var messages = [[String: Any]]()
         var index = [Int64: Int]()
+        var pinned: Int64 = 0
         var damaged = false
         var unread = 0
 
@@ -221,6 +246,11 @@ final class ChatVault {
                     "name": record["name"] ?? "",
                     "state": incoming ? "received" : "queued",
                 ])
+
+                if let quote = Self.quote(record["qa"] as? String, record["qh"] as? String) {
+                    messages[messages.count - 1]["qa"] = quote.author
+                    messages[messages.count - 1]["qh"] = quote.hash
+                }
             case "member":
                 messages.append([
                     "ref": record["ref"] ?? 0,
@@ -254,10 +284,28 @@ final class ChatVault {
                     messages[at]["pending"] = pending
                     messages[at]["state"] = pending == 0 ? "delivered" : "sent"
                 }
+            case "fav":
+                if let ref = (record["ref"] as? NSNumber)?.int64Value, let at = index[ref] {
+                    messages[at]["fav"] = record["on"] as? Bool ?? false
+                }
+            case "pin":
+                if let ref = (record["ref"] as? NSNumber)?.int64Value {
+                    if record["on"] as? Bool == true {
+                        pinned = ref
+                    } else if pinned == ref {
+                        pinned = 0
+                    }
+                }
             default:
                 break
             }
         }
+
+        if let at = index[pinned] {
+            messages[at]["pinned"] = true
+        }
+
+        Self.replies(&messages)
 
         var out: [String: Any] = ["messages": messages, "unread": unread]
 
@@ -270,23 +318,102 @@ final class ChatVault {
         return out
     }
 
-    func send(_ chat: String, text: String) throws -> Int64 {
+    func send(_ chat: String, text: String, quote: Quote? = nil) throws -> Int64 {
         let ref = ref()
-
-        try append(chat, [
+        var record: [String: Any] = [
             "t": "msg", "dir": "out", "ref": ref, "text": text,
             "time": Int64(Date().timeIntervalSince1970 * 1000),
-        ])
+        ]
+        var entry: [String: Any] = ["peer": chat, "ref": ref, "text": text]
+
+        if let quote {
+            record["qa"] = quote.author
+            record["qh"] = quote.hash
+            entry["qa"] = quote.author
+            entry["qh"] = quote.hash
+        }
+
+        try append(chat, record)
 
         guard Self.group(chat) == nil else { return ref }
 
         try exclusive {
             var list = try outboxList()
-            list.append(["peer": chat, "ref": ref, "text": text])
+            list.append(entry)
             try outboxSave(list)
         }
 
         return ref
+    }
+
+    func quoted(_ chat: String, ref: Int64) throws -> Quote {
+        let list = try messages(chat)["messages"] as? [[String: Any]] ?? []
+
+        for message in list {
+            guard (message["ref"] as? NSNumber)?.int64Value == ref else { continue }
+            guard message["kind"] == nil else { continue }
+
+            if message["dir"] as? String == "out" {
+                return Quote(author: Self.selfAuthor, hash: Self.digest(message))
+            }
+
+            return Quote(author: message["peer"] as? String ?? "", hash: Self.digest(message))
+        }
+
+        throw Failure(description: "That message is gone.")
+    }
+
+    static func quote(_ author: String?, _ hash: String?) -> Quote? {
+        guard let author, let hash, !hash.isEmpty else { return nil }
+
+        return Quote(author: author, hash: hash)
+    }
+
+    private static func replies(_ messages: inout [[String: Any]]) {
+        var digests = [Int: String]()
+
+        for at in messages.indices {
+            guard let quote = quote(messages[at]["qa"] as? String, messages[at]["qh"] as? String) else {
+                continue
+            }
+
+            messages[at]["quoted"] = true
+
+            for other in stride(from: at - 1, through: 0, by: -1) {
+                guard messages[other]["kind"] == nil else { continue }
+                guard wrote(messages[other], quote.author) else { continue }
+
+                if digests[other] == nil {
+                    digests[other] = digest(messages[other])
+                }
+
+                if digests[other] == quote.hash {
+                    messages[at]["reply"] = messages[other]["ref"]
+                    break
+                }
+            }
+        }
+    }
+
+    private static func wrote(_ message: [String: Any], _ author: String) -> Bool {
+        if author == selfAuthor {
+            return message["dir"] as? String == "out"
+        }
+
+        return message["dir"] as? String == "in" && message["peer"] as? String == author
+    }
+
+    private static func digest(_ message: [String: Any]) -> String {
+        var content = message["text"] as? String ?? ""
+
+        if !(message["data"] as? String ?? "").isEmpty {
+            content = message["name"] as? String ?? ""
+        }
+
+        let media = message["media"] as? String ?? ""
+        let sum = SHA256.hash(data: Data((media + "\n" + content).utf8))
+
+        return sum.prefix(8).map { String(format: "%02x", $0) }.joined()
     }
 
     func sendData(_ chat: String, media: String, name: String, data: Data) throws -> (Int64, String) {
@@ -362,6 +489,18 @@ final class ChatVault {
         conversation.read = conversation.count
         open[chat] = conversation
         try save(chat, conversation)
+    }
+
+    func favorite(_ chat: String, ref: Int64, on: Bool) throws {
+        guard try conversation(chat, create: false) != nil else { return }
+
+        try append(chat, ["t": "fav", "ref": ref, "on": on])
+    }
+
+    func pin(_ chat: String, ref: Int64, on: Bool) throws {
+        guard try conversation(chat, create: false) != nil else { return }
+
+        try append(chat, ["t": "pin", "ref": ref, "on": on])
     }
 
     func delete(_ chat: String) throws {

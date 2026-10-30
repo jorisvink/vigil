@@ -213,6 +213,15 @@ struct vigil_chat_frame {
 } __attribute__((packed));
 
 /*
+ * A reply, who wrote the message it replies to and the hash of that message.
+ */
+struct vigil_chat_reply {
+	u_int8_t		author;
+	u_int64_t		hash;
+	u_int8_t		text[VIGIL_CHAT_REPLY_MAX];
+} __attribute__((packed));
+
+/*
  * What goes in front of the data we send, its kind and its name from sender.
  */
 struct vigil_chat_data_head {

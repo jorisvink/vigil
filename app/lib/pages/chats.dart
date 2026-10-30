@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
@@ -17,6 +18,7 @@ import '../widgets/ui.dart';
 import 'call.dart';
 
 const _messageMax = 512;
+const _replyMax = _messageMax - 9;
 const _voiceMax = Duration(minutes: 5);
 const _voiceMin = Duration(milliseconds: 700);
 const _voiceBars = 32;
@@ -692,6 +694,12 @@ class ChatPage extends StatefulWidget {
 
 class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
   final _input = TextEditingController();
+  final _focus = FocusNode();
+  final _scroll = ScrollController();
+  final _keys = <int, GlobalKey>{};
+  ChatMessage? _replying;
+  Timer? _blinking;
+  int _flash = 0;
   StreamSubscription<Status>? _updates;
   ChatHistory? _history;
   String? _error;
@@ -766,7 +774,10 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
     _updates?.cancel();
     _idle?.cancel();
     _ticker?.cancel();
+    _blinking?.cancel();
     _input.dispose();
+    _focus.dispose();
+    _scroll.dispose();
 
     final vigil = Vigil.instance;
     if (_recording != null) {
@@ -852,9 +863,14 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
     setState(() => _sending = true);
 
     try {
-      await Vigil.instance.send(peer, text);
+      await Vigil.instance.send(peer, text, reply: _replying?.ref ?? 0);
       _input.clear();
       _type(false);
+
+      if (mounted) {
+        setState(() => _replying = null);
+      }
+
       await _load();
     } on VigilError catch (e) {
       notify(e.message);
@@ -863,6 +879,69 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
         setState(() => _sending = false);
       }
     }
+  }
+
+  void _reply(ChatMessage message) {
+    setState(() => _replying = message);
+    _focus.requestFocus();
+  }
+
+  Future<void> _jump(int ref) async {
+    for (var step = 0; step < 100; step++) {
+      if (!mounted) {
+        return;
+      }
+
+      final target = _keys[ref]?.currentContext;
+
+      if (target != null) {
+        if (!target.mounted) {
+          return;
+        }
+
+        await Scrollable.ensureVisible(
+          target,
+          alignment: 0.5,
+          duration: const Duration(milliseconds: 250),
+          curve: Curves.easeOut,
+        );
+        _blink(ref);
+        return;
+      }
+
+      if (!_scroll.hasClients) {
+        return;
+      }
+
+      final position = _scroll.position;
+
+      if (position.pixels >= position.maxScrollExtent) {
+        return;
+      }
+
+      _scroll.jumpTo(
+        (position.pixels + position.viewportDimension * 0.8).clamp(
+          0.0,
+          position.maxScrollExtent,
+        ),
+      );
+      await WidgetsBinding.instance.endOfFrame;
+    }
+  }
+
+  void _blink(int ref) {
+    _blinking?.cancel();
+
+    if (!mounted) {
+      return;
+    }
+
+    setState(() => _flash = ref);
+    _blinking = Timer(const Duration(milliseconds: 1200), () {
+      if (mounted) {
+        setState(() => _flash = 0);
+      }
+    });
   }
 
   Future<void> _attach() async {
@@ -1244,6 +1323,8 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
           final joined = status.chats.group == peer;
           final callable = status.call?.peers.contains(peer) ?? false;
           final messages = _history?.messages ?? const <ChatMessage>[];
+          final pinned = messages.where((m) => m.pinned).firstOrNull;
+          final refs = {for (final m in messages) m.ref: m};
           final keyboard = MediaQuery.viewInsetsOf(context).bottom;
           final inset = keyboard > 0
               ? 0.0
@@ -1335,6 +1416,12 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
                               label: 'Call ${vigil.name(peer)}',
                               onTap: () => callPeer(peer),
                             ),
+                          if (messages.any((m) => m.favorite))
+                            GlyphBtn(
+                              GlyphKind.star,
+                              label: 'Favorites',
+                              onTap: () => push(_Favorites(peer: peer)),
+                            ),
                           GlyphBtn(
                             GlyphKind.close,
                             label: 'Delete chat',
@@ -1345,6 +1432,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
                       ),
                     ),
                     const Line(),
+                    if (pinned != null) _Pinned(chat: peer, message: pinned),
                     if (_error != null || _history?.warning != null)
                       Padding(
                         padding: const EdgeInsets.fromLTRB(
@@ -1359,84 +1447,113 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
                         ),
                       ),
                     Expanded(
-                      child: messages.isEmpty && typing == null
-                          ? Center(
-                              child: Padding(
-                                padding: const EdgeInsets.all(Metrics.edge * 2),
-                                child: Text(
-                                  _history == null
-                                      ? ''
-                                      : group
-                                      ? 'Messages go to the members of '
-                                            '${vigil.name(peer)} that are '
-                                            'around right now.'
-                                      : 'Say something to ${vigil.name(peer)}, '
-                                            'it is held until they are around.',
-                                  textAlign: TextAlign.center,
-                                  style: Styles.body.copyWith(
-                                    color: Palette.dim,
+                      child: GestureDetector(
+                        behavior: HitTestBehavior.opaque,
+                        onTap: () =>
+                            FocusManager.instance.primaryFocus?.unfocus(),
+                        child: messages.isEmpty && typing == null
+                            ? Center(
+                                child: Padding(
+                                  padding: const EdgeInsets.all(
+                                    Metrics.edge * 2,
+                                  ),
+                                  child: Text(
+                                    _history == null
+                                        ? ''
+                                        : group
+                                        ? 'Messages go to the members of '
+                                              '${vigil.name(peer)} that are '
+                                              'around right now.'
+                                        : 'Say something to ${vigil.name(peer)}, '
+                                              'it is held until they are around.',
+                                    textAlign: TextAlign.center,
+                                    style: Styles.body.copyWith(
+                                      color: Palette.dim,
+                                    ),
                                   ),
                                 ),
-                              ),
-                            )
-                          : ListView.builder(
-                              reverse: true,
-                              padding: const EdgeInsets.fromLTRB(
-                                Metrics.edge,
-                                12,
-                                Metrics.edge,
-                                12,
-                              ),
-                              itemCount: messages.length + extra,
-                              itemBuilder: (context, index) {
-                                if (index < extra) {
-                                  return _Typing(
-                                    sender: typing!.isEmpty ? null : typing,
+                              )
+                            : ListView.builder(
+                                controller: _scroll,
+                                reverse: true,
+                                physics: const AlwaysScrollableScrollPhysics(),
+                                keyboardDismissBehavior:
+                                    ScrollViewKeyboardDismissBehavior.onDrag,
+                                padding: const EdgeInsets.fromLTRB(
+                                  Metrics.edge,
+                                  12,
+                                  Metrics.edge,
+                                  12,
+                                ),
+                                itemCount: messages.length + extra,
+                                itemBuilder: (context, index) {
+                                  if (index < extra) {
+                                    return _Typing(
+                                      sender: typing!.isEmpty ? null : typing,
+                                    );
+                                  }
+
+                                  final at =
+                                      messages.length - 1 - index + extra;
+                                  final message = messages[at];
+                                  final previous = at > 0
+                                      ? messages[at - 1]
+                                      : null;
+                                  final day = _day(message.time);
+
+                                  return Column(
+                                    key: _keys.putIfAbsent(
+                                      message.ref,
+                                      GlobalKey.new,
+                                    ),
+                                    children: [
+                                      if (previous == null ||
+                                          _day(previous.time) != day)
+                                        Padding(
+                                          padding: const EdgeInsets.symmetric(
+                                            vertical: 14,
+                                          ),
+                                          child: Text(
+                                            day.toUpperCase(),
+                                            style: Styles.rubric,
+                                          ),
+                                        ),
+                                      if (message.kind.isNotEmpty)
+                                        _Presence(text: memberLine(message))
+                                      else
+                                        _SwipeReply(
+                                          onReply: () => _reply(message),
+                                          child: _Bubble(
+                                            chat: peer,
+                                            message: message,
+                                            quote: refs[message.reply],
+                                            flash: _flash == message.ref,
+                                            onQuote: () => _jump(message.reply),
+                                            onReply: () => _reply(message),
+                                            sender: group && message.incoming
+                                                ? sender(message)
+                                                : null,
+                                            joined:
+                                                previous != null &&
+                                                previous.kind.isEmpty &&
+                                                previous.incoming ==
+                                                    message.incoming &&
+                                                previous.from == message.from &&
+                                                _day(previous.time) == day,
+                                          ),
+                                        ),
+                                    ],
                                   );
-                                }
-
-                                final at = messages.length - 1 - index + extra;
-                                final message = messages[at];
-                                final previous = at > 0
-                                    ? messages[at - 1]
-                                    : null;
-                                final day = _day(message.time);
-
-                                return Column(
-                                  children: [
-                                    if (previous == null ||
-                                        _day(previous.time) != day)
-                                      Padding(
-                                        padding: const EdgeInsets.symmetric(
-                                          vertical: 14,
-                                        ),
-                                        child: Text(
-                                          day.toUpperCase(),
-                                          style: Styles.rubric,
-                                        ),
-                                      ),
-                                    if (message.kind.isNotEmpty)
-                                      _Presence(text: memberLine(message))
-                                    else
-                                      _Bubble(
-                                        chat: peer,
-                                        message: message,
-                                        sender: group && message.incoming
-                                            ? sender(message)
-                                            : null,
-                                        joined:
-                                            previous != null &&
-                                            previous.kind.isEmpty &&
-                                            previous.incoming ==
-                                                message.incoming &&
-                                            previous.from == message.from &&
-                                            _day(previous.time) == day,
-                                      ),
-                                  ],
-                                );
-                              },
-                            ),
+                                },
+                              ),
+                      ),
                     ),
+                    if (_replying != null)
+                      _ReplyBar(
+                        chat: peer,
+                        message: _replying!,
+                        onClose: () => setState(() => _replying = null),
+                      ),
                     Container(
                       decoration: const BoxDecoration(
                         color: Palette.bg2,
@@ -1474,6 +1591,8 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
                             )
                           : _Composer(
                               input: _input,
+                              focus: _focus,
+                              max: _replying == null ? _messageMax : _replyMax,
                               busy: _sending,
                               recording: _recording,
                               starting: _starting,
@@ -1644,6 +1763,348 @@ class _TypingState extends State<_Typing> with SingleTickerProviderStateMixin {
   }
 }
 
+String _author(ChatMessage message) {
+  if (!message.incoming) {
+    return 'You';
+  }
+
+  return sender(message);
+}
+
+class _Quote extends StatelessWidget {
+  const _Quote({required this.chat, required this.quote, this.onTap});
+
+  final String chat;
+  final ChatMessage? quote;
+  final VoidCallback? onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final quote = this.quote;
+
+    return GestureDetector(
+      behavior: HitTestBehavior.opaque,
+      onTap: quote == null ? null : onTap,
+      child: Container(
+        margin: const EdgeInsets.only(bottom: 6),
+        padding: const EdgeInsets.fromLTRB(8, 3, 8, 3),
+        decoration: const BoxDecoration(
+          color: Palette.bg,
+          border: Border(left: BorderSide(color: Palette.amber, width: 2)),
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            if (quote != null)
+              Text(
+                _author(quote),
+                overflow: TextOverflow.ellipsis,
+                style: Styles.rubric.copyWith(color: Palette.amber),
+              ),
+            Text(
+              quote == null ? 'Original message not found' : _summary(quote),
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
+              style: Styles.detail.copyWith(
+                fontStyle: quote == null ? FontStyle.italic : null,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _ReplyBar extends StatelessWidget {
+  const _ReplyBar({
+    required this.chat,
+    required this.message,
+    required this.onClose,
+  });
+
+  final String chat;
+  final ChatMessage message;
+  final VoidCallback onClose;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      decoration: const BoxDecoration(
+        color: Palette.bg2,
+        border: Border(top: BorderSide(color: Palette.line)),
+      ),
+      padding: const EdgeInsets.fromLTRB(Metrics.edge, 8, Metrics.edge - 10, 0),
+      child: Row(
+        children: [
+          const Glyph(GlyphKind.reply, size: 18, color: Palette.amber),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'REPLY TO ${_author(message).toUpperCase()}',
+                  overflow: TextOverflow.ellipsis,
+                  style: Styles.rubric.copyWith(color: Palette.amber),
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  _summary(message),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: Styles.body.copyWith(color: Palette.fg2),
+                ),
+              ],
+            ),
+          ),
+          GlyphBtn(GlyphKind.close, label: 'Cancel reply', onTap: onClose),
+        ],
+      ),
+    );
+  }
+}
+
+class _SwipeReply extends StatefulWidget {
+  const _SwipeReply({required this.onReply, required this.child});
+
+  final VoidCallback onReply;
+  final Widget child;
+
+  @override
+  State<_SwipeReply> createState() => _SwipeReplyState();
+}
+
+class _SwipeReplyState extends State<_SwipeReply> {
+  static const _reach = 64.0;
+
+  double _offset = 0;
+  bool _dragging = false;
+
+  bool get _armed => _offset >= _reach * 0.75;
+
+  void _drag(DragUpdateDetails details) {
+    final armed = _armed;
+
+    setState(() {
+      _dragging = true;
+      _offset = (_offset + details.delta.dx).clamp(0.0, _reach);
+    });
+
+    if (_armed && !armed) {
+      unawaited(HapticFeedback.selectionClick());
+    }
+  }
+
+  void _release(DragEndDetails details) {
+    if (_armed) {
+      widget.onReply();
+    }
+
+    _reset();
+  }
+
+  void _reset() {
+    setState(() {
+      _dragging = false;
+      _offset = 0;
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      onHorizontalDragUpdate: _drag,
+      onHorizontalDragEnd: _release,
+      onHorizontalDragCancel: _reset,
+      child: Stack(
+        children: [
+          Positioned(
+            top: 0,
+            left: 4,
+            bottom: 0,
+            child: Center(
+              child: Opacity(
+                opacity: (_offset / _reach).clamp(0.0, 1.0),
+                child: Glyph(
+                  GlyphKind.reply,
+                  size: 20,
+                  color: _armed ? Palette.amber : Palette.fg2,
+                ),
+              ),
+            ),
+          ),
+          AnimatedContainer(
+            duration: _dragging
+                ? Duration.zero
+                : const Duration(milliseconds: 160),
+            curve: Curves.easeOut,
+            transform: Matrix4.translationValues(_offset, 0, 0),
+            child: widget.child,
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _Pinned extends StatelessWidget {
+  const _Pinned({required this.chat, required this.message});
+
+  final String chat;
+  final ChatMessage message;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      decoration: const BoxDecoration(
+        color: Palette.amberWash,
+        border: Border(bottom: BorderSide(color: Palette.amberDim)),
+      ),
+      padding: const EdgeInsets.fromLTRB(Metrics.edge, 8, Metrics.edge - 10, 8),
+      child: Row(
+        children: [
+          const Glyph(GlyphKind.pin, size: 18, color: Palette.amber),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'PINNED',
+                  style: Styles.rubric.copyWith(color: Palette.amber),
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  _summary(message),
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                  style: Styles.body.copyWith(color: Palette.fg),
+                ),
+              ],
+            ),
+          ),
+          GlyphBtn(
+            GlyphKind.close,
+            label: 'Unpin',
+            onTap: () => _pin(chat, message),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _Favorites extends StatefulWidget {
+  const _Favorites({required this.peer});
+
+  final String peer;
+
+  @override
+  State<_Favorites> createState() => _FavoritesState();
+}
+
+class _FavoritesState extends State<_Favorites> {
+  StreamSubscription<Status>? _updates;
+  List<ChatMessage>? _messages;
+  Map<int, ChatMessage> _refs = const {};
+  String? _error;
+  int _version = -1;
+
+  @override
+  void initState() {
+    super.initState();
+
+    _updates = Vigil.instance.statuses.listen((status) {
+      if (status.chats.version != _version) {
+        _load();
+      }
+    });
+
+    _load();
+  }
+
+  @override
+  void dispose() {
+    _updates?.cancel();
+    super.dispose();
+  }
+
+  Future<void> _load() async {
+    final vigil = Vigil.instance;
+    final state = WidgetsBinding.instance.lifecycleState;
+
+    if (state != null && state != AppLifecycleState.resumed) {
+      return;
+    }
+
+    _version = vigil.status.chats.version;
+
+    try {
+      final history = await vigil.chat(widget.peer);
+
+      if (mounted) {
+        setState(() {
+          _refs = {for (final m in history.messages) m.ref: m};
+          _messages = [
+            for (final m in history.messages.reversed)
+              if (m.favorite) m,
+          ];
+          _error = null;
+        });
+      }
+    } on VigilError catch (e) {
+      if (mounted) {
+        setState(() => _error = e.message);
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final peer = widget.peer;
+    final group = isGroup(peer);
+    final messages = _messages ?? const <ChatMessage>[];
+
+    return PushedPage(
+      rubric: 'Favorites',
+      title: Vigil.instance.name(peer),
+      children: [
+        if (_error != null) Notice(text: _error!, kind: NoticeKind.warn),
+        if (_messages != null && messages.isEmpty)
+          Text(
+            'No favorites left in this chat.',
+            style: Styles.body.copyWith(color: Palette.dim),
+          ),
+        for (final (index, message) in messages.indexed)
+          Column(
+            children: [
+              if (index == 0 ||
+                  _day(messages[index - 1].time) != _day(message.time))
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 4),
+                  child: Text(
+                    _day(message.time).toUpperCase(),
+                    style: Styles.rubric,
+                  ),
+                ),
+              _Bubble(
+                chat: peer,
+                message: message,
+                quote: _refs[message.reply],
+                sender: group && message.incoming ? sender(message) : null,
+                joined: false,
+              ),
+            ],
+          ),
+      ],
+    );
+  }
+}
+
 class _Presence extends StatelessWidget {
   const _Presence({required this.text});
 
@@ -1668,9 +2129,158 @@ class _Presence extends StatelessWidget {
   }
 }
 
-Future<void> _save(String chat, ChatMessage message) async {
+Future<void> _actions(
+  BuildContext context,
+  String chat,
+  ChatMessage message,
+  VoidCallback? onReply,
+) async {
   unawaited(HapticFeedback.mediumImpact());
 
+  final text = message.data.isEmpty;
+  final keep = Btn(
+    label: text ? 'Copy' : _saveLabel(message),
+    glyph: text ? GlyphKind.copy : null,
+    kind: BtnKind.secondary,
+    expand: true,
+    onTap: () => Navigator.of(context).pop(text ? 'copy' : 'save'),
+  );
+
+  final action = await sheet<String>(
+    context,
+    (context) => Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        sheetTitle(_author(message)),
+        const SizedBox(height: 8),
+        Text(
+          _summary(message),
+          maxLines: 2,
+          overflow: TextOverflow.ellipsis,
+          style: Styles.detail,
+        ),
+        const SizedBox(height: 20),
+        if (onReply == null)
+          keep
+        else
+          BtnPair(
+            first: Btn(
+              label: 'Reply',
+              glyph: GlyphKind.reply,
+              expand: true,
+              onTap: () => Navigator.of(context).pop('reply'),
+            ),
+            second: keep,
+          ),
+        const SizedBox(height: 10),
+        BtnPair(
+          first: Btn(
+            label: message.favorite ? 'Unfavorite' : 'Favorite',
+            glyph: GlyphKind.star,
+            kind: BtnKind.secondary,
+            expand: true,
+            onTap: () => Navigator.of(context).pop('favorite'),
+          ),
+          second: Btn(
+            label: message.pinned ? 'Unpin' : 'Pin',
+            glyph: GlyphKind.pin,
+            kind: BtnKind.secondary,
+            expand: true,
+            onTap: () => Navigator.of(context).pop('pin'),
+          ),
+        ),
+        if (text) ...[
+          const SizedBox(height: 10),
+          Btn(
+            label: 'Select text',
+            kind: BtnKind.secondary,
+            expand: true,
+            onTap: () => Navigator.of(context).pop('select'),
+          ),
+        ],
+      ],
+    ),
+  );
+
+  if (action == 'reply') {
+    onReply?.call();
+  }
+
+  if (action == 'copy') {
+    await Clipboard.setData(ClipboardData(text: message.text));
+    notify('Copied', warn: false);
+  }
+
+  if (action == 'select' && context.mounted) {
+    await _select(context, message);
+  }
+
+  if (action == 'save') {
+    await _save(chat, message);
+  }
+
+  if (action == 'favorite') {
+    await _favorite(chat, message);
+  }
+
+  if (action == 'pin') {
+    await _pin(chat, message);
+  }
+}
+
+Future<void> _select(BuildContext context, ChatMessage message) => sheet<void>(
+  context,
+  (context) => Column(
+    mainAxisSize: MainAxisSize.min,
+    crossAxisAlignment: CrossAxisAlignment.start,
+    children: [
+      sheetTitle('Select text'),
+      const SizedBox(height: 16),
+      ConstrainedBox(
+        constraints: BoxConstraints(
+          maxHeight: MediaQuery.sizeOf(context).height * 0.6,
+        ),
+        child: SingleChildScrollView(
+          child: SelectableText(
+            message.text,
+            style: Styles.body.copyWith(color: Palette.fg),
+          ),
+        ),
+      ),
+    ],
+  ),
+);
+
+String _saveLabel(ChatMessage message) {
+  if (message.media != 'image') {
+    return 'Save';
+  }
+
+  if (Platform.isIOS) {
+    return 'Save to Photos';
+  }
+
+  return 'Save to gallery';
+}
+
+Future<void> _pin(String chat, ChatMessage message) async {
+  try {
+    await Vigil.instance.pin(chat, message.ref, !message.pinned);
+  } on VigilError catch (e) {
+    notify(e.message);
+  }
+}
+
+Future<void> _favorite(String chat, ChatMessage message) async {
+  try {
+    await Vigil.instance.favorite(chat, message.ref, !message.favorite);
+  } on VigilError catch (e) {
+    notify(e.message);
+  }
+}
+
+Future<void> _save(String chat, ChatMessage message) async {
   try {
     final saved = await Vigil.instance.saveData(
       chat,
@@ -1679,7 +2289,11 @@ Future<void> _save(String chat, ChatMessage message) async {
       message.media,
     );
 
-    if (saved) {
+    if (saved && message.media == 'image' && Platform.isIOS) {
+      notify('Saved to Photos', warn: false);
+    } else if (saved && message.media == 'image') {
+      notify('Saved to gallery', warn: false);
+    } else if (saved) {
       notify('Saved ${message.name}', warn: false);
     }
   } on VigilError catch (e) {
@@ -1719,7 +2333,6 @@ class _Photo extends StatelessWidget {
 
         return GestureDetector(
           onTap: () => push(_PhotoPage(bytes: bytes)),
-          onLongPress: () => _save(chat, message),
           child: ConstrainedBox(
             constraints: BoxConstraints(
               maxWidth: width,
@@ -1752,7 +2365,6 @@ class _File extends StatelessWidget {
       onTap: () => Vigil.instance
           .openData(chat, message.data, message.name)
           .catchError((Object e) => notify('$e')),
-      onLongPress: () => _save(chat, message),
       child: ConstrainedBox(
         constraints: BoxConstraints(
           maxWidth: MediaQuery.sizeOf(context).width * 0.6,
@@ -1817,12 +2429,20 @@ class _Bubble extends StatelessWidget {
     required this.message,
     required this.joined,
     this.sender,
+    this.quote,
+    this.onQuote,
+    this.onReply,
+    this.flash = false,
   });
 
   final String chat;
   final ChatMessage message;
   final bool joined;
   final String? sender;
+  final ChatMessage? quote;
+  final VoidCallback? onQuote;
+  final VoidCallback? onReply;
+  final bool flash;
 
   @override
   Widget build(BuildContext context) {
@@ -1841,116 +2461,145 @@ class _Bubble extends StatelessWidget {
       _ => ('◷', Palette.dim),
     };
 
-    return Padding(
-      padding: EdgeInsets.only(top: joined ? 4 : 10),
-      child: Align(
-        alignment: incoming ? Alignment.centerLeft : Alignment.centerRight,
-        child: ConstrainedBox(
-          constraints: BoxConstraints(maxWidth: width * 0.78),
-          child: CustomPaint(
-            painter: CutPainter(
-              fill: incoming ? Palette.bg2 : Palette.amberWash,
-              stroke: incoming ? Palette.line2 : Palette.amberDim,
-              cut: 8,
-            ),
-            child: Padding(
-              padding: const EdgeInsets.fromLTRB(12, 8, 12, 7),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.end,
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Stack(
-                    children: [
-                      Align(
-                        alignment: Alignment.centerLeft,
-                        widthFactor: 1,
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            if (header)
-                              Padding(
-                                padding: const EdgeInsets.only(bottom: 3),
-                                child: Row(
-                                  mainAxisSize: MainAxisSize.min,
-                                  children: [
-                                    Flexible(
-                                      child: Text(
-                                        sender!,
-                                        overflow: TextOverflow.ellipsis,
-                                        style: peerStyle(
-                                          Styles.rubric.copyWith(
-                                            color: Palette.amber,
-                                          ),
-                                          senderPicked(message),
-                                        ),
-                                      ),
-                                    ),
-                                    const SizedBox(width: 12),
-                                    ExcludeSemantics(
-                                      child: Opacity(
-                                        opacity: 0,
+    return GestureDetector(
+      onLongPress: () => _actions(context, chat, message, onReply),
+      child: Padding(
+        padding: EdgeInsets.only(top: joined ? 4 : 10),
+        child: Align(
+          alignment: incoming ? Alignment.centerLeft : Alignment.centerRight,
+          child: ConstrainedBox(
+            constraints: BoxConstraints(maxWidth: width * 0.78),
+            child: CustomPaint(
+              painter: CutPainter(
+                fill: incoming && !flash ? Palette.bg2 : Palette.amberWash,
+                stroke: message.pinned || flash
+                    ? Palette.amber
+                    : incoming
+                    ? Palette.line2
+                    : Palette.amberDim,
+                cut: 8,
+              ),
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(12, 8, 12, 7),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.end,
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Stack(
+                      children: [
+                        Align(
+                          alignment: Alignment.centerLeft,
+                          widthFactor: 1,
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              if (header)
+                                Padding(
+                                  padding: const EdgeInsets.only(bottom: 3),
+                                  child: Row(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      Flexible(
                                         child: Text(
-                                          message.from,
-                                          style: Styles.rubric,
+                                          sender!,
+                                          overflow: TextOverflow.ellipsis,
+                                          style: peerStyle(
+                                            Styles.rubric.copyWith(
+                                              color: Palette.amber,
+                                            ),
+                                            senderPicked(message),
+                                          ),
                                         ),
                                       ),
-                                    ),
-                                  ],
+                                      const SizedBox(width: 12),
+                                      ExcludeSemantics(
+                                        child: Opacity(
+                                          opacity: 0,
+                                          child: Text(
+                                            message.from,
+                                            style: Styles.rubric,
+                                          ),
+                                        ),
+                                      ),
+                                    ],
+                                  ),
                                 ),
-                              ),
-                            if (message.data.isEmpty)
-                              _Text(message.text)
-                            else if (message.media == 'image')
-                              _Photo(chat: chat, message: message)
-                            else if (message.media == 'voice')
-                              _VoiceNote(
-                                key: ValueKey('$chat/${message.data}'),
-                                chat: chat,
-                                message: message,
-                              )
-                            else
-                              _File(chat: chat, message: message),
-                          ],
-                        ),
-                      ),
-                      if (header)
-                        Positioned(
-                          top: 0,
-                          right: 0,
-                          child: Semantics(
-                            label: 'KEK ID ${message.from}',
-                            child: Text(message.from, style: Styles.rubric),
+                              if (message.quoted)
+                                _Quote(
+                                  chat: chat,
+                                  quote: quote,
+                                  onTap: onQuote,
+                                ),
+                              if (message.data.isEmpty)
+                                _Text(chat: chat, message: message)
+                              else if (message.media == 'image')
+                                _Photo(chat: chat, message: message)
+                              else if (message.media == 'voice')
+                                _VoiceNote(
+                                  key: ValueKey('$chat/${message.data}'),
+                                  chat: chat,
+                                  message: message,
+                                )
+                              else
+                                _File(chat: chat, message: message),
+                            ],
                           ),
                         ),
-                    ],
-                  ),
-                  const SizedBox(height: 3),
-                  Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Text(
-                        _clock(message.time),
-                        style: Styles.detail.copyWith(fontSize: 10.5),
-                      ),
-                      if (!incoming) ...[
-                        const SizedBox(width: 6),
-                        Semantics(
-                          label: acked == null
-                              ? message.state
-                              : '$acked acked, $pending pending',
-                          child: Text(
-                            tick.$1,
-                            style: Styles.detail.copyWith(
-                              fontSize: 10.5,
-                              color: tick.$2,
+                        if (header)
+                          Positioned(
+                            top: 0,
+                            right: 0,
+                            child: Semantics(
+                              label: 'KEK ID ${message.from}',
+                              child: Text(message.from, style: Styles.rubric),
                             ),
                           ),
-                        ),
                       ],
-                    ],
-                  ),
-                ],
+                    ),
+                    const SizedBox(height: 3),
+                    Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        if (message.pinned) ...[
+                          const Glyph(
+                            GlyphKind.pin,
+                            size: 11,
+                            color: Palette.amber,
+                          ),
+                          const SizedBox(width: 6),
+                        ],
+                        if (message.favorite) ...[
+                          const Glyph(
+                            GlyphKind.star,
+                            size: 11,
+                            color: Palette.amber,
+                          ),
+                          const SizedBox(width: 6),
+                        ],
+                        Text(
+                          _clock(message.time),
+                          style: Styles.detail.copyWith(fontSize: 10.5),
+                        ),
+                        if (!incoming) ...[
+                          const SizedBox(width: 6),
+                          Semantics(
+                            label: acked == null
+                                ? message.state
+                                : '$acked acked, $pending pending',
+                            child: Text(
+                              tick.$1,
+                              style: Styles.detail.copyWith(
+                                fontSize: 10.5,
+                                color: tick.$2,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ],
+                    ),
+                  ],
+                ),
               ),
             ),
           ),
@@ -1963,6 +2612,8 @@ class _Bubble extends StatelessWidget {
 class _Composer extends StatelessWidget {
   const _Composer({
     required this.input,
+    required this.focus,
+    required this.max,
     required this.busy,
     required this.recording,
     required this.starting,
@@ -1979,6 +2630,8 @@ class _Composer extends StatelessWidget {
   });
 
   final TextEditingController input;
+  final FocusNode focus;
+  final int max;
   final bool busy;
   final DateTime? recording;
   final bool starting;
@@ -2153,14 +2806,14 @@ class _Composer extends StatelessWidget {
                       crossAxisAlignment: CrossAxisAlignment.end,
                       mainAxisSize: MainAxisSize.min,
                       children: [
-                        if (used > _messageMax - 112)
+                        if (used > max - 112)
                           Padding(
                             padding: const EdgeInsets.only(bottom: 4),
                             child: Text(
-                              '$used/$_messageMax',
+                              '$used/$max',
                               style: Styles.detail.copyWith(
                                 fontSize: 10.5,
-                                color: used >= _messageMax
+                                color: used >= max
                                     ? Palette.amber
                                     : Palette.dim,
                               ),
@@ -2176,12 +2829,13 @@ class _Composer extends StatelessWidget {
                             padding: const EdgeInsets.fromLTRB(12, 10, 12, 10),
                             child: TextField(
                               controller: input,
+                              focusNode: focus,
                               minLines: 1,
                               maxLines: 5,
                               enableIMEPersonalizedLearning: false,
                               keyboardType: TextInputType.multiline,
                               textCapitalization: TextCapitalization.sentences,
-                              inputFormatters: const [_Utf8Limit(_messageMax)],
+                              inputFormatters: [_Utf8Limit(max)],
                               contextMenuBuilder: _menu,
                               style: Styles.body.copyWith(color: Palette.fg),
                               cursorColor: Palette.amber,
@@ -2474,102 +3128,98 @@ class _VoiceNoteState extends State<_VoiceNote> {
   Widget build(BuildContext context) {
     final width = MediaQuery.sizeOf(context).width * 0.38;
 
-    return GestureDetector(
-      behavior: HitTestBehavior.opaque,
-      onLongPress: () => _save(widget.chat, widget.message),
-      child: FutureBuilder<_Voice>(
-        future: _shape,
-        builder: (context, snapshot) {
-          final voice = snapshot.data;
+    return FutureBuilder<_Voice>(
+      future: _shape,
+      builder: (context, snapshot) {
+        final voice = snapshot.data;
 
-          return ValueListenableBuilder<String?>(
-            valueListenable: _playing,
-            builder: (context, playing, _) {
-              final on = playing == _key;
-              var played = 0.0;
-              var time = '-:--';
+        return ValueListenableBuilder<String?>(
+          valueListenable: _playing,
+          builder: (context, playing, _) {
+            final on = playing == _key;
+            var played = 0.0;
+            var time = '-:--';
 
-              if (on && _total > 0) {
-                played = _at / _total;
-              }
+            if (on && _total > 0) {
+              played = _at / _total;
+            }
 
-              if (on) {
-                time = _length(_at ~/ 1000);
-              } else if (voice != null) {
-                time = _length(voice.seconds);
-              }
+            if (on) {
+              time = _length(_at ~/ 1000);
+            } else if (voice != null) {
+              time = _length(voice.seconds);
+            }
 
-              return Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  GestureDetector(
-                    behavior: HitTestBehavior.opaque,
-                    onTap: _toggle,
-                    child: Semantics(
-                      button: true,
-                      label: on ? 'Stop voice message' : 'Play voice message',
-                      child: Container(
-                        width: 34,
-                        height: 34,
-                        decoration: BoxDecoration(
-                          border: Border.all(color: Palette.amberDim),
-                        ),
-                        child: Center(
-                          child: Glyph(
-                            on ? GlyphKind.stop : GlyphKind.play,
-                            size: 16,
-                            color: Palette.amber,
-                          ),
+            return Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                GestureDetector(
+                  behavior: HitTestBehavior.opaque,
+                  onTap: _toggle,
+                  child: Semantics(
+                    button: true,
+                    label: on ? 'Stop voice message' : 'Play voice message',
+                    child: Container(
+                      width: 34,
+                      height: 34,
+                      decoration: BoxDecoration(
+                        border: Border.all(color: Palette.amberDim),
+                      ),
+                      child: Center(
+                        child: Glyph(
+                          on ? GlyphKind.stop : GlyphKind.play,
+                          size: 16,
+                          color: Palette.amber,
                         ),
                       ),
                     ),
                   ),
-                  const SizedBox(width: 10),
-                  GestureDetector(
-                    behavior: HitTestBehavior.opaque,
-                    onTapUp: (d) => _seek(d.localPosition.dx / width),
-                    onHorizontalDragUpdate: (d) =>
-                        _seek(d.localPosition.dx / width, start: false),
-                    child: CustomPaint(
-                      size: Size(width, 28),
-                      painter: _WavePainter(
-                        bars: voice?.bars ?? _voiceShape(widget.message.data),
-                        played: played,
-                      ),
+                ),
+                const SizedBox(width: 10),
+                GestureDetector(
+                  behavior: HitTestBehavior.opaque,
+                  onTapUp: (d) => _seek(d.localPosition.dx / width),
+                  onHorizontalDragUpdate: (d) =>
+                      _seek(d.localPosition.dx / width, start: false),
+                  child: CustomPaint(
+                    size: Size(width, 28),
+                    painter: _WavePainter(
+                      bars: voice?.bars ?? _voiceShape(widget.message.data),
+                      played: played,
                     ),
                   ),
-                  const SizedBox(width: 10),
-                  Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Text(time, style: Styles.detail.copyWith(fontSize: 10.5)),
-                      GestureDetector(
-                        behavior: HitTestBehavior.opaque,
-                        onTap: _speed,
-                        child: Semantics(
-                          button: true,
-                          label: 'Playback speed',
-                          child: Padding(
-                            padding: const EdgeInsets.only(top: 4),
-                            child: Text(
-                              _rate(_voiceRate),
-                              style: Styles.detail.copyWith(
-                                fontSize: 10.5,
-                                color: Palette.amber,
-                              ),
+                ),
+                const SizedBox(width: 10),
+                Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text(time, style: Styles.detail.copyWith(fontSize: 10.5)),
+                    GestureDetector(
+                      behavior: HitTestBehavior.opaque,
+                      onTap: _speed,
+                      child: Semantics(
+                        button: true,
+                        label: 'Playback speed',
+                        child: Padding(
+                          padding: const EdgeInsets.only(top: 4),
+                          child: Text(
+                            _rate(_voiceRate),
+                            style: Styles.detail.copyWith(
+                              fontSize: 10.5,
+                              color: Palette.amber,
                             ),
                           ),
                         ),
                       ),
-                    ],
-                  ),
-                ],
-              );
-            },
-          );
-        },
-      ),
+                    ),
+                  ],
+                ),
+              ],
+            );
+          },
+        );
+      },
     );
   }
 }
@@ -2613,9 +3263,10 @@ class _WavePainter extends CustomPainter {
 }
 
 class _Text extends StatefulWidget {
-  const _Text(this.text);
+  const _Text({required this.chat, required this.message});
 
-  final String text;
+  final String chat;
+  final ChatMessage message;
 
   @override
   State<_Text> createState() => _TextState();
@@ -2640,12 +3291,12 @@ class _TextState extends State<_Text> {
 
   @override
   Widget build(BuildContext context) {
-    final text = widget.text;
+    final text = widget.message.text;
     final style = Styles.body.copyWith(color: Palette.fg);
     final found = links(text);
 
     if (found.isEmpty) {
-      return SelectableText(text, style: style);
+      return Text(text, style: style);
     }
 
     _release();
@@ -2675,7 +3326,7 @@ class _TextState extends State<_Text> {
 
     spans.add(TextSpan(text: text.substring(at)));
 
-    return SelectableText.rich(TextSpan(style: style, children: spans));
+    return Text.rich(TextSpan(style: style, children: spans));
   }
 }
 

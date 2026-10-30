@@ -337,6 +337,10 @@ class ChatMessage {
   String get state => json['state'] as String? ?? 'queued';
   int? get acked => json['acked'] as int?;
   int get pending => json['pending'] as int? ?? 0;
+  bool get favorite => json['fav'] as bool? ?? false;
+  bool get pinned => json['pinned'] as bool? ?? false;
+  bool get quoted => json['quoted'] as bool? ?? false;
+  int get reply => json['reply'] as int? ?? 0;
   DateTime get time =>
       DateTime.fromMillisecondsSinceEpoch(json['time'] as int? ?? 0);
 }
@@ -813,8 +817,8 @@ class Vigil {
     jsonDecode(await _invoke('chat', peer)) as Map<String, dynamic>,
   );
 
-  Future<void> send(String peer, String text) async {
-    await _invoke('chatSend', {'peer': peer, 'text': text});
+  Future<void> send(String peer, String text, {int reply = 0}) async {
+    await _invoke('chatSend', {'peer': peer, 'text': text, 'reply': reply});
     await refresh();
   }
 
@@ -936,6 +940,16 @@ class Vigil {
   }
 
   Future<void> read(String peer) => _invoke('chatRead', peer);
+
+  Future<void> favorite(String peer, int ref, bool on) async {
+    await _invoke('chatFavorite', {'peer': peer, 'ref': ref, 'on': on});
+    await refresh();
+  }
+
+  Future<void> pin(String peer, int ref, bool on) async {
+    await _invoke('chatPin', {'peer': peer, 'ref': ref, 'on': on});
+    await refresh();
+  }
 
   Future<void> openChat(String peer, bool on) =>
       _invoke('chatOpen', {'peer': peer, 'on': on});

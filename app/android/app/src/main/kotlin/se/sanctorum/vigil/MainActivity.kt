@@ -3,10 +3,13 @@ package se.sanctorum.vigil
 import android.Manifest
 import android.app.NotificationManager
 import android.content.ClipboardManager
+import android.content.ContentValues
 import android.content.Context
 import android.content.ActivityNotFoundException
 import android.content.Intent
 import android.net.Uri
+import android.os.Environment
+import android.provider.MediaStore
 import android.provider.OpenableColumns
 import android.provider.Settings
 import java.io.ByteArrayOutputStream
@@ -254,27 +257,37 @@ class MainActivity : FlutterActivity() {
                 "chatSend" -> {
                     val id = chat(call.argument<String>("peer")!!)
                     val text = call.argument<String>("text")!!
+                    val reply = call.argument<Number>("reply")?.toLong() ?: 0L
                     val bytes = text.toByteArray()
                     val group = ChatVault.group(id)
+                    val vault = Chats.vault(this)
+                    var max = MESSAGE_MAX
+                    var quote: ChatVault.Quote? = null
 
-                    require(bytes.isNotEmpty() && bytes.size <= MESSAGE_MAX) {
-                        "A message is at most $MESSAGE_MAX bytes."
+                    if (reply != 0L) {
+                        quote = vault.quoted(id, reply)
+                        max = REPLY_MAX
+                    }
+
+                    require(bytes.isNotEmpty() && bytes.size <= max) {
+                        "A message is at most $max bytes."
                     }
 
                     require(group == null || group == Chats.group(this)) {
                         "You are not in this group anymore."
                     }
 
-                    val vault = Chats.vault(this)
                     val ref = vault.ref()
+                    val author = quote?.peer ?: 0
+                    val hash = quote?.digest ?: 0L
 
-                    require(group == null || Vigil.chatGroupSend(ref, bytes)) {
+                    require(group == null || Vigil.chatGroupSend(ref, bytes, author, hash)) {
                         "Gospel is not running, group messages only go to members that are around."
                     }
 
-                    vault.send(id, text, ref)
+                    vault.send(id, text, ref, quote)
                     if (group == null) {
-                        Vigil.chatSend(id.toInt(16), ref, bytes)
+                        Vigil.chatSend(id.toInt(16), ref, bytes, author, hash)
                     }
 
                     Chats.changed()
@@ -395,20 +408,41 @@ class MainActivity : FlutterActivity() {
                     val id = chat(call.argument<String>("peer")!!)
                     val file = call.argument<String>("data")!!
                     val name = call.argument<String>("name")!!
+                    val photo = call.argument<String>("media") == "image"
 
-                    require(saving == null) { "Already saving a file." }
+                    if (photo && Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                        background(result) { photoSave(id, file, name) }
+                    } else {
+                        require(saving == null) { "Already saving a file." }
 
-                    saving = Triple(id, file, result)
-                    startActivityForResult(
-                        Intent(Intent.ACTION_CREATE_DOCUMENT).addCategory(Intent.CATEGORY_OPENABLE)
-                            .setType(Files.type(name)).putExtra(Intent.EXTRA_TITLE, name),
-                        REQUEST_SAVE
-                    )
+                        saving = Triple(id, file, result)
+                        startActivityForResult(
+                            Intent(Intent.ACTION_CREATE_DOCUMENT).addCategory(Intent.CATEGORY_OPENABLE)
+                                .setType(Files.type(name)).putExtra(Intent.EXTRA_TITLE, name),
+                            REQUEST_SAVE
+                        )
+                    }
                 }
                 "chatRead" -> {
                     val id = chat(call.arguments as String)
                     Chats.vault(this).read(id)
                     Chats.seen(this, id)
+                    Chats.changed()
+                    result.success("")
+                }
+                "chatFavorite" -> {
+                    val id = chat(call.argument<String>("peer")!!)
+                    Chats.vault(this).favorite(
+                        id, call.argument<Number>("ref")!!.toLong(), call.argument<Boolean>("on")!!
+                    )
+                    Chats.changed()
+                    result.success("")
+                }
+                "chatPin" -> {
+                    val id = chat(call.argument<String>("peer")!!)
+                    Chats.vault(this).pin(
+                        id, call.argument<Number>("ref")!!.toLong(), call.argument<Boolean>("on")!!
+                    )
                     Chats.changed()
                     result.success("")
                 }
@@ -888,6 +922,37 @@ class MainActivity : FlutterActivity() {
         return "saved"
     }
 
+    private fun photoSave(id: String, file: String, name: String): String {
+        val data = Chats.vault(this).data(id, file) ?: throw IllegalArgumentException("That image is gone.")
+        val values = ContentValues().apply {
+            put(MediaStore.Images.Media.DISPLAY_NAME, name)
+            put(MediaStore.Images.Media.MIME_TYPE, Files.type(name))
+            put(MediaStore.Images.Media.RELATIVE_PATH, "${Environment.DIRECTORY_PICTURES}/Vigil")
+            put(MediaStore.Images.Media.IS_PENDING, 1)
+        }
+
+        try {
+            val uri = contentResolver.insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, values)
+                ?: throw IOException("Cannot add the image to the gallery.")
+
+            try {
+                val out = contentResolver.openOutputStream(uri) ?: throw IOException("Cannot write to $uri.")
+                out.use { it.write(data) }
+            } catch (e: IOException) {
+                contentResolver.delete(uri, null, null)
+                throw e
+            }
+
+            values.clear()
+            values.put(MediaStore.Images.Media.IS_PENDING, 0)
+            contentResolver.update(uri, values, null, null)
+        } finally {
+            data.fill(0)
+        }
+
+        return "saved"
+    }
+
     private fun background(result: MethodChannel.Result, work: () -> Any?) {
         Thread {
             val reply: () -> Unit = try {
@@ -931,6 +996,7 @@ class MainActivity : FlutterActivity() {
         const val ERASE_WAIT_MS = 3000L
         const val DATA_MAX = 4 * 1024 * 1024
         const val MESSAGE_MAX = 512
+        const val REPLY_MAX = MESSAGE_MAX - 9
         const val VIDEO_WIDTH = 960
         const val VIDEO_HEIGHT = 540
     }

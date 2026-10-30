@@ -151,6 +151,15 @@ struct chat_blob {
 TAILQ_HEAD(chat_blob_list, chat_blob);
 
 /*
+ * The message a reply is for, who wrote it and its hash. A hash of 0 means
+ * there is no reply and an author of 0 is us.
+ */
+struct chat_quote {
+	u_int8_t		author;
+	u_int64_t		hash;
+};
+
+/*
  * A message we can send to the peer. These wait in the outbox of our peer
  * until they are ack'd and potentially on the sendq of the active tunnel
  * for said peer.
@@ -165,6 +174,7 @@ struct chat_msg {
 	int			pending;
 
 	struct chat_blob	*blob;
+	struct chat_quote	quote;
 	struct chat_tally	*tally;
 
 	struct vigil_chat_frame	frame;
@@ -353,6 +363,7 @@ struct chat_command {
 
 	size_t				len;
 	struct chat_blob		*blob;
+	struct chat_quote		quote;
 	u_int8_t			data[VIGIL_CHAT_MESSAGE_MAX];
 
 	TAILQ_ENTRY(chat_command)	list;
@@ -372,6 +383,7 @@ struct chat_event {
 	u_int64_t			value;
 	u_int32_t			acked;
 	u_int32_t			pending;
+	struct chat_quote		quote;
 
 	char				nick[VIGIL_CHAT_NICK_MAX + 1];
 	char				text[VIGIL_CHAT_MESSAGE_MAX + 1];
@@ -394,7 +406,8 @@ static void	chat_group_leave(void);
 static void	chat_group_update(void);
 static void	chat_group_join(u_int16_t);
 static void	chat_group_data(u_int64_t, struct chat_blob *);
-static void	chat_group_send(u_int64_t, const u_int8_t *, size_t);
+static void	chat_group_send(u_int64_t, const struct chat_quote *,
+		    const u_int8_t *, size_t);
 
 static void	chat_tallies_free(void);
 static void	chat_tallies_report(void);
@@ -433,7 +446,8 @@ static void	chat_member_report(struct chat_peer *, u_int16_t, int);
 static void	chat_heaven_input(struct kyrka_packet *, u_int64_t, void *);
 static void	chat_hb_recv(struct chat_tunnel *, struct vigil_chat_frame *);
 static void	chat_purgatory_input(struct kyrka_packet *, u_int64_t, void *);
-static void	chat_text_recv(struct chat_tunnel *, u_int64_t, u_int8_t *,
+static void	chat_text_recv(struct chat_tunnel *, u_int64_t,
+		    const struct chat_quote *, u_int8_t *,
 		    u_int16_t);
 
 static void	chat_ack_recv(struct chat_tunnel *, u_int64_t);
@@ -449,7 +463,7 @@ static void	chat_msg_queue(struct chat_tunnel *, struct chat_msg *);
 
 static void	chat_outbox_free(struct chat_peer *);
 static void	chat_outbox_add(struct chat_peer *, u_int64_t,
-		    const u_int8_t *, size_t);
+		    const struct chat_quote *, const u_int8_t *, size_t);
 static void	chat_outbox_lookup(struct chat_tunnel *,
 		    struct chat_msg_list **);
 static void	chat_outbox_data(struct chat_peer *, u_int64_t,
@@ -461,7 +475,14 @@ static void	chat_command_free(struct chat_command *);
 static void	chat_command_next(struct chat_command **);
 static int	chat_command_insert(struct chat_command *);
 static int	chat_command_queue(int, u_int8_t, u_int64_t,
-		    const void *, size_t);
+		    const struct chat_quote *, const void *, size_t);
+
+static void	chat_reply_frame(struct vigil_chat_frame *,
+		    const struct chat_msg *);
+static void	chat_reply_recv(struct chat_tunnel *, u_int64_t,
+		    u_int8_t *, u_int16_t);
+static int	chat_reply_report(struct chat_tunnel *, u_int64_t,
+		    const struct chat_quote *, const u_int8_t *, size_t);
 
 static void	chat_blob_release(struct chat_blob *);
 static int	chat_blob_room(u_int8_t, u_int64_t, size_t);
@@ -744,11 +765,41 @@ vigil_chat_poke(void)
 int
 vigil_chat_send(u_int8_t peer, u_int64_t ref, const char *text, size_t len)
 {
+	int		ret;
+
 	PRECOND(peer > 0 && peer < KYRKA_PEERS_PER_FLOCK);
 	PRECOND(text != NULL);
 	PRECOND(len > 0 && len <= VIGIL_CHAT_MESSAGE_MAX);
 
-	return (chat_command_queue(CHAT_COMMAND_SEND, peer, ref, text, len));
+	ret = chat_command_queue(CHAT_COMMAND_SEND,
+	    peer, ref, NULL, text, len);
+
+	return (ret);
+}
+
+/*
+ * Queue a reply for the given peer to be sent, author is who wrote the
+ * message we reply to (0 for us) and hash is the hash of that message.
+ */
+int
+vigil_chat_reply(u_int8_t peer, u_int64_t ref, u_int8_t author,
+    u_int64_t hash, const char *text, size_t len)
+{
+	int			ret;
+	struct chat_quote	quote;
+
+	PRECOND(peer > 0 && peer < KYRKA_PEERS_PER_FLOCK);
+	PRECOND(hash != 0);
+	PRECOND(text != NULL);
+	PRECOND(len > 0 && len <= VIGIL_CHAT_REPLY_MAX);
+
+	quote.hash = hash;
+	quote.author = author;
+
+	ret = chat_command_queue(CHAT_COMMAND_SEND,
+	    peer, ref, &quote, text, len);
+
+	return (ret);
 }
 
 /*
@@ -757,7 +808,7 @@ vigil_chat_send(u_int8_t peer, u_int64_t ref, const char *text, size_t len)
 void
 vigil_chat_group(u_int16_t id)
 {
-	(void)chat_command_queue(CHAT_COMMAND_GROUP, 0, id, NULL, 0);
+	(void)chat_command_queue(CHAT_COMMAND_GROUP, 0, id, NULL, NULL, 0);
 }
 
 /*
@@ -778,10 +829,38 @@ vigil_chat_group_typing(int on)
 int
 vigil_chat_group_send(u_int64_t ref, const char *text, size_t len)
 {
+	int		ret;
+
 	PRECOND(text != NULL);
 	PRECOND(len > 0 && len <= VIGIL_CHAT_MESSAGE_MAX);
 
-	return (chat_command_queue(CHAT_COMMAND_GROUP_SEND, 0, ref, text, len));
+	ret = chat_command_queue(CHAT_COMMAND_GROUP_SEND,
+	    0, ref, NULL, text, len);
+
+	return (ret);
+}
+
+/*
+ * Queue a reply for our group, see vigil_chat_reply().
+ */
+int
+vigil_chat_group_reply(u_int64_t ref, u_int8_t author, u_int64_t hash,
+    const char *text, size_t len)
+{
+	int			ret;
+	struct chat_quote	quote;
+
+	PRECOND(hash != 0);
+	PRECOND(text != NULL);
+	PRECOND(len > 0 && len <= VIGIL_CHAT_REPLY_MAX);
+
+	quote.hash = hash;
+	quote.author = author;
+
+	ret = chat_command_queue(CHAT_COMMAND_GROUP_SEND,
+	    0, ref, &quote, text, len);
+
+	return (ret);
 }
 
 /*
@@ -888,7 +967,7 @@ vigil_chat_forget(u_int8_t peer)
 {
 	PRECOND(peer > 0 && peer < KYRKA_PEERS_PER_FLOCK);
 
-	(void)chat_command_queue(CHAT_COMMAND_FORGET, peer, 0, NULL, 0);
+	(void)chat_command_queue(CHAT_COMMAND_FORGET, peer, 0, NULL, NULL, 0);
 }
 
 /*
@@ -897,7 +976,8 @@ vigil_chat_forget(u_int8_t peer)
 void
 vigil_chat_stored(u_int64_t token)
 {
-	(void)chat_command_queue(CHAT_COMMAND_STORED, 0, token, NULL, 0);
+	(void)chat_command_queue(CHAT_COMMAND_STORED,
+	    0, token, NULL, NULL, 0);
 }
 
 /*
@@ -1535,7 +1615,8 @@ chat_group_update(void)
  * member is pending in the tally of the message until it acks.
  */
 static void
-chat_group_send(u_int64_t ref, const u_int8_t *data, size_t len)
+chat_group_send(u_int64_t ref, const struct chat_quote *quote,
+    const u_int8_t *data, size_t len)
 {
 	int			idx;
 	struct chat_tunnel	*tun;
@@ -1572,7 +1653,9 @@ chat_group_send(u_int64_t ref, const u_int8_t *data, size_t len)
 		msg->tally = tally;
 		msg->frame.len = htobe16(len);
 		msg->frame.type = VIGIL_CHAT_TYPE_TEXT;
+
 		memcpy(msg->frame.data, data, len);
+		memcpy(&msg->quote, quote, sizeof(*quote));
 
 		TAILQ_INSERT_TAIL(&tun->waitq, msg, wlist);
 		chat_msg_queue(tun, msg);
@@ -2285,7 +2368,10 @@ chat_heaven_input(struct kyrka_packet *pkt, u_int64_t seq, void *udata)
 
 	switch (frame->type) {
 	case VIGIL_CHAT_TYPE_TEXT:
-		chat_text_recv(tun, id, frame->data, len);
+		chat_text_recv(tun, id, NULL, frame->data, len);
+		break;
+	case VIGIL_CHAT_TYPE_REPLY:
+		chat_reply_recv(tun, id, frame->data, len);
 		break;
 	case VIGIL_CHAT_TYPE_ACK:
 		chat_ack_recv(tun, id);
@@ -2499,6 +2585,10 @@ chat_frame_send(struct chat_tunnel *tun, struct chat_msg *msg)
 		msg->pending = 0;
 		memcpy(frame, &msg->frame, sizeof(*frame));
 
+		if (msg->quote.hash != 0 &&
+		    (tun->features & VIGIL_CHAT_FEATURE_REPLY))
+			chat_reply_frame(frame, msg);
+
 		if (msg->frame.type == VIGIL_CHAT_TYPE_TEXT) {
 			msg->age = vigil->now;
 
@@ -2517,7 +2607,8 @@ chat_frame_send(struct chat_tunnel *tun, struct chat_msg *msg)
 
 		hb = (struct vigil_chat_hb *)frame->data;
 		hb->uid = tun->local_uid;
-		hb->features = VIGIL_CHAT_FEATURE_DATA;
+		hb->features = VIGIL_CHAT_FEATURE_DATA |
+		    VIGIL_CHAT_FEATURE_REPLY;
 
 		if (tun->group != 0)
 			hb->typing = vigil_atomic_read(&group_typing);
@@ -2671,9 +2762,10 @@ chat_hb_recv(struct chat_tunnel *tun, struct vigil_chat_frame *frame)
  * did not store it in time we hand it over again under a new token.
  */
 static void
-chat_text_recv(struct chat_tunnel *tun, u_int64_t id, u_int8_t *data,
-    u_int16_t len)
+chat_text_recv(struct chat_tunnel *tun, u_int64_t id,
+    const struct chat_quote *quote, u_int8_t *data, u_int16_t len)
 {
+	int			ret;
 	u_int32_t		idx;
 	u_int64_t		hash;
 	struct chat_seen	*seen;
@@ -2711,8 +2803,14 @@ chat_text_recv(struct chat_tunnel *tun, u_int64_t id, u_int8_t *data,
 	tokens++;
 	chat_utf8_normalize(data, len);
 
-	if (chat_event_queue(CHAT_EVENT_MESSAGE,
-	    tun->peer, tun->group, tokens, data, len) == -1)
+	if (quote != NULL) {
+		ret = chat_reply_report(tun, tokens, quote, data, len);
+	} else {
+		ret = chat_event_queue(CHAT_EVENT_MESSAGE,
+		    tun->peer, tun->group, tokens, data, len);
+	}
+
+	if (ret == -1)
 		return;
 
 	if (seen == NULL)
@@ -2726,6 +2824,101 @@ chat_text_recv(struct chat_tunnel *tun, u_int64_t id, u_int8_t *data,
 
 	if (tun->group == 0)
 		tun->peer->active = vigil->now;
+}
+
+/*
+ * We got a reply from our peer, take who wrote the message it replies to
+ * and hand it over like any other message.
+ */
+static void
+chat_reply_recv(struct chat_tunnel *tun, u_int64_t id, u_int8_t *data,
+    u_int16_t len)
+{
+	size_t			head;
+	struct chat_quote	quote;
+	struct vigil_chat_reply	*reply;
+
+	PRECOND(tun != NULL);
+	PRECOND(id != 0);
+	PRECOND(data != NULL);
+	PRECOND(len <= VIGIL_CHAT_MESSAGE_MAX);
+
+	reply = (struct vigil_chat_reply *)data;
+	head = sizeof(*reply) - sizeof(reply->text);
+
+	if (len < head)
+		return;
+
+	quote.author = reply->author;
+	quote.hash = be64toh(reply->hash);
+
+	if (quote.author == (vigil->gospel->spi & 0xff))
+		quote.author = 0;
+
+	if (quote.hash == 0) {
+		chat_text_recv(tun, id, NULL, reply->text, len - head);
+		return;
+	}
+
+	chat_text_recv(tun, id, &quote, reply->text, len - head);
+}
+
+/*
+ * Turn the given frame into a reply, for peers that take them.
+ */
+static void
+chat_reply_frame(struct vigil_chat_frame *frame, const struct chat_msg *msg)
+{
+	u_int16_t		len;
+	struct vigil_chat_reply	*reply;
+
+	PRECOND(frame != NULL);
+	PRECOND(msg != NULL);
+	PRECOND(msg->quote.hash != 0);
+
+	len = be16toh(msg->frame.len);
+	reply = (struct vigil_chat_reply *)frame->data;
+
+	PRECOND(len <= sizeof(reply->text));
+
+	reply->author = msg->quote.author;
+	reply->hash = htobe64(msg->quote.hash);
+	memcpy(reply->text, msg->frame.data, len);
+
+	frame->type = VIGIL_CHAT_TYPE_REPLY;
+	frame->len = htobe16(len + sizeof(*reply) - sizeof(reply->text));
+}
+
+/*
+ * Queue a message event for a reply we got, returns -1 if there are
+ * too many.
+ */
+static int
+chat_reply_report(struct chat_tunnel *tun, u_int64_t token,
+    const struct chat_quote *quote, const u_int8_t *data, size_t len)
+{
+	struct chat_event	*evt;
+
+	PRECOND(tun != NULL);
+	PRECOND(quote != NULL);
+	PRECOND(quote->hash != 0);
+	PRECOND(data != NULL);
+	PRECOND(len <= VIGIL_CHAT_MESSAGE_MAX);
+
+	evt = calloc(1, sizeof(*evt));
+	if (evt == NULL)
+		fatal("calloc: failed to allocate chat event");
+
+	evt->value = token;
+	evt->group = tun->group;
+	evt->peer = tun->peer->id;
+	evt->type = CHAT_EVENT_MESSAGE;
+
+	memcpy(evt->text, data, len);
+	memcpy(&evt->quote, quote, sizeof(*quote));
+	memcpy(evt->nick, tun->peer->nick, sizeof(evt->nick));
+
+	return (chat_event_insert(evt));
 }
 
 /*
@@ -2784,6 +2977,9 @@ chat_msg_resend(struct chat_tunnel *tun)
 		if ((vigil->now - msg->age) < CHAT_RESEND)
 			continue;
 
+		if (msg->quote.hash != 0 && !tun->heard)
+			continue;
+
 		msg->pending = 1;
 		TAILQ_INSERT_TAIL(&tun->sendq, msg, slist);
 	}
@@ -2807,6 +3003,12 @@ chat_msg_queue(struct chat_tunnel *tun, struct chat_msg *msg)
 		return;
 	}
 
+	/* Replies wait until we know if our peer takes them. */
+	if (msg->quote.hash != 0 && !tun->heard) {
+		msg->age = 0;
+		return;
+	}
+
 	msg->pending = 1;
 	TAILQ_INSERT_TAIL(&tun->sendq, msg, slist);
 }
@@ -2816,7 +3018,7 @@ chat_msg_queue(struct chat_tunnel *tun, struct chat_msg *msg)
  */
 static void
 chat_outbox_add(struct chat_peer *peer, u_int64_t ref,
-    const u_int8_t *data, size_t len)
+    const struct chat_quote *quote, const u_int8_t *data, size_t len)
 {
 	struct chat_msg		*msg;
 
@@ -2836,7 +3038,9 @@ chat_outbox_add(struct chat_peer *peer, u_int64_t ref,
 	msg->ref = ref;
 	msg->frame.len = htobe16(len);
 	msg->frame.type = VIGIL_CHAT_TYPE_TEXT;
+
 	memcpy(msg->frame.data, data, len);
+	memcpy(&msg->quote, quote, sizeof(*quote));
 
 	TAILQ_INSERT_TAIL(&peer->outbox, msg, wlist);
 
@@ -2917,7 +3121,7 @@ chat_tunnel_ack(struct chat_tunnel *tun, u_int64_t token)
  */
 static int
 chat_command_queue(int type, u_int8_t peer, u_int64_t value,
-    const void *data, size_t len)
+    const struct chat_quote *quote, const void *data, size_t len)
 {
 	struct chat_command	*cmd;
 
@@ -2937,6 +3141,9 @@ chat_command_queue(int type, u_int8_t peer, u_int64_t value,
 	cmd->type = type;
 	cmd->peer = peer;
 	cmd->value = value;
+
+	if (quote != NULL)
+		memcpy(&cmd->quote, quote, sizeof(*quote));
 
 	if (len > 0)
 		memcpy(cmd->data, data, len);
@@ -3105,9 +3312,12 @@ chat_commands_run(void)
 
 		switch (cmd->type) {
 		case CHAT_COMMAND_SEND:
+			if (cmd->quote.hash != 0 && cmd->quote.author == 0)
+				cmd->quote.author = local;
+
 			if (cmd->peer != local) {
-				chat_outbox_add(peer,
-				    cmd->value, cmd->data, cmd->len);
+				chat_outbox_add(peer, cmd->value,
+				    &cmd->quote, cmd->data, cmd->len);
 			}
 			break;
 		case CHAT_COMMAND_FORGET:
@@ -3120,7 +3330,11 @@ chat_commands_run(void)
 			chat_group_join(cmd->value & 0xffff);
 			break;
 		case CHAT_COMMAND_GROUP_SEND:
-			chat_group_send(cmd->value, cmd->data, cmd->len);
+			if (cmd->quote.hash != 0 && cmd->quote.author == 0)
+				cmd->quote.author = local;
+
+			chat_group_send(cmd->value,
+			    &cmd->quote, cmd->data, cmd->len);
 			break;
 		case CHAT_COMMAND_DATA:
 			if (cmd->peer != local)
@@ -3306,6 +3520,12 @@ chat_event_render(struct vigil_buf *buf, struct chat_event *evt, int first)
 		vigil_buf_quote(buf, evt->nick);
 		vigil_buf_appendf(buf, ",\"text\":");
 		vigil_buf_quote(buf, evt->text);
+
+		if (evt->quote.hash != 0) {
+			vigil_buf_appendf(buf,
+			    ",\"author\":\"%02x\",\"hash\":\"%016" PRIx64 "\"",
+			    evt->quote.author, evt->quote.hash);
+		}
 		break;
 	case CHAT_EVENT_SENT:
 		vigil_buf_appendf(buf,

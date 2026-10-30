@@ -275,7 +275,8 @@ final class VigilPlugin: NSObject, FlutterPlugin, UIDocumentPickerDelegate,
                 result(FlutterError(code: "failed", message: "\(error)", details: nil))
             }
         case "chats", "chat", "chatSend", "chatImageSend", "chatRead", "chatOpen", "chatTyping",
-             "chatImageData", "chatDelete", "chatSettings", "chatGroup":
+             "chatImageData", "chatDelete", "chatSettings", "chatGroup", "chatFavorite",
+             "chatPin":
             do {
                 result(try chat(call))
             } catch let error as ChatVault.Locked {
@@ -1093,9 +1094,16 @@ final class VigilPlugin: NSObject, FlutterPlugin, UIDocumentPickerDelegate,
         case "chatSend":
             let text = args["text"] as? String ?? ""
             let size = text.utf8.count
+            var max = Int(VIGIL_CHAT_MESSAGE_MAX)
+            var quote: ChatVault.Quote?
 
-            guard size > 0, size <= Int(VIGIL_CHAT_MESSAGE_MAX) else {
-                throw ChatVault.Failure(description: "A message is at most \(VIGIL_CHAT_MESSAGE_MAX) bytes.")
+            if let reply = (args["reply"] as? NSNumber)?.int64Value, reply != 0 {
+                quote = try vault.quoted(hex, ref: reply)
+                max = Int(VIGIL_CHAT_REPLY_MAX)
+            }
+
+            guard size > 0, size <= max else {
+                throw ChatVault.Failure(description: "A message is at most \(max) bytes.")
             }
 
             if let group, Int(group) != defaults.integer(forKey: "chatGroup") {
@@ -1107,10 +1115,13 @@ final class VigilPlugin: NSObject, FlutterPlugin, UIDocumentPickerDelegate,
                     description: "Gospel is not running, group messages only go to members that are around.")
             }
 
-            let ref = try vault.send(hex, text: text)
+            let ref = try vault.send(hex, text: text, quote: quote)
+            let encoded = Data(text.utf8).base64EncodedString()
 
-            if group != nil {
-                VigilCall.shared.send?("chat-group-send \(ref) \(Data(text.utf8).base64EncodedString())")
+            if group != nil, let quote {
+                VigilCall.shared.send?("chat-group-send \(ref) \(encoded) \(quote.author) \(quote.hash)")
+            } else if group != nil {
+                VigilCall.shared.send?("chat-group-send \(ref) \(encoded)")
             } else {
                 VigilCall.shared.send?("chat")
             }
@@ -1130,6 +1141,22 @@ final class VigilPlugin: NSObject, FlutterPlugin, UIDocumentPickerDelegate,
         case "chatRead":
             try vault.read(hex)
             seen(hex)
+            version += 1
+            return ""
+        case "chatFavorite":
+            guard let ref = (args["ref"] as? NSNumber)?.int64Value else {
+                throw ChatVault.Failure(description: "There is no such message.")
+            }
+
+            try vault.favorite(hex, ref: ref, on: args["on"] as? Bool ?? false)
+            version += 1
+            return ""
+        case "chatPin":
+            guard let ref = (args["ref"] as? NSNumber)?.int64Value else {
+                throw ChatVault.Failure(description: "There is no such message.")
+            }
+
+            try vault.pin(hex, ref: ref, on: args["on"] as? Bool ?? false)
             version += 1
             return ""
         case "chatOpen":

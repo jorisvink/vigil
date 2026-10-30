@@ -214,6 +214,9 @@ enum GlyphKind {
   mic,
   play,
   stop,
+  star,
+  pin,
+  reply,
 }
 
 class Glyph extends StatelessWidget {
@@ -433,6 +436,35 @@ class _GlyphPainter extends CustomPainter {
         );
       case GlyphKind.stop:
         canvas.drawRect(const Rect.fromLTWH(6, 6, 12, 12), solid);
+      case GlyphKind.reply:
+        poly([9, 5, 4, 10, 9, 15]);
+        poly([4, 10, 15, 10, 20, 15, 20, 19]);
+      case GlyphKind.pin:
+        poly([8, 3, 16, 3, 15, 9, 18, 14, 6, 14, 9, 9], close: true);
+        poly([12, 14, 12, 21]);
+      case GlyphKind.star:
+        poly([
+          12,
+          3.5,
+          14.1,
+          9.6,
+          20.6,
+          9.7,
+          15.4,
+          13.6,
+          17.3,
+          19.8,
+          12,
+          16.1,
+          6.7,
+          19.8,
+          8.6,
+          13.6,
+          3.4,
+          9.7,
+          9.9,
+          9.6,
+        ], close: true);
     }
   }
 

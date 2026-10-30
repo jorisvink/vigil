@@ -20,13 +20,15 @@
  *	$ ./tests/chatter [-n nick] [-m peer:text] [-g group] [-G text]
  *	    [-i peer:file] [-I file] [-f peer:file] [-F file] [-o dir]
  *	    [-t peer] [-T] [-O peer] [-e count] [-x secs] [-l count]
- *	    [-D datadir] <gospel>
+ *	    [-r author:hash] [-D datadir] <gospel>
  *
  * With -m we send the text to the given peer, -m may be given more
  * than once. With -g we join the given group and with -G we send the
  * text to it once a member is online, -G may be given more than once.
  * With -t we keep typing to the given peer and with -T to our group.
  * With -O we keep the chat with the given peer open.
+ * With -r every -m and -G is a reply to the message with the given hash
+ * written by the given author, 0 is us.
  * With -i we send the image in the given file to the given peer and with
  * -I to our group, -f and -F do the same for any file. All of them may be
  * given more than once. Data we get is written to the directory given
@@ -112,6 +114,10 @@ static int		typing_group = 0;
 /* Who we keep a chat open with. */
 static long		open_peer = 0;
 
+/* The message our messages reply to, if any. */
+static long		reply_author = 0;
+static u_int64_t	reply_hash = 0;
+
 static void
 usage(void)
 {
@@ -119,7 +125,7 @@ usage(void)
 	    "[-G text] [-i peer:file] [-I file] [-f peer:file] [-F file] "
 	    "[-a peer:file] [-A file] "
 	    "[-o dir] [-t peer] [-T] [-O peer] [-e count] [-x secs] "
-	    "[-l count] [-D datadir] <gospel>\n");
+	    "[-l count] [-r author:hash] [-D datadir] <gospel>\n");
 	exit(1);
 }
 
@@ -144,7 +150,7 @@ main(int argc, char **argv)
 	delivered = 0;
 
 	while ((ch = getopt(argc, argv,
-	    "a:A:D:e:f:F:g:G:i:I:l:m:n:o:O:t:Tx:")) != -1) {
+	    "a:A:D:e:f:F:g:G:i:I:l:m:n:o:O:r:t:Tx:")) != -1) {
 		switch (ch) {
 		case 'D':
 			datadir = optarg;
@@ -245,6 +251,17 @@ main(int argc, char **argv)
 			    open_peer >= KYRKA_PEERS_PER_FLOCK)
 				usage();
 			break;
+		case 'r':
+			reply_author = strtol(optarg, &ep, 16);
+			if (*ep != ':')
+				usage();
+			if (reply_author < 0 ||
+			    reply_author >= KYRKA_PEERS_PER_FLOCK)
+				usage();
+			reply_hash = strtoull(ep + 1, &ep, 16);
+			if (*ep != '\0' || reply_hash == 0)
+				usage();
+			break;
 		case 'x':
 			quit = atoi(optarg);
 			break;
@@ -301,7 +318,15 @@ main(int argc, char **argv)
 				session = strtol(ep, NULL, 10);
 
 				for (idx = 0; idx < message_count; idx++) {
-					if (vigil_chat_send(message_peer[idx],
+					if (reply_hash != 0 &&
+					    vigil_chat_reply(message_peer[idx],
+					    idx + 1, reply_author, reply_hash,
+					    message_text[idx],
+					    strlen(message_text[idx])) == -1)
+						fatal("vigil_chat_reply");
+
+					if (reply_hash == 0 &&
+					    vigil_chat_send(message_peer[idx],
 					    idx + 1, message_text[idx],
 					    strlen(message_text[idx])) == -1)
 						fatal("vigil_chat_send");
@@ -333,7 +358,15 @@ main(int argc, char **argv)
 			    (ep = strstr(p, CHATTER_GROUP)) != NULL &&
 			    strstr(ep, "\"online\":true") != NULL) {
 				for (idx = 0; idx < group_count; idx++) {
-					if (vigil_chat_group_send(1000 + idx,
+					if (reply_hash != 0 &&
+					    vigil_chat_group_reply(1000 + idx,
+					    reply_author, reply_hash,
+					    group_text[idx],
+					    strlen(group_text[idx])) == -1)
+						fatal("vigil_chat_group_reply");
+
+					if (reply_hash == 0 &&
+					    vigil_chat_group_send(1000 + idx,
 					    group_text[idx],
 					    strlen(group_text[idx])) == -1)
 						fatal("vigil_chat_group_send");

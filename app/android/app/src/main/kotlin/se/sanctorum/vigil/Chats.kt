@@ -115,8 +115,9 @@ object Chats {
                         val time = System.currentTimeMillis()
 
                         val nick = event.optString("nick")
+                        val quote = ChatVault.quote(event.optString("author"), event.optString("hash"))
 
-                        vault.deliver(id, peer, nick, text, time)
+                        vault.deliver(id, peer, nick, text, time, quote = quote)
                         Vigil.chatStored(event.getLong("token"))
 
                         if (!foreground || opened != id) {
@@ -190,7 +191,12 @@ object Chats {
             }
 
             if (!entry.has("data")) {
-                Vigil.chatSend(chat.toInt(16), ref, entry.getString("text").toByteArray())
+                val quote = ChatVault.quote(entry.optString("qa"), entry.optString("qh"))
+
+                Vigil.chatSend(
+                    chat.toInt(16), ref, entry.getString("text").toByteArray(),
+                    quote?.peer ?: 0, quote?.digest ?: 0L
+                )
                 continue
             }
 
