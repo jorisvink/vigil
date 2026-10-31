@@ -2,6 +2,7 @@ package se.sanctorum.vigil
 
 import android.content.Context
 import android.net.Uri
+import android.util.Log
 import android.webkit.MimeTypeMap
 import java.io.File
 import java.io.FileOutputStream
@@ -58,11 +59,15 @@ object Files {
     fun wipe(context: Context) {
         for (file in folder(context).listFiles() ?: emptyArray()) {
             FileOutputStream(file).use { it.write(ByteArray(file.length().toInt())) }
-            file.delete()
+
+            if (!file.delete()) {
+                Log.e(TAG, "could not remove ${file.name}")
+            }
         }
     }
 
     private fun folder(context: Context): File = File(context.cacheDir, "open").apply { mkdirs() }
 
     private const val NAME_MAX = 126
+    private const val TAG = "vigil"
 }

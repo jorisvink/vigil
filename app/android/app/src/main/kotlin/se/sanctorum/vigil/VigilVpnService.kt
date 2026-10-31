@@ -233,7 +233,10 @@ class VigilVpnService : VpnService() {
             null
         }
 
-        Vigil.gospel(config)
+        if (!Vigil.gospel(config)) {
+            Log.w(TAG, "Gospel was not attached, vigil is not running")
+        }
+
         config?.fill(0)
 
         return START_STICKY

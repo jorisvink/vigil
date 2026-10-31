@@ -169,7 +169,7 @@ final class ChatVault {
                 } catch let error as Locked {
                     throw error
                 } catch is CryptoKitError {
-                    wipe(file)
+                    try wipe(file)
                     continue
                 }
 
@@ -177,7 +177,7 @@ final class ChatVault {
                       let peer = message["peer"] as? String,
                       let chat = Self.chat(message["chat"] as? String ?? peer),
                       let text = message["text"] as? String else {
-                    wipe(file)
+                    try wipe(file)
                     continue
                 }
 
@@ -202,7 +202,7 @@ final class ChatVault {
 
                 try append(chat, record)
 
-                wipe(file)
+                try wipe(file)
             }
 
             let receipts = try folder(dir).appendingPathComponent("receipts.box")
@@ -226,7 +226,7 @@ final class ChatVault {
                     ])
                 }
 
-                wipe(receipts)
+                try wipe(receipts)
             }
         }
     }
@@ -672,13 +672,13 @@ final class ChatVault {
             if history?.chat == chat {
                 history = nil
             }
-            remove("key.\(chat)")
-            wipe(try folder(dir).appendingPathComponent("\(chat).log"))
+            try remove("key.\(chat)")
+            try wipe(try folder(dir).appendingPathComponent("\(chat).log"))
 
             let names = (try? FileManager.default.contentsOfDirectory(atPath: try folder(dir).path)) ?? []
 
             for name in names where Self.data(name, of: chat) {
-                wipe(try folder(dir).appendingPathComponent(name))
+                try wipe(try folder(dir).appendingPathComponent(name))
             }
 
             try exclusive {
@@ -814,7 +814,7 @@ final class ChatVault {
 
             let conversation = Conversation(key: SymmetricKey(size: .bits256), count: 0, read: 0, flags: 0,
                                             unread: 0)
-            wipe(try folder(dir).appendingPathComponent("\(chat).log"))
+            try wipe(try folder(dir).appendingPathComponent("\(chat).log"))
             try save(chat, conversation)
             open[chat] = conversation
 
@@ -1015,8 +1015,12 @@ final class ChatVault {
         guard status == errSecSuccess else { throw Failure(description: "keychain error \(status)") }
     }
 
-    private func remove(_ account: String) {
-        SecItemDelete(query(account) as CFDictionary)
+    private func remove(_ account: String) throws {
+        let status = SecItemDelete(query(account) as CFDictionary)
+
+        guard status == errSecSuccess || status == errSecItemNotFound else {
+            throw Failure(description: "keychain error \(status)")
+        }
     }
 
     private func folder(_ url: URL?) throws -> URL {
@@ -1028,17 +1032,17 @@ final class ChatVault {
         try data.write(to: file, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
     }
 
-    private func wipe(_ file: URL) {
-        guard let size = (try? FileManager.default.attributesOfItem(atPath: file.path))?[.size]
-                as? NSNumber else { return }
+    private func wipe(_ file: URL) throws {
+        guard FileManager.default.fileExists(atPath: file.path) else { return }
 
-        if let handle = try? FileHandle(forWritingTo: file) {
-            try? handle.write(contentsOf: Data(count: size.intValue))
-            try? handle.synchronize()
-            try? handle.close()
-        }
+        let size = try FileManager.default.attributesOfItem(atPath: file.path)[.size] as? NSNumber ?? 0
+        let handle = try FileHandle(forWritingTo: file)
 
-        try? FileManager.default.removeItem(at: file)
+        try handle.write(contentsOf: Data(count: size.intValue))
+        try handle.synchronize()
+        try handle.close()
+
+        try FileManager.default.removeItem(at: file)
     }
 
     private static func aad(_ chat: String, seq: UInt64) -> Data {

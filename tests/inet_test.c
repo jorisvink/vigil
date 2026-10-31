@@ -87,7 +87,10 @@ main(void)
 	/* A fragment must only have its ip header checksum updated. */
 	build(pkt, sizeof(pkt), 17, 0x0010);
 	memcpy(&addr, "\x0a\x00\x00\x01", 4);
-	(void)vigil_inet_rewrite_dst(pkt, sizeof(pkt), &addr);
+	if (vigil_inet_rewrite_dst(pkt, sizeof(pkt), &addr) == -1) {
+		printf("FAIL fragment rewrite\n");
+		failures++;
+	}
 
 	if (csum(pkt, 20, 0) != 0) {
 		printf("FAIL fragment ip checksum\n");

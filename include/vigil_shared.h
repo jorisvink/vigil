@@ -261,10 +261,10 @@
 void	vigil_call_hangup(void);
 void	vigil_call_dial(u_int8_t);
 void	vigil_call_done(u_int8_t);
-void	vigil_chat_group(u_int16_t);
-void	vigil_chat_forget(u_int8_t);
+int	vigil_chat_group(u_int16_t);
+int	vigil_chat_forget(u_int8_t);
 void	vigil_chat_group_typing(int);
-void	vigil_chat_stored(u_int64_t);
+int	vigil_chat_stored(u_int64_t);
 int	vigil_chat_nick(const char *);
 void	vigil_chat_open(u_int8_t, int);
 void	vigil_chat_typing(u_int8_t, int);

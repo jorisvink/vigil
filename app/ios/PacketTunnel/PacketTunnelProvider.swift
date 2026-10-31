@@ -97,23 +97,24 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
                 .path
 
             Self.queue.async { [weak self, stopped = self.stopped] in
-                config.withUnsafeBytes { raw in
-                    voice.withUnsafeBytes { vraw in
+                let ret = config.withUnsafeBytes { raw in
+                    voice.withUnsafeBytes { vraw -> Int32 in
                         let ptr = raw.baseAddress?.assumingMemoryBound(to: CChar.self)
                         let vlen = attach ? vraw.count : 0
                         let vptr = vlen > 0
                             ? vraw.baseAddress?.assumingMemoryBound(to: CChar.self) : nil
 
-                        if let datadir {
-                            _ = datadir.withCString { dir in
-                                vigil_run(number, fd, ptr, raw.count, vptr, vlen, dir)
-                            }
-                        } else {
-                            _ = vigil_run(number, fd, ptr, raw.count, vptr, vlen, nil)
+                        guard let datadir else {
+                            return vigil_run(number, fd, ptr, raw.count, vptr, vlen, nil)
+                        }
+
+                        return datadir.withCString { dir in
+                            vigil_run(number, fd, ptr, raw.count, vptr, vlen, dir)
                         }
                     }
                 }
 
+                NSLog("vigil: vigil exited with \(ret)")
                 TunnelKeychain.wipe(&config)
                 TunnelKeychain.wipe(&voice)
                 stopped.signal()
@@ -125,7 +126,8 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
                 self.lock.unlock()
 
                 if !requested {
-                    self.cancelTunnelWithError(self.failure("the tunnel stopped"))
+                    let reason = ret == -1 ? "the tunnel failed to start" : "the tunnel stopped"
+                    self.cancelTunnelWithError(self.failure(reason))
                 }
             }
 
@@ -221,7 +223,9 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         case "chat":
             submitOutbox()
         case "chat-nick":
-            _ = vigil_chat_nick(ChatVault.defaults.string(forKey: "chatNick") ?? "")
+            if vigil_chat_nick(ChatVault.defaults.string(forKey: "chatNick") ?? "") == -1 {
+                NSLog("vigil: our nickname was refused")
+            }
         case "chat-open", "chat-typing":
             if words.count == 3, let peer = UInt8(words[1], radix: 16), peer > 0, peer < 0xff {
                 let on: Int32 = words[2] == "1" ? 1 : 0
@@ -232,13 +236,16 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
                 }
             }
         case "chat-forget":
-            if words.count == 2, let peer = UInt8(words[1], radix: 16), peer > 0, peer < 0xff {
-                vigil_chat_forget(peer)
+            if words.count == 2, let peer = UInt8(words[1], radix: 16), peer > 0, peer < 0xff,
+               vigil_chat_forget(peer) == -1 {
+                NSLog("vigil: failed to forget the messages for \(words[1])")
             }
         case "gospel":
             attachGospel()
         case "chat-group":
-            vigil_chat_group(UInt16(truncatingIfNeeded: ChatVault.defaults.integer(forKey: "chatGroup")))
+            if vigil_chat_group(UInt16(truncatingIfNeeded: ChatVault.defaults.integer(forKey: "chatGroup"))) == -1 {
+                chatSession = 0
+            }
         case "chat-group-typing":
             if words.count == 2 {
                 vigil_chat_group_typing(words[1] == "1" ? 1 : 0)
@@ -248,9 +255,13 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
                let data = try? ChatVault.shared.data(String(words[3]), file: String(words[2])),
                !data.isEmpty, data.count <= Int(VIGIL_CHAT_DATA_MAX),
                let name = Data(base64Encoded: String(words[5])).flatMap({ String(data: $0, encoding: .utf8) }) {
-                _ = data.withUnsafeBytes {
+                let sent = data.withUnsafeBytes {
                     vigil_chat_group_data_send(ref, ChatVault.kind(String(words[4])), name,
                                                $0.baseAddress, data.count)
+                }
+
+                if sent == -1 {
+                    NSLog("vigil: group data \(ref) was refused")
                 }
             }
         case "chat-group-send":
@@ -263,10 +274,16 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
                     quote = ChatVault.quote(String(words[3]), String(words[4]))
                 }
 
+                var sent: Int32 = 0
+
                 if let quote, !bytes.isEmpty, bytes.count <= Int(VIGIL_CHAT_REPLY_MAX) {
-                    _ = vigil_chat_group_reply(ref, quote.peer, quote.digest, bytes, bytes.count)
+                    sent = vigil_chat_group_reply(ref, quote.peer, quote.digest, bytes, bytes.count)
                 } else if quote == nil, !bytes.isEmpty, bytes.count <= Int(VIGIL_CHAT_MESSAGE_MAX) {
-                    _ = vigil_chat_group_send(ref, bytes, bytes.count)
+                    sent = vigil_chat_group_send(ref, bytes, bytes.count)
+                }
+
+                if sent == -1 {
+                    NSLog("vigil: group message \(ref) was refused")
                 }
             }
         default:
@@ -293,9 +310,13 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         if session != chatSession {
             chatResubmit = 0
             chatWaiting.removeAll()
-            _ = vigil_chat_nick(defaults.string(forKey: "chatNick") ?? "")
-            vigil_chat_group(UInt16(truncatingIfNeeded: defaults.integer(forKey: "chatGroup")))
-            if submitOutbox() { chatSession = session }
+            if vigil_chat_nick(defaults.string(forKey: "chatNick") ?? "") == -1 {
+                NSLog("vigil: our nickname was refused")
+            }
+
+            let joined = vigil_chat_group(UInt16(truncatingIfNeeded: defaults.integer(forKey: "chatGroup"))) == 0
+
+            if submitOutbox(), joined { chatSession = session }
         } else if chatResubmit != 0, ProcessInfo.processInfo.systemUptime >= chatResubmit {
             chatResubmit = 0
             submitOutbox(only: chatWaiting)
@@ -339,7 +360,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
 
                     try vault.deliver(chat: chat, peer: peer, nick: nick, text: text,
                                       time: Int64(Date().timeIntervalSince1970 * 1000), quote: quote)
-                    vigil_chat_stored((event["token"] as? NSNumber)?.uint64Value ?? 0)
+                    stored((event["token"] as? NSNumber)?.uint64Value ?? 0)
 
                     if defaults.string(forKey: "chatOpen") != chat {
                         unseen[chat, default: 0] += 1
@@ -366,7 +387,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
                     try vault.deliver(chat: chat, peer: peer, nick: nick, text: "",
                                       time: Int64(Date().timeIntervalSince1970 * 1000),
                                       data: Data(bytes[0..<taken]), media: media, name: name)
-                    vigil_chat_stored(token)
+                    stored(token)
                     TunnelKeychain.wipe(&bytes)
 
                     if defaults.string(forKey: "chatOpen") != chat {
@@ -396,15 +417,40 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         let on = ChatVault.defaults.object(forKey: "gospelEnabled") as? Bool ?? true
 
         guard on, var config = gospel.flatMap({ try? TunnelKeychain.load(ref: $0) }) else {
-            _ = vigil_gospel(nil, 0)
+            if vigil_gospel(nil, 0) == -1 {
+                NSLog("vigil: Gospel was not detached, vigil is not running")
+            }
             return
         }
 
-        config.withUnsafeBytes { raw in
-            _ = vigil_gospel(raw.baseAddress?.assumingMemoryBound(to: CChar.self), raw.count)
+        let attached = config.withUnsafeBytes { raw in
+            vigil_gospel(raw.baseAddress?.assumingMemoryBound(to: CChar.self), raw.count) == 0
         }
 
         TunnelKeychain.wipe(&config)
+
+        if !attached {
+            NSLog("vigil: Gospel was not attached, vigil is not running")
+        }
+    }
+
+    private func submitted(_ ref: UInt64, _ ret: Int32) {
+        guard ret == -1 else {
+            chatWaiting.remove(ref)
+            return
+        }
+
+        chatWaiting.insert(ref)
+
+        if chatResubmit == 0 {
+            chatResubmit = ProcessInfo.processInfo.systemUptime + Self.resubmitInterval
+        }
+    }
+
+    private func stored(_ token: UInt64) {
+        if vigil_chat_stored(token) == -1 {
+            NSLog("vigil: failed to ack \(token), it is handed over again")
+        }
     }
 
     private func receipt(_ chat: String, ref: Int64, kind: String, acked: Int = 0, pending: Int = 0) {
@@ -455,14 +501,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
                     vigil_chat_data_send(peer, ref, ChatVault.kind(media), name, $0.baseAddress, data.count)
                 }
 
-                if sent == -1 {
-                    chatWaiting.insert(ref)
-                    if chatResubmit == 0 {
-                        chatResubmit = ProcessInfo.processInfo.systemUptime + Self.resubmitInterval
-                    }
-                } else {
-                    chatWaiting.remove(ref)
-                }
+                submitted(ref, sent)
                 continue
             }
 
@@ -473,13 +512,13 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             if let quote = ChatVault.quote(entry["qa"] as? String, entry["qh"] as? String) {
                 guard !bytes.isEmpty, bytes.count <= Int(VIGIL_CHAT_REPLY_MAX) else { continue }
 
-                _ = vigil_chat_reply(peer, ref, quote.peer, quote.digest, bytes, bytes.count)
+                submitted(ref, vigil_chat_reply(peer, ref, quote.peer, quote.digest, bytes, bytes.count))
                 continue
             }
 
             guard !bytes.isEmpty, bytes.count <= Int(VIGIL_CHAT_MESSAGE_MAX) else { continue }
 
-            _ = vigil_chat_send(peer, ref, bytes, bytes.count)
+            submitted(ref, vigil_chat_send(peer, ref, bytes, bytes.count))
         }
 
         chatWaiting.formIntersection(refs)

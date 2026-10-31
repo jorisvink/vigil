@@ -6,6 +6,7 @@ import android.graphics.BitmapFactory
 import android.graphics.Matrix
 import android.media.ExifInterface
 import android.net.Uri
+import android.util.Log
 import java.io.ByteArrayOutputStream
 import java.io.File
 
@@ -47,7 +48,9 @@ object Images {
             return jpeg
         } finally {
             if (file.canonicalPath.startsWith(context.cacheDir.canonicalPath)) {
-                file.delete()
+                if (!file.delete()) {
+                    Log.e(TAG, "could not remove ${file.name}")
+                }
             }
         }
     }
@@ -65,7 +68,9 @@ object Images {
                 }
             }
         } catch (e: Exception) {
-            file.delete()
+            if (!file.delete()) {
+                Log.e(TAG, "could not remove ${file.name}")
+            }
             throw e
         }
 
@@ -82,6 +87,7 @@ object Images {
             else -> 0f
         }
 
+    private const val TAG = "vigil"
     private const val SIDE = 2048
     private const val QUALITY = 85
     private const val MAX = 4 * 1024 * 1024

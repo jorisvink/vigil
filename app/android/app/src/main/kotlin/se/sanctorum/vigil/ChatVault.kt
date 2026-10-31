@@ -772,7 +772,12 @@ class ChatVault(context: Context) {
                 throw Locked()
             }
 
-            File(dir, "$chat$LOG").delete()
+            val log = File(dir, "$chat$LOG")
+
+            if (log.exists()) {
+                check(log.delete()) { "the old history of $chat could not be removed" }
+            }
+
             open[chat] = conversation
 
             return conversation
@@ -1056,7 +1061,7 @@ class ChatVault(context: Context) {
             it.fd.sync()
         }
 
-        file.delete()
+        check(file.delete()) { "${file.name} could not be removed" }
     }
 
     private fun keyAad(chat: String): ByteArray = KEY_AAD + label(chat)

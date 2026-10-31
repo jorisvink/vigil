@@ -338,8 +338,8 @@ main(int argc, char **argv)
 					    data_path[idx]);
 				}
 
-				if (group != 0)
-					vigil_chat_group(group);
+				if (group != 0 && vigil_chat_group(group) == -1)
+					fatal("failed to join group %04lx", group);
 
 				if (typing_peer != 0)
 					vigil_chat_typing(typing_peer, 1);
@@ -446,7 +446,8 @@ chatter_core_run(void *arg)
 
 	id = arg;
 
-	(void)vigil_run(*id, -1, gospel, gospel_len, NULL, 0, datadir);
+	if (vigil_run(*id, -1, gospel, gospel_len, NULL, 0, datadir) == -1)
+		fatal("vigil_run failed");
 
 	return (NULL);
 }
@@ -482,7 +483,9 @@ chatter_events_handle(int *got, int *delivered, int *gdone)
 
 		token = strtoull(p + 8, NULL, 10);
 		chatter_data_take(p);
-		vigil_chat_stored(token);
+
+		if (vigil_chat_stored(token) == -1)
+			fatal("failed to ack data %" PRIu64, token);
 		(*got)++;
 	}
 

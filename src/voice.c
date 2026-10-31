@@ -1408,7 +1408,11 @@ voice_io_read(struct voice_session *s)
 		else
 			pkt.shroud = KYRKA_PACKET_SHROUD_PEER;
 
-		(void)kyrka_purgatory_input(s->ctx, &pkt);
+		if (kyrka_purgatory_input(s->ctx, &pkt) == -1 &&
+		    kyrka_last_error(s->ctx) != KYRKA_ERROR_NO_RX_KEY) {
+			vigil_log(LOG_NOTICE, "[voice] purgatory input: %d",
+			    kyrka_last_error(s->ctx));
+		}
 	}
 }
 

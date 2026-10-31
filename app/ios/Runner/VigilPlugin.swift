@@ -456,17 +456,27 @@ final class VigilPlugin: NSObject, FlutterPlugin, UIDocumentPickerDelegate,
     }
 
     private func remove(_ id: String, result: @escaping FlutterResult) {
-        TunnelKeychain.remove(id: id)
+        guard TunnelKeychain.remove(id: id) else {
+            result(FlutterError(code: "failed", message: "The configuration could not be removed.", details: nil))
+            return
+        }
 
         let list = (UserDefaults.standard.array(forKey: Self.tunnelsKey) as? [[String: Any]] ?? [])
             .filter { ($0["id"] as? String) != id }
         save(list)
 
         manager { manager in
-            if let manager, self.tunnelId(manager) == id {
-                manager.removeFromPreferences { _ in result("") }
-            } else {
+            guard let manager, self.tunnelId(manager) == id else {
                 result("")
+                return
+            }
+
+            manager.removeFromPreferences { error in
+                if let error {
+                    result(FlutterError(code: "failed", message: "\(error.localizedDescription)", details: nil))
+                } else {
+                    result("")
+                }
             }
         }
     }
@@ -1310,10 +1320,14 @@ final class VigilPlugin: NSObject, FlutterPlugin, UIDocumentPickerDelegate,
     private static func wipe() {
         for kind in [kSecClassGenericPassword, kSecClassInternetPassword, kSecClassKey,
                      kSecClassCertificate, kSecClassIdentity] {
-            SecItemDelete([
+            let status = SecItemDelete([
                 kSecClass as String: kind,
                 kSecAttrSynchronizable as String: kSecAttrSynchronizableAny,
             ] as CFDictionary)
+
+            if status != errSecSuccess && status != errSecItemNotFound {
+                NSLog("vigil: erase could not remove keychain items of \(kind): \(status)")
+            }
         }
 
         if let bundle = Bundle.main.bundleIdentifier {
@@ -1335,8 +1349,21 @@ final class VigilPlugin: NSObject, FlutterPlugin, UIDocumentPickerDelegate,
         }
 
         for folder in folders {
-            for item in (try? files.contentsOfDirectory(at: folder, includingPropertiesForKeys: nil)) ?? [] {
-                try? files.removeItem(at: item)
+            let items: [URL]
+
+            do {
+                items = try files.contentsOfDirectory(at: folder, includingPropertiesForKeys: nil)
+            } catch {
+                NSLog("vigil: erase could not list \(folder.path): \(error)")
+                continue
+            }
+
+            for item in items {
+                do {
+                    try files.removeItem(at: item)
+                } catch {
+                    NSLog("vigil: erase could not remove \(item.path): \(error)")
+                }
             }
         }
 
@@ -1396,9 +1423,9 @@ enum Handoff {
 
         var item: CFTypeRef?
         let status = SecItemCopyMatching(q as CFDictionary, &item)
-        SecItemDelete(query as CFDictionary)
+        let removed = SecItemDelete(query as CFDictionary)
 
-        guard status == errSecSuccess, let found = item as? [String: Any],
+        guard status == errSecSuccess, removed == errSecSuccess, let found = item as? [String: Any],
               var data = found[kSecValueData as String] as? Data else { return nil }
         defer { data.resetBytes(in: 0..<data.count) }
 

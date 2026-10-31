@@ -79,7 +79,7 @@ enum TunnelKeychain {
         }
     }
 
-    static func remove(id: String) {
+    static func remove(id: String) -> Bool {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
@@ -87,6 +87,8 @@ enum TunnelKeychain {
             kSecAttrAccessGroup as String: group,
         ]
 
-        SecItemDelete(query as CFDictionary)
+        let status = SecItemDelete(query as CFDictionary)
+
+        return status == errSecSuccess || status == errSecItemNotFound
     }
 }

@@ -60,9 +60,9 @@ static void	android_voice_call(JNIEnv *, jclass, jint, jint);
 
 static jbyteArray	android_chat_events(JNIEnv *, jclass);
 static jbyteArray	android_chat_data_take(JNIEnv *, jclass, jlong, jint);
-static void		android_chat_group(JNIEnv *, jclass, jint);
-static void		android_chat_forget(JNIEnv *, jclass, jint);
-static void		android_chat_stored(JNIEnv *, jclass, jlong);
+static jboolean		android_chat_group(JNIEnv *, jclass, jint);
+static jboolean		android_chat_forget(JNIEnv *, jclass, jint);
+static jboolean		android_chat_stored(JNIEnv *, jclass, jlong);
 static jboolean		android_chat_nick(JNIEnv *, jclass, jstring);
 static void		android_chat_open(JNIEnv *, jclass, jint, jboolean);
 static void		android_chat_typing(JNIEnv *, jclass, jint, jboolean);
@@ -100,12 +100,12 @@ static JNINativeMethod	methods[] = {
 	{ "voiceStatus", "()Ljava/lang/String;",
 	    (void *)android_voice_status },
 	{ "chatSend", "(IJ[BIJ)Z", (void *)android_chat_send },
-	{ "chatForget", "(I)V", (void *)android_chat_forget },
-	{ "chatStored", "(J)V", (void *)android_chat_stored },
+	{ "chatForget", "(I)Z", (void *)android_chat_forget },
+	{ "chatStored", "(J)Z", (void *)android_chat_stored },
 	{ "chatOpen", "(IZ)V", (void *)android_chat_open },
 	{ "chatTyping", "(IZ)V", (void *)android_chat_typing },
 	{ "chatNick", "(Ljava/lang/String;)Z", (void *)android_chat_nick },
-	{ "chatGroup", "(I)V", (void *)android_chat_group },
+	{ "chatGroup", "(I)Z", (void *)android_chat_group },
 	{ "chatGroupTyping", "(Z)V", (void *)android_chat_group_typing },
 	{ "chatGroupSend", "(J[BIJ)Z", (void *)android_chat_group_send },
 	{ "chatEvents", "()[B", (void *)android_chat_events },
@@ -371,7 +371,11 @@ android_check(JNIEnv *env, jclass cls, jbyteArray config)
 		    "{\"error\":\"configuration has an invalid size\"}"));
 	}
 
-	(void)vigil_config_check(cfg, len, out, sizeof(out));
+	if (vigil_config_check(cfg, len, out, sizeof(out)) == -1) {
+		android_bytes_free(cfg, len);
+		return (android_string_new(env, out));
+	}
+
 	android_bytes_free(cfg, len);
 
 	return (android_string_new(env, out));
@@ -620,20 +624,25 @@ android_chat_send(JNIEnv *env, jclass cls, jint peer, jlong ref,
 /*
  * Vigil.chatForget(), drops the messages we hold for the given peer.
  */
-static void
+static jboolean
 android_chat_forget(JNIEnv *env, jclass cls, jint peer)
 {
-	if (peer > 0 && peer < KYRKA_PEERS_PER_FLOCK)
-		vigil_chat_forget(peer);
+	if (peer <= 0)
+		return (JNI_FALSE);
+
+	if (peer >= KYRKA_PEERS_PER_FLOCK)
+		return (JNI_FALSE);
+
+	return (vigil_chat_forget(peer) == 0);
 }
 
 /*
  * Vigil.chatStored(), the message with the given token was stored.
  */
-static void
+static jboolean
 android_chat_stored(JNIEnv *env, jclass cls, jlong token)
 {
-	vigil_chat_stored((u_int64_t)token);
+	return (vigil_chat_stored((u_int64_t)token) == 0);
 }
 
 /*
@@ -684,11 +693,16 @@ android_chat_nick(JNIEnv *env, jclass cls, jstring name)
 /*
  * Vigil.chatGroup(), joins the given group chat, 0 leaves ours.
  */
-static void
+static jboolean
 android_chat_group(JNIEnv *env, jclass cls, jint group)
 {
-	if (group >= 0 && group <= USHRT_MAX)
-		vigil_chat_group(group);
+	if (group < 0)
+		return (JNI_FALSE);
+
+	if (group > USHRT_MAX)
+		return (JNI_FALSE);
+
+	return (vigil_chat_group(group) == 0);
 }
 
 /*

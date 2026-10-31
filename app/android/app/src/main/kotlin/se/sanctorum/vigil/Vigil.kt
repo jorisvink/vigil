@@ -63,10 +63,10 @@ object Vigil {
     external fun chatSend(peer: Int, ref: Long, text: ByteArray, author: Int, hash: Long): Boolean
 
     @JvmStatic
-    external fun chatForget(peer: Int)
+    external fun chatForget(peer: Int): Boolean
 
     @JvmStatic
-    external fun chatStored(token: Long)
+    external fun chatStored(token: Long): Boolean
 
     @JvmStatic
     external fun chatOpen(peer: Int, on: Boolean)
@@ -78,7 +78,7 @@ object Vigil {
     external fun chatNick(name: String): Boolean
 
     @JvmStatic
-    external fun chatGroup(group: Int)
+    external fun chatGroup(group: Int): Boolean
 
     @JvmStatic
     external fun chatGroupTyping(on: Boolean)

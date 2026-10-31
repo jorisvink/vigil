@@ -76,8 +76,11 @@ object Chats {
             waiting.clear()
 
             try {
-                Vigil.chatNick(nick(service))
-                Vigil.chatGroup(group(service))
+                if (!Vigil.chatNick(nick(service))) {
+                    Log.w(TAG, "our nickname was refused")
+                }
+
+                check(Vigil.chatGroup(group(service))) { "failed to join our group" }
                 handover(vault, null)
                 session = chat.optLong("session")
             } catch (e: Exception) {
@@ -119,7 +122,7 @@ object Chats {
                         val quote = ChatVault.quote(event.optString("author"), event.optString("hash"))
 
                         vault.deliver(id, peer, nick, text, time, quote = quote)
-                        Vigil.chatStored(event.getLong("token"))
+                        stored(event.getLong("token"))
 
                         if (!foreground || opened != id) {
                             unseen[id] = (unseen[id] ?: 0) + 1
@@ -141,7 +144,7 @@ object Chats {
                             data.fill(0)
                         }
 
-                        Vigil.chatStored(token)
+                        stored(token)
 
                         if (!foreground || opened != id) {
                             unseen[id] = (unseen[id] ?: 0) + 1
@@ -166,6 +169,12 @@ object Chats {
             } catch (e: Exception) {
                 Log.e(TAG, "failed to store a chat event", e)
             }
+        }
+    }
+
+    private fun stored(token: Long) {
+        if (!Vigil.chatStored(token)) {
+            Log.w(TAG, "failed to ack $token, it is handed over again")
         }
     }
 
@@ -194,10 +203,16 @@ object Chats {
             if (!entry.has("data")) {
                 val quote = ChatVault.quote(entry.optString("qa"), entry.optString("qh"))
 
-                Vigil.chatSend(
+                val sent = Vigil.chatSend(
                     chat.toInt(16), ref, entry.getString("text").toByteArray(),
                     quote?.peer ?: 0, quote?.digest ?: 0L
                 )
+
+                if (sent) {
+                    waiting.remove(ref)
+                } else {
+                    refused(ref)
+                }
                 continue
             }
 
@@ -297,7 +312,11 @@ object Chats {
         require(group in 0..0xffff) { "A group is 1 to 4 hex digits." }
 
         prefs(context).edit().putInt("group", group).apply()
-        Vigil.chatGroup(group)
+
+        if (!Vigil.chatGroup(group)) {
+            session = 0L
+        }
+
         changed()
     }
 

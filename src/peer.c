@@ -600,7 +600,12 @@ peer_io_read(struct vigil_peer *peer)
 		else
 			pkt.shroud = KYRKA_PACKET_SHROUD_PEER;
 
-		(void)kyrka_purgatory_input(peer->ctx, &pkt);
+		if (kyrka_purgatory_input(peer->ctx, &pkt) == -1 &&
+		    kyrka_last_error(peer->ctx) != KYRKA_ERROR_NO_RX_KEY) {
+			vigil_log(LOG_NOTICE,
+			    "[peer=%02x] purgatory input: %d",
+			    peer->id, kyrka_last_error(peer->ctx));
+		}
 	}
 }
 

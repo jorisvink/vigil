@@ -135,10 +135,14 @@ class TunnelStore(context: Context) {
 
         if (config.exists()) {
             config.writeBytes(ByteArray(config.length().toInt()))
-            config.delete()
+            check(config.delete()) { "The configuration could not be removed." }
         }
 
-        file(id, SUMMARY).delete()
+        val summary = file(id, SUMMARY)
+
+        if (summary.exists()) {
+            check(summary.delete()) { "The configuration could not be removed." }
+        }
 
         if (last == id) {
             last = null

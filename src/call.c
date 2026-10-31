@@ -686,7 +686,10 @@ call_liturgy_read(struct call_liturgy *lit)
 		pkt.length = ret;
 		pkt.shroud = KYRKA_PACKET_SHROUD_CATHEDRAL;
 
-		(void)kyrka_purgatory_input(lit->ctx, &pkt);
+		if (kyrka_purgatory_input(lit->ctx, &pkt) == -1) {
+			vigil_log(LOG_NOTICE, "[call] purgatory input: %d",
+			    kyrka_last_error(lit->ctx));
+		}
 	}
 }
 

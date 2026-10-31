@@ -294,8 +294,9 @@ class MainActivity : FlutterActivity() {
                         }
 
                         vault.send(id, text, ref, quote)
-                        if (group == null) {
-                            Vigil.chatSend(id.toInt(16), ref, bytes, author, hash)
+
+                        if (group == null && !Vigil.chatSend(id.toInt(16), ref, bytes, author, hash)) {
+                            Chats.refused(ref)
                         }
 
                         Chats.changed()
@@ -465,10 +466,12 @@ class MainActivity : FlutterActivity() {
                 }
                 "chatDelete" -> {
                     val id = chat(call.arguments as String)
-                    Chats.vault(this).delete(id)
+
                     if (ChatVault.group(id) == null) {
-                        Vigil.chatForget(id.toInt(16))
+                        check(Vigil.chatForget(id.toInt(16))) { "Vigil is busy, try deleting the chat again." }
                     }
+
+                    Chats.vault(this).delete(id)
                     Chats.changed()
                     result.success("")
                 }
@@ -543,8 +546,21 @@ class MainActivity : FlutterActivity() {
         val keys = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
         keys.aliases().toList().forEach { keys.deleteEntry(it) }
 
-        File(dataDir, "shared_prefs").list()?.forEach { deleteSharedPreferences(it.removeSuffix(".xml")) }
-        dataDir.listFiles()?.filter { it.name != "lib" }?.forEach { it.deleteRecursively() }
+        for (name in File(dataDir, "shared_prefs").list() ?: emptyArray()) {
+            if (!deleteSharedPreferences(name.removeSuffix(".xml"))) {
+                Log.e("vigil", "erase could not remove the preferences $name")
+            }
+        }
+
+        for (file in dataDir.listFiles() ?: emptyArray()) {
+            if (file.name == "lib") {
+                continue
+            }
+
+            if (!file.deleteRecursively()) {
+                Log.e("vigil", "erase could not remove ${file.name}")
+            }
+        }
     }
 
     private fun restart() {

@@ -805,10 +805,10 @@ vigil_chat_reply(u_int8_t peer, u_int64_t ref, u_int8_t author,
 /*
  * Join a group and leave current group (if any).
  */
-void
+int
 vigil_chat_group(u_int16_t id)
 {
-	(void)chat_command_queue(CHAT_COMMAND_GROUP, 0, id, NULL, NULL, 0);
+	return (chat_command_queue(CHAT_COMMAND_GROUP, 0, id, NULL, NULL, 0));
 }
 
 /*
@@ -962,22 +962,32 @@ vigil_chat_busy(void)
 /*
  * Drop any and all messages we hold for the given peer.
  */
-void
+int
 vigil_chat_forget(u_int8_t peer)
 {
+	int		ret;
+
 	PRECOND(peer > 0 && peer < KYRKA_PEERS_PER_FLOCK);
 
-	(void)chat_command_queue(CHAT_COMMAND_FORGET, peer, 0, NULL, NULL, 0);
+	if (!vigil_atomic_read(&accepting))
+		return (0);
+
+	ret = chat_command_queue(CHAT_COMMAND_FORGET, peer, 0, NULL, NULL, 0);
+
+	return (ret);
 }
 
 /*
  * The platform stored the message, so go ahead and ack it.
  */
-void
+int
 vigil_chat_stored(u_int64_t token)
 {
-	(void)chat_command_queue(CHAT_COMMAND_STORED,
-	    0, token, NULL, NULL, 0);
+	int		ret;
+
+	ret = chat_command_queue(CHAT_COMMAND_STORED, 0, token, NULL, NULL, 0);
+
+	return (ret);
 }
 
 /*
@@ -2227,7 +2237,11 @@ chat_tunnel_read(void *udata)
 			pkt.shroud = KYRKA_PACKET_SHROUD_PEER;
 		}
 
-		(void)kyrka_purgatory_input(tun->ctx, &pkt);
+		if (kyrka_purgatory_input(tun->ctx, &pkt) == -1 &&
+		    kyrka_last_error(tun->ctx) != KYRKA_ERROR_NO_RX_KEY) {
+			vigil_log(LOG_NOTICE, "[chat] %02x purgatory input: %d",
+			    tun->peer->id, kyrka_last_error(tun->ctx));
+		}
 	}
 }
 
@@ -3411,12 +3425,18 @@ chat_member_report(struct chat_peer *peer, u_int16_t group, int joined)
 	PRECOND(group != 0);
 
 	if (joined) {
-		(void)chat_event_queue(CHAT_EVENT_JOINED,
-		    peer, group, 0, NULL, 0);
+		if (chat_event_queue(CHAT_EVENT_JOINED,
+		    peer, group, 0, NULL, 0) == -1) {
+			vigil_log(LOG_NOTICE, "[chat] %02x joined %04x, "
+			    "too many events to tell", peer->id, group);
+		}
 		return;
 	}
 
-	(void)chat_event_queue(CHAT_EVENT_LEFT, peer, group, 0, NULL, 0);
+	if (chat_event_queue(CHAT_EVENT_LEFT, peer, group, 0, NULL, 0) == -1) {
+		vigil_log(LOG_NOTICE, "[chat] %02x left %04x, "
+		    "too many events to tell", peer->id, group);
+	}
 }
 
 /*

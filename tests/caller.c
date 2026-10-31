@@ -409,6 +409,7 @@ caller_config_read(const char *path, char *buf, size_t len)
 static void *
 caller_core_run(void *arg)
 {
+	int		ret;
 	u_int64_t	*id;
 
 	PRECOND(arg != NULL);
@@ -416,14 +417,17 @@ caller_core_run(void *arg)
 	id = arg;
 
 	if (config_len == 0) {
-		(void)vigil_run(*id, -1, gospel, gospel_len, NULL, 0, datadir);
+		ret = vigil_run(*id, -1, gospel, gospel_len, NULL, 0, datadir);
 	} else if (attach > 0) {
-		(void)vigil_run(*id, tun[0], config, config_len,
+		ret = vigil_run(*id, tun[0], config, config_len,
 		    NULL, 0, datadir);
 	} else {
-		(void)vigil_run(*id, tun[0], config, config_len,
+		ret = vigil_run(*id, tun[0], config, config_len,
 		    gospel, gospel_len, datadir);
 	}
+
+	if (ret == -1)
+		fatal("vigil_run failed");
 
 	return (NULL);
 }
