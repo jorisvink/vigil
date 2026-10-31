@@ -51,7 +51,7 @@ Building a strong foundation first, and designing things from scratch
 by yourself will allow one to make good use of LLM driven development
 once the basic building blocks are in place.
 
-## Building
+# Building
 
 ### Android
 
