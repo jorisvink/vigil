@@ -122,9 +122,10 @@ config() {
 		case "$flags" in
 		*commix*) die "commixtion (-M) needs a cathedral" ;;
 		esac
+		secret=`hexkey "$secret" 32` || exit 1
 		echo "tunnel $tunnel"
 		echo "peer $peer"
-		echo "secret `hexkey "$secret" 32`"
+		echo "secret $secret"
 		;;
 	cathedral|liturgy|tier6|gospel)
 		[ -n "$cathedral" ] || die "no cathedral given (-c)"
@@ -161,13 +162,17 @@ config() {
 			echo "tunnel $tunnel"
 		fi
 
+		kek=`hexkey "$kek" 32` || exit 1
+		cs=`hexkey "$cs" 32` || exit 1
+		cosk=`hexkey "$cosk" 64` || exit 1
+
 		echo "spi $spi"
-		echo "kek `hexkey "$kek" 32`"
+		echo "kek $kek"
 		echo "cathedral $cathedral"
 		echo "cathedral_id $csid"
 		echo "cathedral_flock $flock"
-		echo "cathedral_secret `hexkey "$cs" 32`"
-		echo "cathedral_cosk `hexkey "$cosk" 64`"
+		echo "cathedral_secret $cs"
+		echo "cathedral_cosk $cosk"
 		[ -z "$natport" ] || echo "cathedral_nat_port $natport"
 
 		case "$flags" in
@@ -203,16 +208,18 @@ config() {
 	esac
 }
 
+cfg=`config` || exit 1
+
 case $output in
 "")
-	config
+	echo "$cfg"
 	;;
 terminal)
 	command -v qrencode > /dev/null || die "qrencode is required for -q"
-	config | qrencode -t ansiutf8
+	echo "$cfg" | qrencode -t ansiutf8
 	;;
 *)
 	command -v qrencode > /dev/null || die "qrencode is required for -o"
-	config | qrencode -s 8 -m 4 -o "$output"
+	echo "$cfg" | qrencode -s 8 -m 4 -o "$output"
 	;;
 esac
