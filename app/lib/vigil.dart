@@ -641,11 +641,7 @@ class Vigil {
       return null;
     }
 
-    try {
-      return utf8.decode(bytes, allowMalformed: true);
-    } finally {
-      bytes.fillRange(0, bytes.length, 0);
-    }
+    return utf8.decode(bytes, allowMalformed: true);
   }
 
   Future<Tunnel> store(String config) async {
