@@ -19,7 +19,7 @@ import Vigil
 final class VigilPlugin: NSObject, FlutterPlugin, UIDocumentPickerDelegate,
                          QLPreviewControllerDataSource, QLPreviewControllerDelegate {
     private static let channel = "se.sanctorum.vigil/core"
-    private static let provider = "se.sanctorum.vigil.PacketTunnel"
+    private static let provider = (Bundle.main.bundleIdentifier ?? "") + ".PacketTunnel"
     private static let tunnelsKey = "tunnels"
 
     static var requested: String?
@@ -1403,7 +1403,8 @@ enum Handoff {
 
     private static var group: String {
         let prefix = Bundle.main.object(forInfoDictionaryKey: "AppIdentifierPrefix") as? String ?? ""
-        return prefix + "se.sanctorum.handoff"
+        let name = Bundle.main.object(forInfoDictionaryKey: "VigilHandoffGroup") as? String ?? ""
+        return prefix + name
     }
 
     private static var query: [String: Any] {

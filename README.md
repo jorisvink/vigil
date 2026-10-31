@@ -65,11 +65,17 @@ $ adb install -r app/build/app/outputs/flutter-apk/app-release.apk
 ### iOS
 
 Requires macOS with Xcode installed. Before building make sure you
-set your DEVELOPMENT_TEAM in app/ios/Team.xcconfig and setup a profile
-with the correct entitlements.
+set your DEVELOPMENT_TEAM in app/ios/Team.xcconfig and override
+any bundle identifier, app group and handoff keychain group,
+and setup a profile with the correct entitlements.
 
 ```
-$ echo "DEVELOPMENT_TEAM = <team>" > app/ios/Team.xcconfig
+$ cat > app/ios/Team.xcconfig << EOF
+DEVELOPMENT_TEAM = <team>
+VIGIL_BUNDLE_ID = <bundle id>
+VIGIL_APP_GROUP = group.<bundle id>
+VIGIL_HANDOFF_GROUP = <handoff group>
+EOF
 $ make ios
 $ xcrun devicectl list devices
 $ xcrun devicectl device install app --device <device> \

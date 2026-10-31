@@ -1,0 +1,4 @@
+// Defaults, override any of these in Team.xcconfig.
+VIGIL_BUNDLE_ID = se.sanctorum.vigil
+VIGIL_APP_GROUP = group.se.sanctorum.vigil
+VIGIL_HANDOFF_GROUP = se.sanctorum.handoff

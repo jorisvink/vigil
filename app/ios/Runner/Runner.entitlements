@@ -8,12 +8,12 @@
 	</array>
 	<key>com.apple.security.application-groups</key>
 	<array>
-		<string>group.se.sanctorum.vigil</string>
+		<string>$(VIGIL_APP_GROUP)</string>
 	</array>
 	<key>keychain-access-groups</key>
 	<array>
-		<string>$(AppIdentifierPrefix)group.se.sanctorum.vigil</string>
-		<string>$(AppIdentifierPrefix)se.sanctorum.handoff</string>
+		<string>$(AppIdentifierPrefix)$(VIGIL_APP_GROUP)</string>
+		<string>$(AppIdentifierPrefix)$(VIGIL_HANDOFF_GROUP)</string>
 	</array>
 </dict>
 </plist>

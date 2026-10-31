@@ -29,5 +29,7 @@
 		<key>NSExtensionPrincipalClass</key>
 		<string>$(PRODUCT_MODULE_NAME).PacketTunnelProvider</string>
 	</dict>
+	<key>VigilAppGroup</key>
+	<string>$(VIGIL_APP_GROUP)</string>
 </dict>
 </plist>

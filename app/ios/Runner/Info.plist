@@ -8,7 +8,7 @@
 	<array>
 		<dict>
 			<key>CFBundleURLName</key>
-			<string>se.sanctorum.vigil.import</string>
+			<string>$(VIGIL_BUNDLE_ID).import</string>
 			<key>CFBundleURLSchemes</key>
 			<array>
 				<string>vigil</string>
@@ -93,5 +93,9 @@
 	</array>
 	<key>UIRequiresFullScreen</key>
 	<true/>
+	<key>VigilAppGroup</key>
+	<string>$(VIGIL_APP_GROUP)</string>
+	<key>VigilHandoffGroup</key>
+	<string>$(VIGIL_HANDOFF_GROUP)</string>
 </dict>
 </plist>

@@ -5,7 +5,7 @@ import Foundation
 import Security
 
 enum TunnelKeychain {
-    static let group = "group.se.sanctorum.vigil"
+    static let group = Bundle.main.object(forInfoDictionaryKey: "VigilAppGroup") as? String ?? ""
 
     private static let service = "se.sanctorum.vigil.tunnel"
 
