@@ -635,7 +635,6 @@ class _VideoCallState extends State<_VideoCall> {
 
   @override
   Widget build(BuildContext context) {
-    final vigil = Vigil.instance;
     final textures = _textures;
     final video = _video;
     final remote = widget.voice?.remoteCamera ?? false;
@@ -702,13 +701,9 @@ class _VideoCallState extends State<_VideoCall> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(
-                  vigil.name(widget.call.peer),
-                  style: peerStyle(
-                    Styles.cardTitle.copyWith(color: Colors.white),
-                    vigil.picked(widget.call.peer),
-                  ),
-                  overflow: TextOverflow.ellipsis,
+                PeerName(
+                  widget.call.peer,
+                  style: Styles.cardTitle.copyWith(color: Colors.white),
                 ),
                 const SizedBox(height: 4),
                 Text(widget.state, style: Styles.rubric),

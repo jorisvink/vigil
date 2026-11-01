@@ -108,7 +108,7 @@ String sender(ChatMessage message) {
   final vigil = Vigil.instance;
   final from = message.from;
 
-  if (vigil.names.containsKey(from) || message.nick.isEmpty) {
+  if (vigil.known(from) || message.nick.isEmpty) {
     return vigil.name(from);
   }
 
@@ -118,7 +118,7 @@ String sender(ChatMessage message) {
 bool senderPicked(ChatMessage message) {
   final vigil = Vigil.instance;
 
-  if (vigil.names.containsKey(message.from)) {
+  if (vigil.known(message.from)) {
     return false;
   }
 
@@ -358,11 +358,7 @@ Future<void> newChat(Status status) async {
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        Text(
-                          vigil.name(id),
-                          style: peerStyle(Styles.cardTitle, vigil.picked(id)),
-                          overflow: TextOverflow.ellipsis,
-                        ),
+                        PeerName(id, style: Styles.cardTitle),
                         if (vigil.name(id) != 'Peer $id')
                           Text('Peer $id', style: Styles.detail),
                       ],
@@ -625,11 +621,7 @@ class ChatRow extends StatelessWidget {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(
-                  vigil.name(chat.peer),
-                  style: peerStyle(Styles.cardTitle, vigil.picked(chat.peer)),
-                  overflow: TextOverflow.ellipsis,
-                ),
+                PeerName(chat.peer, style: Styles.cardTitle),
                 const SizedBox(height: 3),
                 Text(
                   typing ? 'typing…' : _preview(last),
@@ -743,7 +735,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
     final names = [
       for (final m in group.members)
         if (m.online && m.typing)
-          if (vigil.names.containsKey(m.id) || m.nick.isEmpty)
+          if (vigil.known(m.id) || m.nick.isEmpty)
             vigil.name(m.id)
           else
             chosen(m.nick),
@@ -1442,14 +1434,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
                                     ],
                                   ),
                                   const SizedBox(height: 2),
-                                  Text(
-                                    vigil.name(peer),
-                                    style: peerStyle(
-                                      Styles.barTitle,
-                                      vigil.picked(peer),
-                                    ),
-                                    overflow: TextOverflow.ellipsis,
-                                  ),
+                                  PeerName(peer, style: Styles.barTitle),
                                 ],
                               ),
                             ),
@@ -1684,7 +1669,7 @@ class _Member extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final vigil = Vigil.instance;
-    final named = vigil.names.containsKey(member.id);
+    final named = vigil.known(member.id);
 
     final (state, label, color) = member.typing
         ? (Liveness.online, 'TYPING…', Palette.amber)
@@ -1710,15 +1695,13 @@ class _Member extends StatelessWidget {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(
-                  named || member.nick.isEmpty
+                PeerName(
+                  member.id,
+                  style: Styles.cardTitle,
+                  name: named || member.nick.isEmpty
                       ? vigil.name(member.id)
                       : chosen(member.nick),
-                  style: peerStyle(
-                    Styles.cardTitle,
-                    !named && member.nick.isNotEmpty,
-                  ),
-                  overflow: TextOverflow.ellipsis,
+                  picked: !named && member.nick.isNotEmpty,
                 ),
                 const SizedBox(height: 2),
                 Text(
@@ -2557,15 +2540,13 @@ class _Bubble extends StatelessWidget {
                                     mainAxisSize: MainAxisSize.min,
                                     children: [
                                       Flexible(
-                                        child: Text(
-                                          sender!,
-                                          overflow: TextOverflow.ellipsis,
-                                          style: peerStyle(
-                                            Styles.rubric.copyWith(
-                                              color: Palette.amber,
-                                            ),
-                                            senderPicked(message),
+                                        child: PeerName(
+                                          message.from,
+                                          name: sender!,
+                                          style: Styles.rubric.copyWith(
+                                            color: Palette.amber,
                                           ),
+                                          picked: senderPicked(message),
                                         ),
                                       ),
                                       const SizedBox(width: 12),

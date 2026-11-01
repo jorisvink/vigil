@@ -21,6 +21,14 @@ A configuration holds some or all of these keys:
 - `cathedral_secret`, the cathedral secret
 - `cathedral_cosk`, the cathedral offer signing key
 
+A configuration made by Covenant also holds:
+
+- `name_pubkey`, the public key the flock signs device names with
+- `name_signature`, the signature over the `instance` of this device
+
+These two are not secret. See [gospel.md](gospel.md) for how they are
+used.
+
 Each key is written as hex. The core checks the length of every key when
 it parses the file. A configuration with a missing or malformed key is
 rejected.

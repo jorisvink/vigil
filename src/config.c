@@ -25,6 +25,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 
+#include <sodium.h>
+
 #include "vigil.h"
 
 #include <libkyrka/libnyfe.h>
@@ -53,6 +55,7 @@ struct config_edit {
 };
 
 static int	config_validate(struct config_parser *);
+static int	config_instance_valid(const char *);
 static int	config_error(struct config_parser *, const char *, ...)
 		    __attribute__((format (printf, 2, 3)));
 
@@ -75,10 +78,12 @@ static int	config_parse_secret(struct config_parser *, char *);
 static int	config_parse_instance(struct config_parser *, char *);
 static int	config_parse_cathedral(struct config_parser *, char *);
 static int	config_parse_block_ipv6(struct config_parser *, char *);
+static int	config_parse_name_pubkey(struct config_parser *, char *);
 static int	config_parse_cathedral_id(struct config_parser *, char *);
 static int	config_parse_liturgy_group(struct config_parser *, char *);
 static int	config_parse_cathedral_cosk(struct config_parser *, char *);
 static int	config_parse_liturgy_prefix(struct config_parser *, char *);
+static int	config_parse_name_signature(struct config_parser *, char *);
 static int	config_parse_cathedral_flock(struct config_parser *, char *);
 static int	config_parse_cathedral_secret(struct config_parser *, char *);
 static int	config_parse_number(const char *, int, u_int64_t, u_int64_t *);
@@ -125,6 +130,7 @@ static struct {
 	{ "tunnel",			config_parse_tunnel },
 	{ "secret",			config_parse_secret },
 	{ "instance",			config_parse_instance },
+	{ "name_pubkey",		config_parse_name_pubkey },
 	{ "cathedral",			config_parse_cathedral },
 	{ "block_ipv6",			config_parse_block_ipv6 },
 	{ "liturgy_group",		config_parse_liturgy_group },
@@ -135,6 +141,7 @@ static struct {
 	{ "cathedral_flock",		config_parse_cathedral_flock },
 	{ "cathedral_secret",		config_parse_cathedral_secret },
 	{ "cathedral_nat_port",		config_parse_cathedral_nat_port },
+	{ "name_signature",		config_parse_name_signature },
 	{ "cathedral_flock_dst",	config_parse_cathedral_flock_dst },
 	{ "cathedral_remembrance",	config_parse_cathedral_remembrance },
 	{ "cathedral_commixtion",	config_parse_cathedral_commixtion },
@@ -394,6 +401,53 @@ vigil_config_free(struct vigil_config *cfg)
 
 	nyfe_mem_zero(cfg, sizeof(*cfg));
 	free(cfg);
+}
+
+/*
+ * Check that sig is a signature by the flock in cfg over name, for the
+ * device with the given KEK id. We take the flock from cfg and never
+ * from the sender, so a device cannot pass itself off as another one.
+ * Returns 0 if the name verifies, -1 if it does not.
+ *
+ *	m = VIGIL_NAME_LABEL || flock || kek || len(name) || name
+ */
+int
+vigil_config_name_verify(const struct vigil_config *cfg, u_int8_t kek,
+    const char *name, const u_int8_t *sig, size_t sig_len)
+{
+	u_int64_t	flock;
+	size_t		len, off;
+	u_int8_t	msg[VIGIL_NAME_MSG_MAX];
+
+	PRECOND(cfg != NULL);
+	PRECOND(name != NULL);
+	PRECOND(sig != NULL);
+	PRECOND(sig_len == VIGIL_SIGNATURE_LENGTH);
+
+	if (!(cfg->keys & VIGIL_CONFIG_KEY_NAME_PUBKEY) || kek == 0)
+		return (-1);
+
+	if (config_instance_valid(name) == -1)
+		return (-1);
+
+	len = strlen(name);
+	off = sizeof(VIGIL_NAME_LABEL) - 1;
+	memcpy(msg, VIGIL_NAME_LABEL, off);
+
+	flock = htobe64(cfg->cathedral_flock);
+	memcpy(&msg[off], &flock, sizeof(flock));
+	off += sizeof(flock);
+
+	msg[off++] = kek;
+	msg[off++] = (u_int8_t)len;
+
+	memcpy(&msg[off], name, len);
+	off += len;
+
+	if (crypto_sign_verify_detached(sig, msg, off, cfg->name_pubkey) != 0)
+		return (-1);
+
+	return (0);
 }
 
 /*
@@ -777,6 +831,13 @@ config_validate_cathedral(struct config_parser *cp)
 	if (!(cfg->keys & VIGIL_CONFIG_KEY_COSK))
 		return (config_error(cp, "no cathedral_cosk was configured"));
 
+	if ((cfg->keys & VIGIL_CONFIG_KEY_NAME_SIGNATURE) &&
+	    !(cfg->keys & VIGIL_CONFIG_KEY_NAME_PUBKEY)) {
+		ret = config_error(cp,
+		    "name_signature requires a name_pubkey");
+		return (ret);
+	}
+
 	if (cfg->cathedral_nat_port == 0) {
 		if (cfg->cathedral_port == USHRT_MAX)
 			return (config_error(cp, "cannot derive nat port"));
@@ -832,7 +893,7 @@ static int
 config_parse_instance(struct config_parser *cp, char *opt)
 {
 	int		ret;
-	size_t		idx, len;
+	size_t		len;
 
 	PRECOND(cp != NULL);
 	PRECOND(opt != NULL);
@@ -846,13 +907,34 @@ config_parse_instance(struct config_parser *cp, char *opt)
 		return (ret);
 	}
 
-	for (idx = 0; idx < len; idx++) {
-		if (!isalnum((unsigned char)opt[idx]) && opt[idx] != '-' &&
-		    opt[idx] != '_' && opt[idx] != '.' && opt[idx] != ' ')
-			return (config_error(cp, "instance name is invalid"));
-	}
+	if (config_instance_valid(opt) == -1)
+		return (config_error(cp, "instance name is invalid"));
 
 	memcpy(cp->cfg->instance, opt, len + 1);
+
+	return (0);
+}
+
+/*
+ * Check that name is a valid instance name. Covenant only signs names
+ * that follow the same rules.
+ */
+static int
+config_instance_valid(const char *name)
+{
+	size_t		idx, len;
+
+	PRECOND(name != NULL);
+
+	len = strlen(name);
+	if (len == 0 || len >= VIGIL_INSTANCE_MAX)
+		return (-1);
+
+	for (idx = 0; idx < len; idx++) {
+		if (!isalnum((unsigned char)name[idx]) && name[idx] != '-' &&
+		    name[idx] != '_' && name[idx] != '.' && name[idx] != ' ')
+			return (-1);
+	}
 
 	return (0);
 }
@@ -1068,6 +1150,41 @@ config_parse_kek(struct config_parser *cp, char *opt)
 
 	ret = config_parse_hex(cp, "kek", opt, cp->cfg->kek,
 	    sizeof(cp->cfg->kek), VIGIL_CONFIG_KEY_KEK);
+
+	return (ret);
+}
+
+/*
+ * Parse the name_pubkey configuration option.
+ */
+static int
+config_parse_name_pubkey(struct config_parser *cp, char *opt)
+{
+	int		ret;
+
+	PRECOND(cp != NULL);
+	PRECOND(opt != NULL);
+
+	ret = config_parse_hex(cp, "name_pubkey", opt, cp->cfg->name_pubkey,
+	    sizeof(cp->cfg->name_pubkey), VIGIL_CONFIG_KEY_NAME_PUBKEY);
+
+	return (ret);
+}
+
+/*
+ * Parse the name_signature configuration option.
+ */
+static int
+config_parse_name_signature(struct config_parser *cp, char *opt)
+{
+	int		ret;
+
+	PRECOND(cp != NULL);
+	PRECOND(opt != NULL);
+
+	ret = config_parse_hex(cp, "name_signature", opt,
+	    cp->cfg->name_signature, sizeof(cp->cfg->name_signature),
+	    VIGIL_CONFIG_KEY_NAME_SIGNATURE);
 
 	return (ret);
 }

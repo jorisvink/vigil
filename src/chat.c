@@ -333,6 +333,10 @@ struct chat_peer {
 	struct chat_tunnel	*tunnel;
 
 	char			nick[VIGIL_CHAT_NICK_MAX + 1];
+
+	char			name[VIGIL_INSTANCE_MAX];
+	char			seen[VIGIL_INSTANCE_MAX + 1];
+	u_int8_t		signature[VIGIL_SIGNATURE_LENGTH];
 };
 
 /*
@@ -446,9 +450,9 @@ static void	chat_member_report(struct chat_peer *, u_int16_t, int);
 static void	chat_heaven_input(struct kyrka_packet *, u_int64_t, void *);
 static void	chat_hb_recv(struct chat_tunnel *, struct vigil_chat_frame *);
 static void	chat_purgatory_input(struct kyrka_packet *, u_int64_t, void *);
+static void	chat_hb_name(struct chat_peer *, const struct vigil_chat_hb *);
 static void	chat_text_recv(struct chat_tunnel *, u_int64_t,
-		    const struct chat_quote *, u_int8_t *,
-		    u_int16_t);
+		    const struct chat_quote *, u_int8_t *, u_int16_t);
 
 static void	chat_ack_recv(struct chat_tunnel *, u_int64_t);
 static void	chat_ack_queue(struct chat_tunnel *, u_int64_t);
@@ -572,6 +576,9 @@ static pthread_mutex_t			lock = PTHREAD_MUTEX_INITIALIZER;
 /* Our nickname, empty if we have none. */
 static char				nick[VIGIL_CHAT_NICK_MAX + 1];
 
+/* Set when our flock signed our instance, we then send it to peers. */
+static int				named = 0;
+
 /* The commands for the event loop. */
 static struct chat_command_list		commands;
 static size_t				command_count = 0;
@@ -615,6 +622,20 @@ vigil_chat_init(void)
 		memset(&peers[idx], 0, sizeof(peers[idx]));
 		TAILQ_INIT(&peers[idx].outbox);
 		peers[idx].id = idx;
+	}
+
+	named = 0;
+
+	if (vigil->gospel->keys & VIGIL_CONFIG_KEY_NAME_SIGNATURE) {
+		if (vigil_config_name_verify(vigil->gospel,
+		    vigil->gospel->spi & 0xff, vigil->gospel->instance,
+		    vigil->gospel->name_signature,
+		    sizeof(vigil->gospel->name_signature)) == 0) {
+			named = 1;
+		} else {
+			vigil_log(LOG_NOTICE,
+			    "[chat] our instance does not match its signature");
+		}
 	}
 
 	chat_lock();
@@ -1146,6 +1167,8 @@ vigil_chat_status(struct vigil_buf *buf)
 		    p2p ? "true" : "false", queued);
 
 		vigil_buf_quote(buf, peer->nick);
+		vigil_buf_appendf(buf, ",\"signed\":");
+		vigil_buf_quote(buf, peer->name);
 		vigil_buf_appendf(buf, "}");
 
 		first = 0;
@@ -1178,6 +1201,8 @@ vigil_chat_status(struct vigil_buf *buf)
 		    online && peer->group->typing ? "true" : "false");
 
 		vigil_buf_quote(buf, peer->nick);
+		vigil_buf_appendf(buf, ",\"signed\":");
+		vigil_buf_quote(buf, peer->name);
 		vigil_buf_appendf(buf, "}");
 
 		first = 0;
@@ -1327,11 +1352,9 @@ chat_liturgy_cathedral_check(struct chat_liturgy *lit)
 	lit->last = 0;
 	lit->cathedral.alive = 0;
 
-	for (idx = 0; idx < KYRKA_PEERS_PER_FLOCK; idx++) {
-		if (lit == &signaling)
+	if (lit == &signaling) {
+		for (idx = 0; idx < KYRKA_PEERS_PER_FLOCK; idx++)
 			peers[idx].present = 0;
-		else
-			peers[idx].member = 0;
 	}
 
 	if (vigil_call_cathedral_pick(&lit->cathedral) == -1) {
@@ -1736,6 +1759,10 @@ chat_tallies_free(void)
  *
  * In the signaling group the peer only shows up while it signals us, so
  * we keep a tunnel that is online for as long as we want the peer too.
+ *
+ * When the liturgy of our group times out we keep the members we last
+ * heard of, a cathedral going away does not mean they left. Until it
+ * answers again we only keep the tunnels with them that are online.
  */
 static void
 chat_tunnel_check(struct chat_peer *peer, u_int16_t id)
@@ -1754,6 +1781,8 @@ chat_tunnel_check(struct chat_peer *peer, u_int16_t id)
 	} else {
 		tun = peer->group;
 		want = peer->member;
+		if (discovery.last == 0 && !chat_tunnel_online(tun))
+			want = 0;
 	}
 
 	if (want == 0) {
@@ -2619,10 +2648,21 @@ chat_frame_send(struct chat_tunnel *tun, struct chat_msg *msg)
 		frame->id = VIGIL_CHAT_HEARTBEAT_ID;
 		frame->type = VIGIL_CHAT_TYPE_HEARTBEAT;
 
+		VERIFY(sizeof(*hb) <= sizeof(frame->data));
+
 		hb = (struct vigil_chat_hb *)frame->data;
 		hb->uid = tun->local_uid;
 		hb->features = VIGIL_CHAT_FEATURE_DATA |
 		    VIGIL_CHAT_FEATURE_REPLY;
+
+		if (named) {
+			hb->features |= VIGIL_CHAT_FEATURE_NAME;
+			memcpy(hb->instance, vigil->gospel->instance,
+			    sizeof(hb->instance));
+			memcpy(hb->signature,
+			    vigil->gospel->name_signature,
+			    sizeof(hb->signature));
+		}
 
 		if (tun->group != 0)
 			hb->typing = vigil_atomic_read(&group_typing);
@@ -2753,6 +2793,8 @@ chat_hb_recv(struct chat_tunnel *tun, struct vigil_chat_frame *frame)
 		memcpy(peer->nick, name, sizeof(name));
 	}
 
+	chat_hb_name(peer, hb);
+
 	tun->heard = 1;
 	tun->features = hb->features;
 	tun->typing = hb->typing ? 1 : 0;
@@ -2767,6 +2809,46 @@ chat_hb_recv(struct chat_tunnel *tun, struct vigil_chat_frame *frame)
 	}
 
 	tun->remote_uid = hb->uid;
+}
+
+/*
+ * Take the signed name from a heartbeat. We only accept it if our flock
+ * signed it for the KEK id of the tunnel it came in on, otherwise the
+ * peer has no signed name.
+ */
+static void
+chat_hb_name(struct chat_peer *peer, const struct vigil_chat_hb *hb)
+{
+	char		name[VIGIL_INSTANCE_MAX + 1];
+
+	PRECOND(peer != NULL);
+	PRECOND(hb != NULL);
+
+	memset(name, 0, sizeof(name));
+
+	if (hb->features & VIGIL_CHAT_FEATURE_NAME)
+		memcpy(name, hb->instance, sizeof(hb->instance));
+
+	if (!strcmp(name, peer->seen) &&
+	    !memcmp(hb->signature, peer->signature, sizeof(hb->signature)))
+		return;
+
+	memcpy(peer->seen, name, sizeof(peer->seen));
+	memcpy(peer->signature, hb->signature, sizeof(peer->signature));
+	memset(peer->name, 0, sizeof(peer->name));
+
+	if (name[0] == '\0')
+		return;
+
+	if (vigil_config_name_verify(vigil->gospel, peer->id, name,
+	    hb->signature, sizeof(hb->signature)) == -1) {
+		vigil_log(LOG_NOTICE,
+		    "[chat] %02x sent a name that does not verify", peer->id);
+		return;
+	}
+
+	vigil_log(LOG_INFO, "[chat] %02x is signed as '%s'", peer->id, name);
+	memcpy(peer->name, name, strlen(name) + 1);
 }
 
 /*

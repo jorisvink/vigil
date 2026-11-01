@@ -192,13 +192,17 @@ struct vigil_mac {
 
 /*
  * Data carried in a heartbeat packet, must be at most
- * VIGIL_CHAT_MESSAGE_MAX bytes large.
+ * VIGIL_CHAT_MESSAGE_MAX bytes large. When VIGIL_CHAT_FEATURE_NAME is
+ * set, the instance and the signature our flock made over it come after
+ * the features. Older peers stop reading at the features.
  */
 struct vigil_chat_hb {
 	u_int64_t		uid;
 	u_int8_t		name[VIGIL_CHAT_NICK_MAX];
 	u_int8_t		typing;
 	u_int8_t		features;
+	u_int8_t		instance[VIGIL_INSTANCE_MAX];
+	u_int8_t		signature[VIGIL_SIGNATURE_LENGTH];
 } __attribute__((packed));
 
 /*
@@ -387,6 +391,9 @@ struct vigil_config {
 	u_int8_t		secret[VIGIL_KEY_LENGTH];
 	u_int8_t		cathedral_secret[VIGIL_KEY_LENGTH];
 	u_int8_t		cathedral_cosk[VIGIL_COSK_LENGTH];
+
+	u_int8_t		name_pubkey[VIGIL_NAME_PUBKEY_LENGTH];
+	u_int8_t		name_signature[VIGIL_SIGNATURE_LENGTH];
 };
 
 /*
@@ -556,6 +563,8 @@ void	vigil_buf_appendf(struct vigil_buf *, const char *, ...)
 /* src/config.c */
 void	vigil_config_free(struct vigil_config *);
 int	vigil_config_summary(const struct vigil_config *, char *, size_t);
+int	vigil_config_name_verify(const struct vigil_config *, u_int8_t,
+	    const char *, const u_int8_t *, size_t);
 
 const char		*vigil_config_mode(const struct vigil_config *);
 struct vigil_config	*vigil_config_parse(const char *, size_t,

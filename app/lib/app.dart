@@ -458,6 +458,49 @@ TextStyle peerStyle(TextStyle style, bool picked) {
   return style.copyWith(fontStyle: FontStyle.italic);
 }
 
+class PeerName extends StatelessWidget {
+  const PeerName(
+    this.peer, {
+    super.key,
+    required this.style,
+    this.name,
+    this.picked,
+  });
+
+  final String peer;
+  final TextStyle style;
+  final String? name;
+  final bool? picked;
+
+  @override
+  Widget build(BuildContext context) {
+    final vigil = Vigil.instance;
+    final shown = name ?? vigil.name(peer);
+    final sealed = vigil.authenticated(peer) && shown == vigil.name(peer);
+    final size = (style.fontSize ?? 14) * 0.95;
+
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Flexible(
+          child: Text(
+            shown,
+            style: peerStyle(style, picked ?? vigil.picked(peer)),
+            overflow: TextOverflow.ellipsis,
+          ),
+        ),
+        if (sealed) ...[
+          SizedBox(width: size * 0.4),
+          Semantics(
+            label: 'Signed by the flock',
+            child: Glyph(GlyphKind.seal, size: size, color: Palette.good),
+          ),
+        ],
+      ],
+    );
+  }
+}
+
 Future<bool> confirm({
   required String title,
   required String text,

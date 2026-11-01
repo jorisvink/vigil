@@ -217,6 +217,7 @@ enum GlyphKind {
   star,
   pin,
   reply,
+  seal,
 }
 
 class Glyph extends StatelessWidget {
@@ -439,6 +440,26 @@ class _GlyphPainter extends CustomPainter {
       case GlyphKind.reply:
         poly([9, 5, 4, 10, 9, 15]);
         poly([4, 10, 15, 10, 20, 15, 20, 19]);
+      case GlyphKind.seal:
+        poly([
+          8,
+          2,
+          16,
+          2,
+          22,
+          8,
+          22,
+          16,
+          16,
+          22,
+          8,
+          22,
+          2,
+          16,
+          2,
+          8,
+        ], close: true);
+        poly([7.5, 12, 10.5, 15, 16.5, 9]);
       case GlyphKind.pin:
         poly([8, 3, 16, 3, 15, 9, 18, 14, 6, 14, 9, 9], close: true);
         poly([12, 14, 12, 21]);

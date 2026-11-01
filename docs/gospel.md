@@ -89,6 +89,35 @@ Each device also sends a nickname in its heartbeats. The nickname is
 chosen by the sender and is not checked by anyone. The device id is what
 identifies the sender. You can give peers your own names in the app.
 
+## Signed names
+
+A configuration made by Covenant can carry a signed name. Covenant signs
+the `instance` of the device with the ed25519 key of the flock and adds
+the signature as `name_signature`, together with the public key of
+the flock as `name_pubkey`. What is signed is:
+
+```
+m = "COVENANT.NAME" || flock || kek || len(name) || name
+```
+
+The flock is 64-bit big endian, the KEK id and the length are one byte
+each.
+
+When the signature matches its own instance, a device sends the instance
+and the signature in its heartbeats and sets a feature bit for it. Older
+devices stop reading at the features and never see them.
+
+The receiver rebuilds `m` from the flock in its own configuration and
+the KEK id of the tunnel the heartbeat came in on. It never takes those
+from the sender, so a device cannot use the signed name of another
+device. If the signature checks out with its own `name_pubkey`, the app
+shows that name for the peer instead of its nickname. A name you gave
+the peer yourself still comes first.
+
+The cathedrals never see a name, it only travels inside the tunnels.
+Renaming the instance in Vigil breaks the signature, the device then
+only sends its nickname until it is provisioned again.
+
 ## Group chats
 
 A group chat is a liturgy in the group chat domain. Every member tells

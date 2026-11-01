@@ -22,6 +22,8 @@
 
 #include <stdio.h>
 
+#include <sodium.h>
+
 #include "vigil.h"
 
 #define HEX32	"000102030405060708090a0b0c0d0e0f" \
@@ -30,6 +32,7 @@
 
 static void	test_ok(const char *, const char *, const char *);
 static void	test_fail(const char *, const char *, const char *);
+static void	test_name(void);
 static void	test_edit(const char *, const char *, const char *,
 		    const char *);
 
@@ -574,6 +577,22 @@ main(void)
 	    "instance a/b\n",
 	    "instance name is invalid");
 
+	test_fail("signature without name_pubkey",
+	    "vigil 1\ninstance laptop\ntunnel 10.88.0.2/24\nspi 0c0d\n"
+	    "kek " HEX32 "\ncathedral 1.2.3.4:4469\ncathedral_id 5eb2411f\n"
+	    "cathedral_flock 493abf95a07e0c00\ncathedral_secret " HEX32 "\n"
+	    "cathedral_cosk " HEX64 "\nname_signature " HEX64 "\n",
+	    "name_signature requires a name_pubkey");
+	test_fail("name_pubkey too short",
+	    "vigil 1\ninstance laptop\nname_pubkey 0001\n",
+	    "name_pubkey must be 64 hex characters");
+	test_fail("name_pubkey twice",
+	    "vigil 1\ninstance laptop\nname_pubkey " HEX32 "\n"
+	    "name_pubkey " HEX32 "\n",
+	    "name_pubkey already specified");
+
+	test_name();
+
 	if (failures != 0) {
 		printf("config_test: %d failures\n", failures);
 		return (1);
@@ -621,6 +640,100 @@ test_fail(const char *name, const char *cfg, const char *reason)
 		    name, out, expected);
 		failures++;
 	}
+}
+
+/*
+ * Sign a name the way covenant does, put it in a configuration and check
+ * that vigil_config_name_verify() only accepts it for that KEK and name.
+ */
+static void
+test_name(void)
+{
+	struct vigil_config	*cfg;
+	u_int64_t		flock;
+	size_t			len, off;
+	char			text[2048], err[256];
+	char			pk_hex[65], sig_hex[129];
+	u_int8_t		pk[32], sk[64], sig[64], msg[128];
+
+	if (crypto_sign_keypair(pk, sk) != 0) {
+		printf("FAIL name: crypto_sign_keypair\n");
+		failures++;
+		return;
+	}
+
+	off = strlen(VIGIL_NAME_LABEL);
+	memcpy(msg, VIGIL_NAME_LABEL, off);
+
+	flock = htobe64(0x493abf95a07e0c00ULL);
+	memcpy(&msg[off], &flock, sizeof(flock));
+	off += sizeof(flock);
+
+	len = strlen("my phone");
+	msg[off++] = 0x0c;
+	msg[off++] = (u_int8_t)len;
+	memcpy(&msg[off], "my phone", len);
+	off += len;
+
+	(void)crypto_sign_detached(sig, NULL, msg, off, sk);
+	(void)sodium_bin2hex(pk_hex, sizeof(pk_hex), pk, sizeof(pk));
+	(void)sodium_bin2hex(sig_hex, sizeof(sig_hex), sig, sizeof(sig));
+
+	(void)snprintf(text, sizeof(text),
+	    "vigil 1\ninstance my phone\nmode gospel\nspi 0c\n"
+	    "kek " HEX32 "\ncathedral 1.2.3.4:4469\ncathedral_id 5eb2411f\n"
+	    "cathedral_flock 493abf95a07e0c00\ncathedral_secret " HEX32 "\n"
+	    "cathedral_cosk " HEX64 "\nname_pubkey %s\n"
+	    "name_signature %s\n", pk_hex, sig_hex);
+
+	cfg = vigil_config_parse(text, strlen(text), err, sizeof(err));
+	if (cfg == NULL) {
+		printf("FAIL name: %s\n", err);
+		failures++;
+		return;
+	}
+
+	if (vigil_config_name_verify(cfg, 0x0c, cfg->instance,
+	    cfg->name_signature, sizeof(cfg->name_signature)) != 0) {
+		printf("FAIL name: our own name does not verify\n");
+		failures++;
+	}
+
+	if (vigil_config_name_verify(cfg, 0x0d, "my phone",
+	    sig, sizeof(sig)) != -1) {
+		printf("FAIL name: verified for another KEK id\n");
+		failures++;
+	}
+
+	if (vigil_config_name_verify(cfg, 0x0c, "my phonE",
+	    sig, sizeof(sig)) != -1) {
+		printf("FAIL name: verified another name\n");
+		failures++;
+	}
+
+	if (vigil_config_name_verify(cfg, 0x0c, "my/phone",
+	    sig, sizeof(sig)) != -1) {
+		printf("FAIL name: verified an invalid name\n");
+		failures++;
+	}
+
+	sig[10] ^= 0x01;
+	if (vigil_config_name_verify(cfg, 0x0c, "my phone",
+	    sig, sizeof(sig)) != -1) {
+		printf("FAIL name: verified a broken signature\n");
+		failures++;
+	}
+
+	cfg->cathedral_flock ^= 0x0100;
+	sig[10] ^= 0x01;
+	if (vigil_config_name_verify(cfg, 0x0c, "my phone",
+	    sig, sizeof(sig)) != -1) {
+		printf("FAIL name: verified for another flock\n");
+		failures++;
+	}
+
+	sodium_memzero(sk, sizeof(sk));
+	vigil_config_free(cfg);
 }
 
 static void

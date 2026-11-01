@@ -257,6 +257,7 @@ class ChatPeer {
   bool get p2p => json['p2p'] as bool? ?? false;
   int get queued => json['queued'] as int? ?? 0;
   String get nick => json['nick'] as String? ?? '';
+  String get signed => json['signed'] as String? ?? '';
 }
 
 class ChatStatus {
@@ -287,6 +288,7 @@ class ChatMember {
   String get link => json['link'] as String? ?? 'none';
   bool get typing => json['typing'] as bool? ?? false;
   String get nick => json['nick'] as String? ?? '';
+  String get signed => json['signed'] as String? ?? '';
 }
 
 class ChatGroup {
@@ -500,6 +502,7 @@ class Vigil {
   final Map<String, Future<Uint8List?>> _data = {};
   static const _dataMax = 24;
   final Map<String, String> _nicks = {};
+  final Map<String, String> _signed = {};
 
   static const _connectLimit = Duration(seconds: 20);
 
@@ -519,6 +522,11 @@ class Vigil {
       return named;
     }
 
+    final signed = _signed[peer];
+    if (signed != null) {
+      return signed;
+    }
+
     final nick = _nicks[peer];
     if (nick != null) {
       return chosen(nick);
@@ -531,8 +539,13 @@ class Vigil {
     return 'Peer $peer';
   }
 
-  bool picked(String peer) =>
-      !_names.containsKey(peer) && _nicks.containsKey(peer);
+  bool picked(String peer) => !known(peer) && _nicks.containsKey(peer);
+
+  bool known(String peer) =>
+      _names.containsKey(peer) || _signed.containsKey(peer);
+
+  bool authenticated(String peer) =>
+      !_names.containsKey(peer) && _signed.containsKey(peer);
 
   void start() {
     _poll ??= Timer.periodic(const Duration(seconds: 1), (_) => refresh());
@@ -1017,15 +1030,25 @@ class Vigil {
       if (p.nick.isNotEmpty) {
         _nicks[p.id] = p.nick;
       }
+      _signedSeen(p.id, p.signed);
     }
 
     for (final m in _last.chat?.group?.members ?? const <ChatMember>[]) {
       if (m.nick.isNotEmpty) {
         _nicks[m.id] = m.nick;
       }
+      _signedSeen(m.id, m.signed);
     }
 
     _status.add(_last);
+  }
+
+  void _signedSeen(String peer, String signed) {
+    if (signed.isEmpty) {
+      _signed.remove(peer);
+    } else {
+      _signed[peer] = signed;
+    }
   }
 
   Future<String> _invoke(String method, Object? arg) async {

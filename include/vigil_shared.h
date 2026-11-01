@@ -52,6 +52,19 @@
 #define VIGIL_KEY_LENGTH		32
 #define VIGIL_COSK_LENGTH		64
 
+/*
+ * Covenant signs the name of every device in a flock with the ed25519
+ * key of that flock. These are the lengths of that public key and of a
+ * signature, see vigil_config_name_verify().
+ */
+#define VIGIL_NAME_PUBKEY_LENGTH	32
+#define VIGIL_SIGNATURE_LENGTH		64
+#define VIGIL_NAME_LABEL		"COVENANT.NAME"
+
+/* The longest m we check, label || flock || kek || len(name) || name. */
+#define VIGIL_NAME_MSG_MAX		\
+    (sizeof(VIGIL_NAME_LABEL) - 1 + 8 + 1 + 1 + VIGIL_INSTANCE_MAX - 1)
+
 /* The liturgy group used if none is configured. */
 #define VIGIL_LITURGY_GROUP_DEFAULT	0x0001
 
@@ -143,6 +156,7 @@
 /* The features we tell our peers about in our heartbeats. */
 #define VIGIL_CHAT_FEATURE_DATA		0x01
 #define VIGIL_CHAT_FEATURE_REPLY	0x02
+#define VIGIL_CHAT_FEATURE_NAME		0x04
 
 /* The maximum length of a reply, it carries who wrote what it replies to. */
 #define VIGIL_CHAT_REPLY_MAX		(VIGIL_CHAT_MESSAGE_MAX - 9)
@@ -178,6 +192,8 @@
 #define VIGIL_CONFIG_KEY_KEK		(1 << 1)
 #define VIGIL_CONFIG_KEY_CS		(1 << 2)
 #define VIGIL_CONFIG_KEY_COSK		(1 << 3)
+#define VIGIL_CONFIG_KEY_NAME_PUBKEY	(1 << 4)
+#define VIGIL_CONFIG_KEY_NAME_SIGNATURE	(1 << 5)
 
 /*
  * The overhead a tunnel adds on the path, ip and udp headers, the

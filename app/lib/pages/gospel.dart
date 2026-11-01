@@ -578,11 +578,7 @@ class _PeerRow extends StatelessWidget {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(
-                  vigil.name(peer),
-                  style: peerStyle(Styles.cardTitle, vigil.picked(peer)),
-                  overflow: TextOverflow.ellipsis,
-                ),
+                PeerName(peer, style: Styles.cardTitle),
                 if (vigil.name(peer) != 'Peer $peer')
                   Text('Peer $peer', style: Styles.detail),
               ],
