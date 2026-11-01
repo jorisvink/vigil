@@ -7,6 +7,7 @@ import android.database.Cursor
 import android.net.Uri
 import android.os.Bundle
 import android.os.SystemClock
+import java.security.SecureRandom
 
 class HandoffProvider : ContentProvider() {
     override fun onCreate(): Boolean = true
@@ -53,28 +54,70 @@ class HandoffProvider : ContentProvider() {
 
 object Handoff {
     private const val KEEP_MS = 5 * 60 * 1000L
+    private const val GONE = "The handoff expired, hand the device over again"
+    private val PREFIX = "handoff ".toByteArray()
 
     private var config: ByteArray? = null
+    private var issued: ByteArray? = null
     private var since = 0L
 
     @Synchronized
     fun put(data: ByteArray) {
-        config?.fill(0)
+        clear()
         config = data.copyOf()
         since = SystemClock.elapsedRealtime()
     }
 
-    /** The caller must wipe the returned configuration. */
     @Synchronized
-    fun take(): ByteArray? {
-        val data = config ?: return null
-        config = null
-
-        if (SystemClock.elapsedRealtime() - since > KEEP_MS) {
-            data.fill(0)
+    fun token(): ByteArray? {
+        if (config == null) {
             return null
         }
 
-        return data
+        if (issued != null) {
+            return null
+        }
+
+        if (expired()) {
+            clear()
+            return null
+        }
+
+        val random = ByteArray(16)
+        SecureRandom().nextBytes(random)
+
+        val token = PREFIX + random.joinToString("") { "%02x".format(it) }.toByteArray()
+        issued = token
+
+        return token.copyOf()
     }
+
+    @Synchronized
+    fun <T> held(token: ByteArray, work: (ByteArray) -> T): T? {
+        if (!token.copyOfRange(0, minOf(token.size, PREFIX.size)).contentEquals(PREFIX)) {
+            return null
+        }
+
+        if (expired()) {
+            clear()
+        }
+
+        val data = config ?: throw TunnelStore.Invalid(GONE)
+        val ours = issued ?: throw TunnelStore.Invalid(GONE)
+
+        if (!ours.contentEquals(token)) {
+            throw TunnelStore.Invalid(GONE)
+        }
+
+        return work(data)
+    }
+
+    @Synchronized
+    fun clear() {
+        config?.fill(0)
+        config = null
+        issued = null
+    }
+
+    private fun expired(): Boolean = SystemClock.elapsedRealtime() - since > KEEP_MS
 }

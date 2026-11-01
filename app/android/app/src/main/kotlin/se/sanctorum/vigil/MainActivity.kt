@@ -107,9 +107,9 @@ class MainActivity : FlutterActivity() {
         try {
             when (call.method) {
                 "list" -> result.success(store.list().toString())
-                "check" -> wiped(call.arguments as ByteArray) { result.success(store.check(it)) }
-                "import" -> wiped(call.arguments as ByteArray) { result.success(store.import(it).toString()) }
-                "handoff" -> wiped(Handoff.take() ?: ByteArray(0)) { result.success(it) }
+                "check" -> wiped(call.arguments as ByteArray) { result.success(checked(it)) }
+                "import" -> wiped(call.arguments as ByteArray) { result.success(imported(it).toString()) }
+                "handoff" -> result.success(Handoff.token() ?: ByteArray(0))
                 "edit" -> result.success(
                     store.edit(call.argument<String>("id")!!, call.argument<String>("edits")!!)
                         .toString()
@@ -568,6 +568,22 @@ class MainActivity : FlutterActivity() {
 
         startActivity(launch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK))
         Runtime.getRuntime().exit(0)
+    }
+
+    private fun checked(config: ByteArray): String {
+        try {
+            return Handoff.held(config, store::check) ?: store.check(config)
+        } catch (e: TunnelStore.Invalid) {
+            return JSONObject().put("error", e.message).toString()
+        }
+    }
+
+    private fun imported(config: ByteArray): JSONObject {
+        val tunnel = Handoff.held(config, store::import) ?: return store.import(config)
+
+        Handoff.clear()
+
+        return tunnel
     }
 
     private fun wiped(config: ByteArray, work: (ByteArray) -> Unit) {

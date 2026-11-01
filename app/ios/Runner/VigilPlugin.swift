@@ -123,17 +123,38 @@ final class VigilPlugin: NSObject, FlutterPlugin, UIDocumentPickerDelegate,
             var config = Self.bytes(call.arguments)
             defer { TunnelKeychain.wipe(&config) }
 
-            result(check(config).1)
+            guard Handoff.ours(config) else {
+                result(check(config).1)
+                return
+            }
+
+            let ok = Handoff.held(config) { held in
+                result(check(held).1)
+            }
+
+            if !ok {
+                result(json(["error": Handoff.gone]))
+            }
         case "import":
             var config = Self.bytes(call.arguments)
             defer { TunnelKeychain.wipe(&config) }
 
-            importTunnel(config, result: result)
-        case "handoff":
-            var config = Handoff.take() ?? []
-            defer { TunnelKeychain.wipe(&config) }
+            guard Handoff.ours(config) else {
+                importTunnel(config, result: result)
+                return
+            }
 
-            result(FlutterStandardTypedData(bytes: Data(config)))
+            let ok = Handoff.held(config) { held in
+                importTunnel(held, result: result)
+            }
+
+            if ok {
+                Handoff.clear()
+            } else {
+                result(FlutterError(code: "invalid", message: Handoff.gone, details: nil))
+            }
+        case "handoff":
+            result(FlutterStandardTypedData(bytes: Data(Handoff.token())))
         case "edit":
             let args = call.arguments as? [String: Any] ?? [:]
             edit(args["id"] as? String ?? "", edits: args["edits"] as? String ?? "", result: result)
@@ -1398,8 +1419,15 @@ final class VigilPlugin: NSObject, FlutterPlugin, UIDocumentPickerDelegate,
 }
 
 enum Handoff {
+    static let gone = "The handoff expired, hand the device over again"
+
     private static let service = "se.sanctorum.handoff"
     private static let keep: TimeInterval = 5 * 60
+    private static let prefix = Array("handoff ".utf8)
+
+    private static var config: [UInt8] = []
+    private static var issued: [UInt8] = []
+    private static var made = Date.distantPast
 
     private static var group: String {
         let prefix = Bundle.main.object(forInfoDictionaryKey: "AppIdentifierPrefix") as? String ?? ""
@@ -1416,8 +1444,47 @@ enum Handoff {
         ]
     }
 
-    /// The caller must wipe the returned configuration.
-    static func take() -> [UInt8]? {
+    static func token() -> [UInt8] {
+        guard take() else { return [] }
+
+        var random = [UInt8](repeating: 0, count: 16)
+        guard SecRandomCopyBytes(kSecRandomDefault, random.count, &random) == errSecSuccess else {
+            clear()
+            return []
+        }
+
+        issued = prefix + Array(random.map { String(format: "%02x", $0) }.joined().utf8)
+
+        return issued
+    }
+
+    static func ours(_ token: [UInt8]) -> Bool {
+        token.starts(with: prefix)
+    }
+
+    static func held(_ token: [UInt8], _ work: ([UInt8]) -> Void) -> Bool {
+        if expired() {
+            clear()
+        }
+
+        guard !config.isEmpty, !issued.isEmpty, token == issued else { return false }
+
+        work(config)
+
+        return true
+    }
+
+    static func clear() {
+        TunnelKeychain.wipe(&config)
+        config = []
+        issued = []
+    }
+
+    private static func expired() -> Bool {
+        Date().timeIntervalSince(made) > keep
+    }
+
+    private static func take() -> Bool {
         var q = query
         q[kSecReturnData as String] = true
         q[kSecReturnAttributes as String] = true
@@ -1427,15 +1494,17 @@ enum Handoff {
         let removed = SecItemDelete(query as CFDictionary)
 
         guard status == errSecSuccess, removed == errSecSuccess, let found = item as? [String: Any],
-              var data = found[kSecValueData as String] as? Data else { return nil }
+              var data = found[kSecValueData as String] as? Data,
+              let date = found[kSecAttrCreationDate as String] as? Date else { return false }
         defer { data.resetBytes(in: 0..<data.count) }
 
-        if let made = found[kSecAttrCreationDate as String] as? Date,
-           Date().timeIntervalSince(made) > keep {
-            return nil
-        }
+        guard Date().timeIntervalSince(date) <= keep else { return false }
 
-        return [UInt8](data)
+        clear()
+        config = [UInt8](data)
+        made = date
+
+        return true
     }
 }
 
