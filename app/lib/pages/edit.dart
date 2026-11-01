@@ -118,6 +118,7 @@ class _EditPageState extends State<EditPage> {
         Pre(
           child: TextField(
             controller: _name,
+            readOnly: _summary.voice,
             maxLength: _nameMax,
             autocorrect: false,
             enableSuggestions: false,
@@ -125,7 +126,9 @@ class _EditPageState extends State<EditPage> {
             inputFormatters: [
               FilteringTextInputFormatter.allow(RegExp(r'[A-Za-z0-9 ._-]')),
             ],
-            style: Styles.pre,
+            style: _summary.voice
+                ? Styles.pre.copyWith(color: Palette.dim)
+                : Styles.pre,
             cursorColor: Palette.amber,
             decoration: InputDecoration.collapsed(
               hintText: 'office',
@@ -133,8 +136,10 @@ class _EditPageState extends State<EditPage> {
             ).copyWith(counterText: ''),
           ),
         ),
-        const Text(
-          'Letters, digits, spaces and . _ - only.',
+        Text(
+          _summary.voice
+              ? 'The name of a Gospel configuration cannot be changed.'
+              : 'Letters, digits, spaces and . _ - only.',
           style: Styles.detail,
         ),
         if (_hasRoutes) ...[
