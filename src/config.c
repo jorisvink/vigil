@@ -52,6 +52,8 @@ struct config_edit {
 
 	char			*err;
 	size_t			errlen;
+
+	char			instance[VIGIL_INSTANCE_MAX];
 };
 
 static int	config_validate(struct config_parser *);
@@ -342,6 +344,7 @@ vigil_config_check(const char *data, size_t len, char *out, size_t outlen)
  * options in the given configuration with those in edits, the result is
  * validated and written into out. Options not given in edits go back to
  * their defaults, the instance has none and must always be given.
+ * A Gospel configuration keeps its instance, Covenant signed it.
  *
  * The result holds key material, the caller must wipe it.
  *
@@ -379,6 +382,15 @@ vigil_config_edit(const char *data, size_t datalen, const char *edits,
 	cfg = vigil_config_parse(out, ce.offset, err, errlen);
 	if (cfg == NULL)
 		goto cleanup;
+
+	if (cfg->mode == VIGIL_MODE_GOSPEL) {
+		if (strcmp(cfg->instance, ce.instance)) {
+			(void)snprintf(err, errlen, "the instance of a "
+			    "gospel configuration cannot be edited");
+			vigil_config_free(cfg);
+			goto cleanup;
+		}
+	}
 
 	vigil_config_free(cfg);
 
@@ -1764,6 +1776,12 @@ config_edit_copy(struct config_edit *ce, const char *data, size_t datalen,
 				goto cleanup;
 			}
 		} else {
+			if (!strcmp(line, "instance")) {
+				len = strlen(opt);
+				if (len < sizeof(ce->instance))
+					memcpy(ce->instance, opt, len + 1);
+			}
+
 			if (config_edit_option(line))
 				continue;
 		}

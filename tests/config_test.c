@@ -554,6 +554,19 @@ main(void)
 	    "cathedral_cosk " HEX64 "\n",
 	    "cathedral_commixtion yes\ninstance calls\n",
 	    "cathedral_commixtion requires shroud");
+	test_edit("edit gospel instance",
+	    "vigil 1\n"
+	    "instance calls\n"
+	    "mode gospel\n"
+	    "spi 0c\n"
+	    "kek " HEX32 "\n"
+	    "cathedral 1.2.3.4:4469\n"
+	    "cathedral_id 5eb2411f\n"
+	    "cathedral_flock 493abf95a07e0c00\n"
+	    "cathedral_secret " HEX32 "\n"
+	    "cathedral_cosk " HEX64 "\n",
+	    "instance other\n",
+	    "the instance of a gospel configuration cannot be edited");
 	test_edit("edit instance",
 	    "vigil 1\ninstance office\ntunnel 10.0.0.2/32\n"
 	    "peer 1.2.3.4:5\nsecret " HEX32 "\n",
