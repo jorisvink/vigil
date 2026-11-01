@@ -29,8 +29,8 @@ On top of that Vigil also implements the sanctum confessions
 # Disclaimer
 
 I wrote this project with the help of LLMs. The security critical
-bits and pieces are entirely written by me, while all other code
-has been reviewed before being accepted.
+and cryptographic bits and pieces are entirely written by me, while
+all other code has been reviewed before being accepted.
 
 I rewrote a bunch of code the LLM suggested as well as it was not
 up-to-par with what I consider good code.
