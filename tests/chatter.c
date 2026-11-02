@@ -20,7 +20,7 @@
  *	$ ./tests/chatter [-n nick] [-m peer:text] [-g group] [-G text]
  *	    [-i peer:file] [-I file] [-f peer:file] [-F file] [-o dir]
  *	    [-t peer] [-T] [-O peer] [-e count] [-x secs] [-l count]
- *	    [-r author:hash] [-D datadir] <gospel>
+ *	    [-r author:hash] [-P file] [-D datadir] <gospel>
  *
  * With -m we send the text to the given peer, -m may be given more
  * than once. With -g we join the given group and with -G we send the
@@ -32,7 +32,8 @@
  * With -i we send the image in the given file to the given peer and with
  * -I to our group, -f and -F do the same for any file. All of them may be
  * given more than once. Data we get is written to the directory given
- * with -o.
+ * with -o, avatars of our peers too.
+ * With -P the image in the given file is our avatar.
  * With -e we wait until we got that many messages and with -x we give
  * up after that many seconds. With -l we act as if we failed to store
  * the first count messages we got.
@@ -72,7 +73,9 @@
 static void	usage(void) __attribute__((noreturn));
 
 static void	*chatter_core_run(void *);
+static void	chatter_avatar(const char *);
 static void	chatter_data_take(const char *);
+static int	chatter_avatar_take(const char *);
 static void	chatter_events_handle(int *, int *, int *);
 static size_t	chatter_config_read(const char *, char *, size_t);
 static void	chatter_data_send(u_int8_t, u_int64_t, int, const char *);
@@ -125,7 +128,7 @@ usage(void)
 	    "[-G text] [-i peer:file] [-I file] [-f peer:file] [-F file] "
 	    "[-a peer:file] [-A file] "
 	    "[-o dir] [-t peer] [-T] [-O peer] [-e count] [-x secs] "
-	    "[-l count] [-r author:hash] [-D datadir] <gospel>\n");
+	    "[-l count] [-r author:hash] [-P file] [-D datadir] <gospel>\n");
 	exit(1);
 }
 
@@ -150,8 +153,11 @@ main(int argc, char **argv)
 	delivered = 0;
 
 	while ((ch = getopt(argc, argv,
-	    "a:A:D:e:f:F:g:G:i:I:l:m:n:o:O:r:t:Tx:")) != -1) {
+	    "a:A:D:e:f:F:g:G:i:I:l:m:n:o:O:P:r:t:Tx:")) != -1) {
 		switch (ch) {
+		case 'P':
+			chatter_avatar(optarg);
+			break;
 		case 'D':
 			datadir = optarg;
 			break;
@@ -475,6 +481,9 @@ chatter_events_handle(int *got, int *delivered, int *gdone)
 		printf("chatter: %s\n", buf);
 
 	for (p = buf; (p = strstr(p, "\"token\":")) != NULL; p++) {
+		if (chatter_avatar_take(p) != -1)
+			continue;
+
 		if (lose > 0) {
 			printf("chatter: losing that one\n");
 			lose--;
@@ -618,4 +627,91 @@ chatter_data_take(const char *p)
 	}
 
 	free(data);
+}
+
+/*
+ * Make the image in the file at path our avatar.
+ */
+static void
+chatter_avatar(const char *path)
+{
+	FILE		*fp;
+	size_t		len;
+	u_int8_t	data[VIGIL_CHAT_AVATAR_MAX + 1];
+
+	PRECOND(path != NULL);
+
+	fp = fopen(path, "r");
+	if (fp == NULL)
+		fatal("fopen(%s): %s", path, errno_s);
+
+	len = fread(data, 1, sizeof(data), fp);
+	fclose(fp);
+
+	if (len == 0 || len > VIGIL_CHAT_AVATAR_MAX)
+		fatal("%s is not an avatar we can send", path);
+
+	vigil_chat_avatar(data, len);
+}
+
+/*
+ * If the event with the token at p is an avatar, take it and write it
+ * to our output directory if we have one. Returns -1 if it is not one.
+ */
+static int
+chatter_avatar_take(const char *p)
+{
+	FILE		*fp;
+	ssize_t		len;
+	u_int64_t	token;
+	char		path[1024];
+	const char	*start, *end, *type;
+	u_int8_t	data[VIGIL_CHAT_AVATAR_MAX];
+
+	PRECOND(p != NULL);
+
+	end = strchr(p, '}');
+	if (end == NULL)
+		return (-1);
+
+	for (start = p; *start != '{'; start--)
+		;
+
+	type = strstr(start, "\"type\":\"avatar\"");
+	if (type == NULL)
+		return (-1);
+
+	if (type > end)
+		return (-1);
+
+	token = strtoull(p + 8, NULL, 10);
+	if (token == 0) {
+		printf("chatter: %.2s has no avatar\n", start + 9);
+		return (0);
+	}
+
+	len = vigil_chat_data_take(token, data, sizeof(data));
+	if (len == -1)
+		fatal("avatar %" PRIu64 " is gone", token);
+
+	printf("chatter: took avatar of %.2s, %zd bytes\n", start + 9, len);
+
+	if (outdir != NULL) {
+		(void)snprintf(path, sizeof(path), "%s/%.2s.avatar",
+		    outdir, start + 9);
+
+		fp = fopen(path, "w");
+		if (fp == NULL)
+			fatal("fopen(%s): %s", path, errno_s);
+
+		if (fwrite(data, 1, len, fp) != (size_t)len)
+			fatal("failed to write %s", path);
+
+		fclose(fp);
+	}
+
+	if (vigil_chat_stored(token) == -1)
+		fatal("failed to ack avatar %" PRIu64, token);
+
+	return (0);
 }

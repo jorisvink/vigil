@@ -64,6 +64,7 @@ static jboolean		android_chat_group(JNIEnv *, jclass, jint);
 static jboolean		android_chat_forget(JNIEnv *, jclass, jint);
 static jboolean		android_chat_stored(JNIEnv *, jclass, jlong);
 static jboolean		android_chat_nick(JNIEnv *, jclass, jstring);
+static jboolean		android_chat_avatar(JNIEnv *, jclass, jbyteArray);
 static void		android_chat_open(JNIEnv *, jclass, jint, jboolean);
 static void		android_chat_typing(JNIEnv *, jclass, jint, jboolean);
 static void		android_chat_group_typing(JNIEnv *, jclass, jboolean);
@@ -105,6 +106,7 @@ static JNINativeMethod	methods[] = {
 	{ "chatOpen", "(IZ)V", (void *)android_chat_open },
 	{ "chatTyping", "(IZ)V", (void *)android_chat_typing },
 	{ "chatNick", "(Ljava/lang/String;)Z", (void *)android_chat_nick },
+	{ "chatAvatar", "([B)Z", (void *)android_chat_avatar },
 	{ "chatGroup", "(I)Z", (void *)android_chat_group },
 	{ "chatGroupTyping", "(Z)V", (void *)android_chat_group_typing },
 	{ "chatGroupSend", "(J[BIJ)Z", (void *)android_chat_group_send },
@@ -686,6 +688,31 @@ android_chat_nick(JNIEnv *env, jclass cls, jstring name)
 
 	if (ret == -1)
 		return (JNI_FALSE);
+
+	return (JNI_TRUE);
+}
+
+/*
+ * Vigil.chatAvatar(), sets the avatar we send to our peers, null if we
+ * have none.
+ */
+static jboolean
+android_chat_avatar(JNIEnv *env, jclass cls, jbyteArray data)
+{
+	size_t		len;
+	char		*buf;
+
+	if (data == NULL) {
+		vigil_chat_avatar(NULL, 0);
+		return (JNI_TRUE);
+	}
+
+	buf = android_bytes_copy(env, data, VIGIL_CHAT_AVATAR_MAX, &len);
+	if (buf == NULL)
+		return (JNI_FALSE);
+
+	vigil_chat_avatar(buf, len);
+	android_bytes_free(buf, len);
 
 	return (JNI_TRUE);
 }

@@ -57,11 +57,11 @@ system notifications. The operating system may show these on the lock
 screen and keep them for a while. Turn previews off if this matters to
 you.
 
-## Nicknames
+## Nicknames and pictures
 
-The nickname a peer sends is not verified. A peer can choose any nickname,
-including one that belongs to someone else. Name your peers yourself in
-the app if you rely on names.
+The nickname and picture a peer sends are not verified. A peer can choose
+any nickname or picture, including one that belongs to someone else. Name
+your peers yourself in the app if you rely on names.
 
 ## When the tunnel is down
 

@@ -25,6 +25,7 @@ final class VigilPlugin: NSObject, FlutterPlugin, UIDocumentPickerDelegate,
     static var requested: String?
 
     private var version = 0
+    private var avatars = 0
     private let reader = DispatchQueue(label: "se.sanctorum.vigil.chats")
     private var opened: String?
     private var last: String?
@@ -238,6 +239,45 @@ final class VigilPlugin: NSObject, FlutterPlugin, UIDocumentPickerDelegate,
                 result(data.map { FlutterStandardTypedData(bytes: $0) })
             } catch let error as ChatVault.Locked {
                 result(FlutterError(code: "locked", message: error.description, details: nil))
+            } catch {
+                result(FlutterError(code: "failed", message: "\(error)", details: nil))
+            }
+        case "chatAvatar":
+            let hex = call.arguments as? String ?? ""
+
+            do {
+                var data: Data?
+
+                if hex == ChatVault.selfAuthor {
+                    data = try ChatVault.shared.ownAvatar()
+                } else if hex.count == 2, let peer = UInt8(hex, radix: 16) {
+                    data = try ChatVault.shared.peerAvatar(peer)
+                }
+
+                result(data.map { FlutterStandardTypedData(bytes: $0) })
+            } catch let error as ChatVault.Locked {
+                result(FlutterError(code: "locked", message: error.description, details: nil))
+            } catch {
+                result(FlutterError(code: "failed", message: "\(error)", details: nil))
+            }
+        case "chatNames":
+            do {
+                result(json(try ChatVault.shared.peerNames()))
+            } catch let error as ChatVault.Locked {
+                result(FlutterError(code: "locked", message: error.description, details: nil))
+            } catch {
+                result(FlutterError(code: "failed", message: "\(error)", details: nil))
+            }
+        case "chatAvatarSet":
+            do {
+                let image = try (call.arguments as? FlutterStandardTypedData).map { try Self.avatar($0.data) }
+
+                try ChatVault.shared.ownAvatar(image)
+                VigilCall.shared.send?("chat-avatar")
+                avatars += 1
+                result("")
+            } catch let error as ChatVault.Failure {
+                result(FlutterError(code: "invalid", message: error.description, details: nil))
             } catch {
                 result(FlutterError(code: "failed", message: "\(error)", details: nil))
             }
@@ -956,6 +996,33 @@ final class VigilPlugin: NSObject, FlutterPlugin, UIDocumentPickerDelegate,
         return try jpeg(CGImageSourceCreateWithURL(URL(fileURLWithPath: path) as CFURL, nil))
     }
 
+    private static func avatar(_ data: Data) throws -> Data {
+        guard let picked = UIImage(data: data), let image = picked.cgImage else {
+            throw ChatVault.Failure(description: "That is not an image.")
+        }
+
+        let side = min(image.width, image.height, 256)
+        let size = CGSize(width: side, height: side)
+        let format = UIGraphicsImageRendererFormat()
+        format.scale = 1
+
+        let scaled = UIGraphicsImageRenderer(size: size, format: format).image { _ in
+            UIImage(cgImage: image).draw(in: CGRect(origin: .zero, size: size))
+        }
+
+        var quality: CGFloat = 0.85
+
+        while quality > 0 {
+            if let jpeg = scaled.jpegData(compressionQuality: quality), jpeg.count <= Int(VIGIL_CHAT_AVATAR_MAX) {
+                return jpeg
+            }
+
+            quality -= 0.1
+        }
+
+        throw ChatVault.Failure(description: "That picture is too large.")
+    }
+
     private static func pasted() throws -> Data {
         let board = UIPasteboard.general
 
@@ -1281,6 +1348,8 @@ final class VigilPlugin: NSObject, FlutterPlugin, UIDocumentPickerDelegate,
 
         return json([
             "version": defaults.integer(forKey: "chatVersion") + version,
+            "avatars": defaults.integer(forKey: "chatAvatars") + avatars,
+            "names": defaults.integer(forKey: "chatNames"),
             "unseen": unseen.values.reduce(0, +),
             "hardware": ChatVault.shared.hardware,
             "open": open ?? NSNull(),

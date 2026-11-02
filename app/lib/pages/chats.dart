@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:ui' as ui;
 
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
@@ -15,6 +16,7 @@ import '../theme.dart';
 import '../widgets/buttons.dart';
 import '../widgets/marks.dart';
 import '../widgets/ui.dart';
+import 'avatar.dart';
 import 'call.dart';
 
 const _messageMax = 512;
@@ -40,9 +42,9 @@ var _voiceRate = 1.0;
 
   switch (chat?.link) {
     case 'p2p':
-      return (Liveness.online, 'LINKED · P2P', Palette.good);
+      return (Liveness.online, 'ONLINE · P2P', Palette.good);
     case 'relay':
-      return (Liveness.online, 'LINKED · VIA CATHEDRAL', Palette.good);
+      return (Liveness.online, 'ONLINE · RELAY', Palette.good);
     case 'connecting':
       return (Liveness.pending, 'CONNECTING', Palette.amber);
   }
@@ -173,9 +175,22 @@ String _preview(ChatMessage? last) {
 
 Future<bool> removeChat(String peer) async {
   final vigil = Vigil.instance;
+  final joined = vigil.status.chats.group == peer;
+
+  if (!await confirm(
+    title: 'Delete chat',
+    text: isGroup(peer)
+        ? 'This wipes the messages of ${vigil.name(peer)} from this device'
+              '${joined ? ', and leaves the group' : ''}.'
+        : 'This wipes the chat with ${vigil.name(peer)} from this device, '
+              'messages that were not delivered yet are dropped.',
+    action: 'Delete',
+  )) {
+    return false;
+  }
 
   try {
-    if (vigil.status.chats.group == peer) {
+    if (joined) {
       await vigil.joinGroup('');
     }
 
@@ -354,6 +369,7 @@ Future<void> newChat(Status status) async {
                 children: [
                   chatDot(status, id),
                   const SizedBox(width: 12),
+                  Avatar(id),
                   Expanded(
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
@@ -378,7 +394,7 @@ Future<void> newChat(Status status) async {
   } else if (peer == '#') {
     await _chatById();
   } else if (peer != null) {
-    await push(ChatPage(peer: peer));
+    await push(ChatPage(peer: peer), opaque: false);
   }
 }
 
@@ -406,7 +422,7 @@ Future<void> _chatById() async {
     return;
   }
 
-  await push(ChatPage(peer: hex));
+  await push(ChatPage(peer: hex), opaque: false);
 }
 
 class _KekPrompt extends StatefulWidget {
@@ -612,11 +628,12 @@ class ChatRow extends StatelessWidget {
     return Panel(
       accent: chat.unread > 0,
       padding: const EdgeInsets.fromLTRB(16, 14, 14, 14),
-      onTap: () => push(ChatPage(peer: chat.peer)),
+      onTap: () => push(ChatPage(peer: chat.peer), opaque: false),
       child: Row(
         children: [
           chatDot(status, chat.peer),
           const SizedBox(width: 12),
+          Avatar(chat.peer, size: 40),
           Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
@@ -1241,27 +1258,6 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
     }
   }
 
-  Future<void> _delete() async {
-    final vigil = Vigil.instance;
-    final joined = vigil.status.chats.group == peer;
-
-    if (!await confirm(
-      title: 'Delete chat',
-      text: isGroup(peer)
-          ? 'This wipes the messages of ${vigil.name(peer)} from this device'
-                '${joined ? ', and leaves the group' : ''}.'
-          : 'This wipes the chat with ${vigil.name(peer)} from this device, '
-                'messages that were not delivered yet are dropped.',
-      action: 'Delete',
-    )) {
-      return;
-    }
-
-    if (await removeChat(peer) && mounted) {
-      Navigator.of(context).pop();
-    }
-  }
-
   Future<void> _members() async {
     final vigil = Vigil.instance;
 
@@ -1343,7 +1339,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
     if (action == '') {
       await renamePeer(peer);
     } else if (action != null && action != ownPeer()) {
-      await push(ChatPage(peer: action));
+      await push(ChatPage(peer: action), opaque: false);
     }
   }
 
@@ -1360,301 +1356,322 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
     final vigil = Vigil.instance;
     final group = isGroup(peer);
 
-    return PopScope(
-      onPopInvokedWithResult: (didPop, result) {
-        FocusManager.instance.primaryFocus?.unfocus();
-      },
-      child: StreamBuilder<Status>(
-        stream: vigil.statuses,
-        initialData: vigil.status,
-        builder: (context, snapshot) {
-          final status = snapshot.data!;
-          final joined = status.chats.group == peer;
-          final callable = status.call?.peers.contains(peer) ?? false;
-          final messages = _messages;
-          final pinned = messages.where((m) => m.pinned).firstOrNull;
-          final keyboard = MediaQuery.viewInsetsOf(context).bottom;
-          final inset = keyboard > 0
-              ? 0.0
-              : MediaQuery.paddingOf(context).bottom;
+    return SwipeBack(
+      child: PopScope(
+        onPopInvokedWithResult: (didPop, result) {
+          FocusManager.instance.primaryFocus?.unfocus();
+        },
+        child: StreamBuilder<Status>(
+          stream: vigil.statuses,
+          initialData: vigil.status,
+          builder: (context, snapshot) {
+            final status = snapshot.data!;
+            final joined = status.chats.group == peer;
+            final callable = status.call?.peers.contains(peer) ?? false;
+            final messages = _messages;
+            final pinned = messages.where((m) => m.pinned).firstOrNull;
+            final keyboard = MediaQuery.viewInsetsOf(context).bottom;
+            final inset = keyboard > 0
+                ? 0.0
+                : MediaQuery.paddingOf(context).bottom;
 
-          final (_, presence, color) = _link(status, peer);
-          final typing = _typers(status);
-          final extra = typing == null ? 0 : 1;
+            final (_, presence, color) = _link(status, peer);
+            final typing = _typers(status);
+            final extra = typing == null ? 0 : 1;
 
-          return DotGrid(
-            child: Padding(
-              padding: EdgeInsets.only(bottom: keyboard),
-              child: SafeArea(
-                bottom: false,
-                child: Column(
-                  children: [
-                    SizedBox(
-                      height: 56,
-                      child: Row(
-                        children: [
-                          const SizedBox(width: Metrics.edge - 12),
-                          GlyphBtn(
-                            GlyphKind.back,
-                            label: 'Back',
-                            onTap: () => Navigator.of(context).maybePop(),
-                          ),
-                          const SizedBox(width: 2),
-                          Expanded(
-                            child: GestureDetector(
-                              behavior: HitTestBehavior.opaque,
-                              onTap: () async {
-                                if (group) {
-                                  await _members();
-                                } else {
-                                  await renamePeer(peer);
-                                }
-
-                                if (mounted) {
-                                  setState(() {});
-                                }
-                              },
-                              child: Column(
-                                mainAxisAlignment: MainAxisAlignment.center,
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  Row(
-                                    children: [
-                                      chatDot(status, peer, size: 6),
-                                      const SizedBox(width: 8),
-                                      Flexible(
-                                        child: Text(
-                                          presence,
-                                          style: Styles.rubric.copyWith(
-                                            color: color,
-                                          ),
-                                          overflow: TextOverflow.ellipsis,
-                                        ),
-                                      ),
-                                    ],
-                                  ),
-                                  const SizedBox(height: 2),
-                                  PeerName(peer, style: Styles.barTitle),
-                                ],
-                              ),
-                            ),
-                          ),
-                          if (group)
+            return DotGrid(
+              child: Padding(
+                padding: EdgeInsets.only(bottom: keyboard),
+                child: SafeArea(
+                  bottom: false,
+                  child: Column(
+                    children: [
+                      SizedBox(
+                        height: 56,
+                        child: Row(
+                          children: [
+                            const SizedBox(width: Metrics.edge - 12),
                             GlyphBtn(
-                              joined ? GlyphKind.hangup : GlyphKind.plus,
-                              label: joined ? 'Leave group' : 'Join group',
-                              onTap: () => _membership(!joined),
+                              GlyphKind.back,
+                              label: 'Back',
+                              onTap: () => Navigator.of(context).maybePop(),
                             ),
-                          if (callable && status.phone == null && videoCalls)
-                            GlyphBtn(
-                              GlyphKind.video,
-                              label: 'Video call ${vigil.name(peer)}',
-                              onTap: () => callPeer(peer, video: true),
-                            ),
-                          if (callable && status.phone == null)
-                            GlyphBtn(
-                              GlyphKind.call,
-                              label: 'Call ${vigil.name(peer)}',
-                              onTap: () => callPeer(peer),
-                            ),
-                          if (messages.any((m) => m.favorite))
-                            GlyphBtn(
-                              GlyphKind.star,
-                              label: 'Favorites',
-                              onTap: () => push(_Favorites(peer: peer)),
-                            ),
-                          GlyphBtn(
-                            GlyphKind.close,
-                            label: 'Delete chat',
-                            onTap: _delete,
-                          ),
-                          const SizedBox(width: Metrics.edge - 10),
-                        ],
-                      ),
-                    ),
-                    const Line(),
-                    if (pinned != null) _Pinned(chat: peer, message: pinned),
-                    if (_error != null || _history?.warning != null)
-                      Padding(
-                        padding: const EdgeInsets.fromLTRB(
-                          Metrics.edge,
-                          Metrics.gap,
-                          Metrics.edge,
-                          0,
-                        ),
-                        child: Notice(
-                          text: _error ?? _history!.warning!,
-                          kind: NoticeKind.warn,
-                        ),
-                      ),
-                    Expanded(
-                      child: GestureDetector(
-                        behavior: HitTestBehavior.opaque,
-                        onTap: () =>
-                            FocusManager.instance.primaryFocus?.unfocus(),
-                        child: messages.isEmpty && typing == null
-                            ? Center(
-                                child: Padding(
-                                  padding: const EdgeInsets.all(
-                                    Metrics.edge * 2,
-                                  ),
-                                  child: Text(
-                                    _history == null
-                                        ? ''
-                                        : group
-                                        ? 'Messages go to the members of '
-                                              '${vigil.name(peer)} that are '
-                                              'around right now.'
-                                        : 'Say something to ${vigil.name(peer)}, '
-                                              'it is held until they are around.',
-                                    textAlign: TextAlign.center,
-                                    style: Styles.body.copyWith(
-                                      color: Palette.dim,
-                                    ),
-                                  ),
-                                ),
-                              )
-                            : ListView.builder(
-                                controller: _scroll,
-                                reverse: true,
-                                physics: const AlwaysScrollableScrollPhysics(),
-                                keyboardDismissBehavior:
-                                    ScrollViewKeyboardDismissBehavior.onDrag,
-                                padding: const EdgeInsets.fromLTRB(
-                                  Metrics.edge,
-                                  12,
-                                  Metrics.edge,
-                                  12,
-                                ),
-                                itemCount: messages.length + extra,
-                                itemBuilder: (context, index) {
-                                  if (index < extra) {
-                                    return _Typing(
-                                      sender: typing!.isEmpty ? null : typing,
-                                    );
+                            const SizedBox(width: 2),
+                            Expanded(
+                              child: GestureDetector(
+                                behavior: HitTestBehavior.opaque,
+                                onTap: () async {
+                                  if (group) {
+                                    await _members();
+                                  } else {
+                                    await renamePeer(peer);
                                   }
 
-                                  final at =
-                                      messages.length - 1 - index + extra;
-                                  final message = messages[at];
-                                  final previous = at > 0
-                                      ? messages[at - 1]
-                                      : null;
-                                  final day = _day(message.time);
-
-                                  return Column(
-                                    key: _keys.putIfAbsent(
-                                      message.ref,
-                                      GlobalKey.new,
-                                    ),
-                                    children: [
-                                      if (previous == null ||
-                                          _day(previous.time) != day)
-                                        Padding(
-                                          padding: const EdgeInsets.symmetric(
-                                            vertical: 14,
-                                          ),
-                                          child: Text(
-                                            day.toUpperCase(),
-                                            style: Styles.rubric,
-                                          ),
-                                        ),
-                                      if (message.kind.isNotEmpty)
-                                        _Presence(text: memberLine(message))
-                                      else
-                                        _SwipeReply(
-                                          onReply: () => _reply(message),
-                                          child: _Bubble(
-                                            chat: peer,
-                                            message: message,
-                                            quote: _quote(message.reply),
-                                            flash: _flash == message.ref,
-                                            onQuote: () => _jump(message.reply),
-                                            onReply: () => _reply(message),
-                                            sender: group && message.incoming
-                                                ? sender(message)
-                                                : null,
-                                            joined:
-                                                previous != null &&
-                                                previous.kind.isEmpty &&
-                                                previous.incoming ==
-                                                    message.incoming &&
-                                                previous.from == message.from &&
-                                                _day(previous.time) == day,
-                                          ),
-                                        ),
-                                    ],
-                                  );
+                                  if (mounted) {
+                                    setState(() {});
+                                  }
                                 },
+                                child: Row(
+                                  children: [
+                                    Avatar(
+                                      peer,
+                                      size: 34,
+                                      margin: const EdgeInsets.only(right: 10),
+                                      zoom: true,
+                                    ),
+                                    Expanded(
+                                      child: Column(
+                                        mainAxisAlignment:
+                                            MainAxisAlignment.center,
+                                        crossAxisAlignment:
+                                            CrossAxisAlignment.start,
+                                        children: [
+                                          Row(
+                                            children: [
+                                              chatDot(status, peer, size: 6),
+                                              const SizedBox(width: 8),
+                                              Flexible(
+                                                child: Text(
+                                                  presence,
+                                                  style: Styles.rubric.copyWith(
+                                                    color: color,
+                                                  ),
+                                                  overflow:
+                                                      TextOverflow.ellipsis,
+                                                ),
+                                              ),
+                                            ],
+                                          ),
+                                          const SizedBox(height: 2),
+                                          PeerName(
+                                            peer,
+                                            style: Styles.barTitle,
+                                            shrink: 13,
+                                          ),
+                                        ],
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            ),
+                            if (group)
+                              GlyphBtn(
+                                joined ? GlyphKind.hangup : GlyphKind.plus,
+                                label: joined ? 'Leave group' : 'Join group',
+                                onTap: () => _membership(!joined),
+                              ),
+                            if (callable && status.phone == null && videoCalls)
+                              GlyphBtn(
+                                GlyphKind.video,
+                                label: 'Video call ${vigil.name(peer)}',
+                                onTap: () => callPeer(peer, video: true),
+                              ),
+                            if (callable && status.phone == null)
+                              GlyphBtn(
+                                GlyphKind.call,
+                                label: 'Call ${vigil.name(peer)}',
+                                onTap: () => callPeer(peer),
+                              ),
+                            if (messages.any((m) => m.favorite))
+                              GlyphBtn(
+                                GlyphKind.star,
+                                label: 'Favorites',
+                                onTap: () => push(_Favorites(peer: peer)),
+                              ),
+                            const SizedBox(width: Metrics.edge - 10),
+                          ],
+                        ),
+                      ),
+                      const Line(),
+                      if (pinned != null) _Pinned(chat: peer, message: pinned),
+                      if (_error != null || _history?.warning != null)
+                        Padding(
+                          padding: const EdgeInsets.fromLTRB(
+                            Metrics.edge,
+                            Metrics.gap,
+                            Metrics.edge,
+                            0,
+                          ),
+                          child: Notice(
+                            text: _error ?? _history!.warning!,
+                            kind: NoticeKind.warn,
+                          ),
+                        ),
+                      Expanded(
+                        child: GestureDetector(
+                          behavior: HitTestBehavior.opaque,
+                          onTap: () =>
+                              FocusManager.instance.primaryFocus?.unfocus(),
+                          child: messages.isEmpty && typing == null
+                              ? Center(
+                                  child: Padding(
+                                    padding: const EdgeInsets.all(
+                                      Metrics.edge * 2,
+                                    ),
+                                    child: Text(
+                                      _history == null
+                                          ? ''
+                                          : group
+                                          ? 'Messages go to the members of '
+                                                '${vigil.name(peer)} that are '
+                                                'around right now.'
+                                          : 'Say something to ${vigil.name(peer)}, '
+                                                'it is held until they are around.',
+                                      textAlign: TextAlign.center,
+                                      style: Styles.body.copyWith(
+                                        color: Palette.dim,
+                                      ),
+                                    ),
+                                  ),
+                                )
+                              : ListView.builder(
+                                  controller: _scroll,
+                                  reverse: true,
+                                  physics:
+                                      const AlwaysScrollableScrollPhysics(),
+                                  keyboardDismissBehavior:
+                                      ScrollViewKeyboardDismissBehavior.onDrag,
+                                  padding: const EdgeInsets.fromLTRB(
+                                    Metrics.edge,
+                                    12,
+                                    Metrics.edge,
+                                    12,
+                                  ),
+                                  itemCount: messages.length + extra,
+                                  itemBuilder: (context, index) {
+                                    if (index < extra) {
+                                      return _Typing(
+                                        sender: typing!.isEmpty ? null : typing,
+                                      );
+                                    }
+
+                                    final at =
+                                        messages.length - 1 - index + extra;
+                                    final message = messages[at];
+                                    final previous = at > 0
+                                        ? messages[at - 1]
+                                        : null;
+                                    final day = _day(message.time);
+
+                                    return Column(
+                                      key: _keys.putIfAbsent(
+                                        message.ref,
+                                        GlobalKey.new,
+                                      ),
+                                      children: [
+                                        if (previous == null ||
+                                            _day(previous.time) != day)
+                                          Padding(
+                                            padding: const EdgeInsets.symmetric(
+                                              vertical: 14,
+                                            ),
+                                            child: Text(
+                                              day.toUpperCase(),
+                                              style: Styles.rubric,
+                                            ),
+                                          ),
+                                        if (message.kind.isNotEmpty)
+                                          _Presence(text: memberLine(message))
+                                        else
+                                          _SwipeReply(
+                                            onReply: () => _reply(message),
+                                            child: _Bubble(
+                                              chat: peer,
+                                              message: message,
+                                              quote: _quote(message.reply),
+                                              flash: _flash == message.ref,
+                                              onQuote: () =>
+                                                  _jump(message.reply),
+                                              onReply: () => _reply(message),
+                                              sender: group && message.incoming
+                                                  ? sender(message)
+                                                  : null,
+                                              joined:
+                                                  previous != null &&
+                                                  previous.kind.isEmpty &&
+                                                  previous.incoming ==
+                                                      message.incoming &&
+                                                  previous.from ==
+                                                      message.from &&
+                                                  _day(previous.time) == day,
+                                            ),
+                                          ),
+                                      ],
+                                    );
+                                  },
+                                ),
+                        ),
+                      ),
+                      if (_replying != null)
+                        _ReplyBar(
+                          chat: peer,
+                          message: _replying!,
+                          onClose: () => setState(() => _replying = null),
+                        ),
+                      Container(
+                        decoration: const BoxDecoration(
+                          color: Palette.bg2,
+                          border: Border(top: BorderSide(color: Palette.line)),
+                        ),
+                        padding: EdgeInsets.fromLTRB(
+                          Metrics.edge,
+                          10,
+                          Metrics.edge - 8,
+                          inset + 10,
+                        ),
+                        child: group && !status.gospel
+                            ? const Text(
+                                'Gospel is off, turn it on to send messages to '
+                                'this group.',
+                                style: Styles.detail,
+                              )
+                            : group && !joined
+                            ? Row(
+                                children: [
+                                  const Expanded(
+                                    child: Text(
+                                      'You are not in this group, join it to '
+                                      'send messages.',
+                                      style: Styles.detail,
+                                    ),
+                                  ),
+                                  const SizedBox(width: 12),
+                                  Btn(
+                                    label: 'Join',
+                                    onTap: () => _membership(true),
+                                  ),
+                                  const SizedBox(width: 8),
+                                ],
+                              )
+                            : _Composer(
+                                input: _input,
+                                focus: _focus,
+                                max: _replying == null
+                                    ? _messageMax
+                                    : _replyMax,
+                                busy: _sending,
+                                recording: _recording,
+                                starting: _starting,
+                                locked: _locked,
+                                discard: _discard,
+                                onSend: _send,
+                                onAttach: _attach,
+                                onPaste: _pastable ? _paste : null,
+                                onMenu: _clipboard,
+                                onHold: _hold,
+                                onSlide: _slide,
+                                onLift: _lift,
+                                onRelease: _release,
                               ),
                       ),
-                    ),
-                    if (_replying != null)
-                      _ReplyBar(
-                        chat: peer,
-                        message: _replying!,
-                        onClose: () => setState(() => _replying = null),
-                      ),
-                    Container(
-                      decoration: const BoxDecoration(
-                        color: Palette.bg2,
-                        border: Border(top: BorderSide(color: Palette.line)),
-                      ),
-                      padding: EdgeInsets.fromLTRB(
-                        Metrics.edge,
-                        10,
-                        Metrics.edge - 8,
-                        inset + 10,
-                      ),
-                      child: group && !status.gospel
-                          ? const Text(
-                              'Gospel is off, turn it on to send messages to '
-                              'this group.',
-                              style: Styles.detail,
-                            )
-                          : group && !joined
-                          ? Row(
-                              children: [
-                                const Expanded(
-                                  child: Text(
-                                    'You are not in this group, join it to '
-                                    'send messages.',
-                                    style: Styles.detail,
-                                  ),
-                                ),
-                                const SizedBox(width: 12),
-                                Btn(
-                                  label: 'Join',
-                                  onTap: () => _membership(true),
-                                ),
-                                const SizedBox(width: 8),
-                              ],
-                            )
-                          : _Composer(
-                              input: _input,
-                              focus: _focus,
-                              max: _replying == null ? _messageMax : _replyMax,
-                              busy: _sending,
-                              recording: _recording,
-                              starting: _starting,
-                              locked: _locked,
-                              discard: _discard,
-                              onSend: _send,
-                              onAttach: _attach,
-                              onPaste: _pastable ? _paste : null,
-                              onMenu: _clipboard,
-                              onHold: _hold,
-                              onSlide: _slide,
-                              onLift: _lift,
-                              onRelease: _release,
-                            ),
-                    ),
-                  ],
+                    ],
+                  ),
                 ),
               ),
-            ),
-          );
-        },
+            );
+          },
+        ),
       ),
     );
   }
@@ -1675,11 +1692,7 @@ class _Member extends StatelessWidget {
         ? (Liveness.online, 'TYPING…', Palette.amber)
         : switch (member.link) {
             'p2p' => (Liveness.online, 'ONLINE · P2P', Palette.good),
-            'relay' => (
-              Liveness.online,
-              'ONLINE · VIA CATHEDRAL',
-              Palette.good,
-            ),
+            'relay' => (Liveness.online, 'ONLINE · RELAY', Palette.good),
             'connecting' => (Liveness.pending, 'CONNECTING', Palette.amber),
             _ => (Liveness.off, 'IN THE GROUP', Palette.dim),
           };
@@ -1691,6 +1704,7 @@ class _Member extends StatelessWidget {
         children: [
           StateDot(state),
           const SizedBox(width: 12),
+          Avatar(member.id),
           Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
@@ -2371,7 +2385,7 @@ class _Photo extends StatelessWidget {
         }
 
         return GestureDetector(
-          onTap: () => push(_PhotoPage(bytes: bytes)),
+          onTap: () => push(_PhotoPage(bytes: bytes), opaque: false),
           child: ConstrainedBox(
             constraints: BoxConstraints(
               maxWidth: width,
@@ -2428,22 +2442,127 @@ class _File extends StatelessWidget {
   }
 }
 
-class _PhotoPage extends StatelessWidget {
+class _PhotoPage extends StatefulWidget {
   const _PhotoPage({required this.bytes});
 
   final Uint8List bytes;
 
   @override
+  State<_PhotoPage> createState() => _PhotoPageState();
+}
+
+class _PhotoPageState extends State<_PhotoPage> {
+  static const _reach = 100.0;
+  static const _fling = 800.0;
+
+  final _zoom = TransformationController();
+  VelocityTracker? _velocity;
+  int _pointers = 0;
+  double _drag = 0;
+  bool _dragging = false;
+
+  bool get _zoomed => _zoom.value.getMaxScaleOnAxis() > 1.01;
+
+  @override
+  void initState() {
+    super.initState();
+    _zoom.addListener(_zoomChanged);
+  }
+
+  @override
+  void dispose() {
+    _zoom.dispose();
+    super.dispose();
+  }
+
+  void _zoomChanged() {
+    setState(() {});
+  }
+
+  void _down(PointerDownEvent event) {
+    _pointers++;
+
+    if (_pointers > 1 || _zoomed) {
+      _cancel();
+      return;
+    }
+
+    _dragging = true;
+    _velocity = VelocityTracker.withKind(event.kind)
+      ..addPosition(event.timeStamp, event.position);
+  }
+
+  void _move(PointerMoveEvent event) {
+    if (!_dragging) {
+      return;
+    }
+
+    _velocity?.addPosition(event.timeStamp, event.position);
+    setState(() => _drag += event.delta.dy);
+  }
+
+  void _up(PointerUpEvent event) {
+    _pointers = (_pointers - 1).clamp(0, 10);
+
+    if (!_dragging) {
+      return;
+    }
+
+    final speed = _velocity?.getVelocity().pixelsPerSecond.dy ?? 0;
+
+    _dragging = false;
+    _velocity = null;
+
+    if (_drag.abs() > _reach || speed.abs() > _fling) {
+      Navigator.of(context).maybePop();
+      return;
+    }
+
+    setState(() => _drag = 0);
+  }
+
+  void _cancelled(PointerCancelEvent event) {
+    _pointers = (_pointers - 1).clamp(0, 10);
+    _cancel();
+  }
+
+  void _cancel() {
+    _dragging = false;
+    _velocity = null;
+
+    if (_drag != 0) {
+      setState(() => _drag = 0);
+    }
+  }
+
+  @override
   Widget build(BuildContext context) {
+    final fade = (_drag.abs() / (_reach * 4)).clamp(0.0, 0.7);
+
     return ColoredBox(
-      color: Palette.bg,
+      color: Palette.bg.withValues(alpha: 1 - fade),
       child: SafeArea(
         child: Stack(
           children: [
             Positioned.fill(
-              child: InteractiveViewer(
-                maxScale: 6,
-                child: Center(child: Image.memory(bytes)),
+              child: Listener(
+                onPointerDown: _down,
+                onPointerMove: _move,
+                onPointerUp: _up,
+                onPointerCancel: _cancelled,
+                child: AnimatedContainer(
+                  duration: _dragging
+                      ? Duration.zero
+                      : const Duration(milliseconds: 180),
+                  curve: Curves.easeOutCubic,
+                  transform: Matrix4.translationValues(0, _drag, 0),
+                  child: InteractiveViewer(
+                    transformationController: _zoom,
+                    panEnabled: _zoomed,
+                    maxScale: 6,
+                    child: Center(child: Image.memory(widget.bytes)),
+                  ),
+                ),
               ),
             ),
             Positioned(
@@ -3480,7 +3599,7 @@ Future<void> joinGroup() async {
       await vigil.rename(chat, label);
     }
 
-    await push(ChatPage(peer: chat));
+    await push(ChatPage(peer: chat), opaque: false);
   } on VigilError catch (e) {
     notify(e.message);
   }
@@ -3566,6 +3685,121 @@ class _GroupPromptState extends State<_GroupPrompt> {
   }
 }
 
+class _AvatarPicker extends StatefulWidget {
+  const _AvatarPicker();
+
+  @override
+  State<_AvatarPicker> createState() => _AvatarPickerState();
+}
+
+class _AvatarPickerState extends State<_AvatarPicker> {
+  bool _busy = false;
+
+  Future<void> _pick() async {
+    final picked = await ImagePicker().pickImage(
+      source: ImageSource.gallery,
+      maxWidth: 2048,
+      maxHeight: 2048,
+    );
+
+    if (picked == null) {
+      return;
+    }
+
+    final file = File(picked.path);
+    final Uint8List bytes;
+
+    try {
+      bytes = await file.readAsBytes();
+    } finally {
+      unawaited(file.delete().then((_) {}, onError: (Object _) {}));
+    }
+
+    final ui.Image image;
+
+    try {
+      final codec = await ui.instantiateImageCodec(bytes);
+      image = (await codec.getNextFrame()).image;
+      codec.dispose();
+    } on Exception {
+      notify('That is not an image.');
+      return;
+    }
+
+    final cut = await push<Uint8List>(AvatarCrop(image: image));
+    image.dispose();
+
+    if (cut == null) {
+      return;
+    }
+
+    await _set(cut);
+  }
+
+  Future<void> _set(Uint8List? data) async {
+    if (!mounted) {
+      return;
+    }
+
+    setState(() => _busy = true);
+
+    try {
+      await Vigil.instance.setAvatar(data);
+    } on VigilError catch (e) {
+      notify(e.message);
+    }
+
+    if (mounted) {
+      setState(() => _busy = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return FutureBuilder<Uint8List?>(
+      future: Vigil.instance.avatar(selfPeer),
+      builder: (context, snapshot) {
+        final set = snapshot.data != null;
+
+        return Row(
+          children: [
+            Avatar(
+              selfPeer,
+              key: ValueKey(snapshot.data),
+              size: 56,
+              margin: const EdgeInsets.only(right: 14),
+            ),
+            Expanded(
+              child: set
+                  ? BtnPair(
+                      first: Btn(
+                        label: 'Change',
+                        kind: BtnKind.secondary,
+                        busy: _busy,
+                        onTap: _pick,
+                      ),
+                      second: Btn(
+                        label: 'Remove',
+                        kind: BtnKind.ghost,
+                        busy: _busy,
+                        onTap: () => _set(null),
+                      ),
+                    )
+                  : Btn(
+                      label: 'Pick a picture',
+                      kind: BtnKind.secondary,
+                      busy: _busy,
+                      expand: true,
+                      onTap: _pick,
+                    ),
+            ),
+          ],
+        );
+      },
+    );
+  }
+}
+
 Future<void> chatSettings() async {
   final context = navigatorKey.currentContext;
   if (context == null) {
@@ -3598,6 +3832,10 @@ Future<void> chatSettings() async {
         children: [
           sheetTitle('Chat settings'),
           const SizedBox(height: 16),
+          Text('YOUR PICTURE', style: Styles.key),
+          const SizedBox(height: 6),
+          const _AvatarPicker(),
+          const SizedBox(height: 18),
           Text('YOUR NAME', style: Styles.key),
           const SizedBox(height: 6),
           Pre(

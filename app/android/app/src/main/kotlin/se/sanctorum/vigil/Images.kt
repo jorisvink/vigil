@@ -47,12 +47,34 @@ object Images {
 
             return jpeg
         } finally {
-            if (file.canonicalPath.startsWith(context.cacheDir.canonicalPath)) {
-                if (!file.delete()) {
-                    Log.e(TAG, "could not remove ${file.name}")
-                }
-            }
+            discard(context, file)
         }
+    }
+
+    fun avatar(data: ByteArray): ByteArray {
+        val decoded = BitmapFactory.decodeByteArray(data, 0, data.size)
+            ?: throw IllegalArgumentException("That is not an image.")
+        val side = minOf(decoded.width, decoded.height, AVATAR_SIDE)
+        val bitmap = Bitmap.createScaledBitmap(decoded, side, side, true)
+
+        var quality = QUALITY
+        var jpeg: ByteArray
+
+        do {
+            val out = ByteArrayOutputStream()
+            bitmap.compress(Bitmap.CompressFormat.JPEG, quality, out)
+            jpeg = out.toByteArray()
+            quality -= 10
+        } while (jpeg.size > AVATAR_MAX && quality > 0)
+
+        if (bitmap !== decoded) {
+            bitmap.recycle()
+        }
+        decoded.recycle()
+
+        require(jpeg.size <= AVATAR_MAX) { "That picture is too large." }
+
+        return jpeg
     }
 
     fun jpeg(context: Context, uri: Uri): ByteArray {
@@ -79,6 +101,14 @@ object Images {
 
     fun name(): String = "photo-%tY%<tm%<td-%<tH%<tM%<tS.jpg".format(System.currentTimeMillis())
 
+    private fun discard(context: Context, file: File) {
+        if (file.canonicalPath.startsWith(context.cacheDir.canonicalPath)) {
+            if (!file.delete()) {
+                Log.e(TAG, "could not remove ${file.name}")
+            }
+        }
+    }
+
     private fun rotation(path: String): Float =
         when (ExifInterface(path).getAttributeInt(ExifInterface.TAG_ORIENTATION, ExifInterface.ORIENTATION_NORMAL)) {
             ExifInterface.ORIENTATION_ROTATE_90 -> 90f
@@ -92,4 +122,6 @@ object Images {
     private const val QUALITY = 85
     private const val MAX = 4 * 1024 * 1024
     private const val PASTE_MAX = 64L * 1024 * 1024
+    private const val AVATAR_SIDE = 256
+    private const val AVATAR_MAX = 32 * 1024
 }

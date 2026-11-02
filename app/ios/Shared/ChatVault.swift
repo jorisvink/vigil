@@ -67,10 +67,14 @@ final class ChatVault {
     private static let outboxAad = Data("VIGIL.CHAT.OUTBOX".utf8)
     private static let receiptsAad = Data("VIGIL.CHAT.RECEIPTS".utf8)
     private static let dataAad = Data("VIGIL.CHAT.DATA".utf8)
+    private static let avatarAad = Data("VIGIL.CHAT.AVATAR".utf8)
+    private static let nameAad = Data("VIGIL.CHAT.NAME".utf8)
     private static let truncated: UInt64 = 1
 
     private let dir: URL?
     private let inbox: URL?
+    private let avatars: URL?
+    private let names: URL?
     private var open = [String: Conversation]()
     private var history: History?
     private var refs: Int64 = 0
@@ -86,8 +90,10 @@ final class ChatVault {
 
         dir = base
         inbox = base?.appendingPathComponent("inbox", isDirectory: true)
+        avatars = base?.appendingPathComponent("avatars", isDirectory: true)
+        names = base?.appendingPathComponent("names", isDirectory: true)
 
-        for case var url? in [dir, inbox] {
+        for case var url? in [dir, inbox, avatars, names] {
             try? FileManager.default.createDirectory(
                 at: url, withIntermediateDirectories: true,
                 attributes: [.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication])
@@ -597,6 +603,95 @@ final class ChatVault {
             guard let sealed = try? Data(contentsOf: path) else { return nil }
 
             return try openBox(sealed, key: conversation.key, aad: Self.dataAad(chat, file))
+        }
+    }
+
+    func ownAvatar() throws -> Data? {
+        return try locked {
+            let file = try folder(dir).appendingPathComponent("avatar.box")
+            guard FileManager.default.fileExists(atPath: file.path) else { return nil }
+
+            return try openBox(Data(contentsOf: file), key: outboxKey(), aad: Self.avatarAad)
+        }
+    }
+
+    func ownAvatar(_ data: Data?) throws {
+        try locked {
+            let file = try folder(dir).appendingPathComponent("avatar.box")
+
+            guard let data else {
+                try wipe(file)
+                return
+            }
+
+            try write(file, sealBox(data, key: outboxKey(), aad: Self.avatarAad))
+        }
+    }
+
+    func peerAvatar(_ peer: UInt8) throws -> Data? {
+        return try locked {
+            let file = try folder(avatars).appendingPathComponent("\(Self.hex(peer)).box")
+            guard let sealed = try? Data(contentsOf: file) else { return nil }
+
+            do {
+                return try unseal(sealed, info: Self.avatarAad + [peer])
+            } catch let error as Locked {
+                throw error
+            } catch is CryptoKitError {
+                try wipe(file)
+                return nil
+            }
+        }
+    }
+
+    func peerAvatar(_ peer: UInt8, _ data: Data?) throws {
+        try locked {
+            let file = try folder(avatars).appendingPathComponent("\(Self.hex(peer)).box")
+
+            guard let data else {
+                try wipe(file)
+                return
+            }
+
+            try write(file, seal(data, to: agreementPublic(), info: Self.avatarAad + [peer]))
+        }
+    }
+
+    func peerName(_ peer: UInt8, nick: String, signed: String) throws {
+        try locked {
+            let file = try folder(names).appendingPathComponent("\(Self.hex(peer)).box")
+            let plain = try JSONSerialization.data(withJSONObject: ["nick": nick, "signed": signed])
+
+            try write(file, seal(plain, to: agreementPublic(), info: Self.nameAad + [peer]))
+        }
+    }
+
+    func peerNames() throws -> [String: Any] {
+        return try locked {
+            let names = try folder(names)
+            let files = (try? FileManager.default.contentsOfDirectory(atPath: names.path)) ?? []
+            var out = [String: Any]()
+
+            for name in files where name.count == 6 && name.hasSuffix(".box") {
+                let hex = String(name.prefix(2))
+                guard let peer = UInt8(hex, radix: 16) else { continue }
+
+                let file = names.appendingPathComponent(name)
+                let plain: Data
+
+                do {
+                    plain = try unseal(Data(contentsOf: file), info: Self.nameAad + [peer])
+                } catch let error as Locked {
+                    throw error
+                } catch is CryptoKitError {
+                    try wipe(file)
+                    continue
+                }
+
+                out[hex] = try JSONSerialization.jsonObject(with: plain)
+            }
+
+            return out
         }
     }
 

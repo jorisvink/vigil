@@ -36,6 +36,14 @@ object Chats {
     @Volatile
     var version = 0L
         private set
+
+    @Volatile
+    var avatars = 0L
+        private set
+
+    @Volatile
+    var names = 0L
+        private set
     var foreground = false
     var opened = ""
         private set
@@ -78,6 +86,16 @@ object Chats {
             try {
                 if (!Vigil.chatNick(nick(service))) {
                     Log.w(TAG, "our nickname was refused")
+                }
+
+                val avatar = vault.ownAvatar()
+
+                try {
+                    if (!Vigil.chatAvatar(avatar)) {
+                        Log.w(TAG, "our avatar was refused")
+                    }
+                } finally {
+                    avatar?.fill(0)
                 }
 
                 check(Vigil.chatGroup(group(service))) { "failed to join our group" }
@@ -150,6 +168,30 @@ object Chats {
                             unseen[id] = (unseen[id] ?: 0) + 1
                             notify(service, id, peer, nick, summary(media, name), time)
                         }
+                    }
+                    "name" -> {
+                        vault.peerName(peer, event.optString("nick"), event.optString("signed"))
+                        namesChanged()
+                    }
+                    "avatar" -> {
+                        val token = event.getLong("token")
+
+                        if (token == 0L) {
+                            vault.peerAvatar(peer, null)
+                        } else {
+                            val data = Vigil.chatDataTake(token, event.getInt("size"))
+                                ?: throw IllegalStateException("avatar $token is gone")
+
+                            try {
+                                vault.peerAvatar(peer, data)
+                            } finally {
+                                data.fill(0)
+                            }
+
+                            stored(token)
+                        }
+
+                        avatarChanged()
                     }
                     "joined", "left" -> vault.deliver(
                         id, peer, event.optString("nick"), "", System.currentTimeMillis(),
@@ -291,6 +333,8 @@ object Chats {
 
         return JSONObject()
             .put("version", version)
+            .put("avatars", avatars)
+            .put("names", names)
             .put("unseen", unseen.values.sum())
             .put("hardware", vault(context).hardware)
             .put("open", pending.ifEmpty { JSONObject.NULL })
@@ -300,6 +344,23 @@ object Chats {
     @Synchronized
     fun changed() {
         version++
+    }
+
+    @Synchronized
+    private fun avatarChanged() {
+        avatars++
+    }
+
+    @Synchronized
+    private fun namesChanged() {
+        names++
+    }
+
+    fun avatar(context: Context, data: ByteArray?) {
+        require(Vigil.chatAvatar(data)) { "That picture is too large." }
+
+        vault(context).ownAvatar(data)
+        avatarChanged()
     }
 
     fun nick(context: Context): String = prefs(context).getString("nick", "") ?: ""

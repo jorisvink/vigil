@@ -157,6 +157,7 @@
 #define VIGIL_CHAT_FEATURE_DATA		0x01
 #define VIGIL_CHAT_FEATURE_REPLY	0x02
 #define VIGIL_CHAT_FEATURE_NAME		0x04
+#define VIGIL_CHAT_FEATURE_AVATAR	0x08
 
 /* The maximum length of a reply, it carries who wrote what it replies to. */
 #define VIGIL_CHAT_REPLY_MAX		(VIGIL_CHAT_MESSAGE_MAX - 9)
@@ -224,7 +225,11 @@
 #define VIGIL_CHAT_DATA_IMAGE		1
 #define VIGIL_CHAT_DATA_FILE		2
 #define VIGIL_CHAT_DATA_VOICE		3
+#define VIGIL_CHAT_DATA_AVATAR		4
 #define VIGIL_CHAT_DATA_NAME_MAX	126
+
+/* The largest avatar we send or take. */
+#define VIGIL_CHAT_AVATAR_MAX		(32 * 1024)
 
 /* The different type of voice frames. */
 #define VIGIL_VOICE_TYPE_VOICE		1
@@ -285,6 +290,7 @@ int	vigil_chat_nick(const char *);
 void	vigil_chat_open(u_int8_t, int);
 void	vigil_chat_typing(u_int8_t, int);
 size_t	vigil_chat_events(char *, size_t);
+void	vigil_chat_avatar(const void *, size_t);
 ssize_t	vigil_chat_data_take(u_int64_t, void *, size_t);
 int	vigil_chat_group_send(u_int64_t, const char *, size_t);
 int	vigil_chat_send(u_int8_t, u_int64_t, const char *, size_t);

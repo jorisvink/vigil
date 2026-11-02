@@ -89,6 +89,9 @@ Each device also sends a nickname in its heartbeats. The nickname is
 chosen by the sender and is not checked by anyone. The device id is what
 identifies the sender. You can give peers your own names in the app.
 
+The last nickname and signed name heard from each peer are kept, so the
+app still shows them after a restart before the peer is heard again.
+
 ## Signed names
 
 A configuration made by Covenant can carry a signed name. Covenant signs
@@ -117,6 +120,21 @@ the peer yourself still comes first.
 The cathedrals never see a name, it only travels inside the tunnels.
 Renaming the instance in Vigil breaks the signature, the device then
 only sends its nickname until it is provisioned again.
+
+## Pictures
+
+You can pick a picture in the chat settings and move and zoom it inside
+a circle. Vigil cuts out that square, scales it to at most 256 pixels and
+sends it as a JPEG of at most 32 KB. Pictures are shown as circles.
+
+A device with a picture sets a feature bit in its heartbeats. Once a
+tunnel hears its peer, the device sends its picture over it as data,
+and again whenever the picture changes. Peers on gospel never get it.
+
+The receiver keeps the picture and shows it next to the name of the
+peer. When the heartbeats of a peer no longer have the feature bit, the
+receiver drops the picture it kept for that peer. Like the nickname, the
+picture is chosen by the sender and not checked by anyone.
 
 ## Group chats
 

@@ -65,6 +65,8 @@ class ChatVault(context: Context) {
 
     private val dir = File(context.noBackupFilesDir, "chats").apply { mkdirs() }
     private val inbox = File(dir, "inbox").apply { mkdirs() }
+    private val avatars = File(dir, "avatars").apply { mkdirs() }
+    private val names = File(dir, "names").apply { mkdirs() }
     private val random = SecureRandom()
     private val open = mutableMapOf<String, Conversation>()
     private var history: History? = null
@@ -383,6 +385,106 @@ class ChatVault(context: Context) {
             updateAAD(dataAad(chat, file))
             doFinal(sealed, NONCE, sealed.size - NONCE)
         }
+    }
+
+    @Synchronized
+    fun ownAvatar(): ByteArray? {
+        val file = File(dir, AVATAR)
+        if (!file.exists()) {
+            return null
+        }
+
+        return unwrap(outbox(), AVATAR_AAD, file.readBytes())
+    }
+
+    @Synchronized
+    fun ownAvatar(data: ByteArray?) {
+        if (data == null) {
+            wipe(File(dir, AVATAR))
+            return
+        }
+
+        write(File(dir, AVATAR), wrap(outbox(), AVATAR_AAD, data))
+    }
+
+    @Synchronized
+    fun peerAvatar(peer: Int): ByteArray? {
+        val file = File(avatars, "%02x.box".format(peer))
+        if (!file.exists()) {
+            return null
+        }
+
+        return try {
+            unseal(file.readBytes(), avatarAad(peer))
+        } catch (e: AEADBadTagException) {
+            wipe(file)
+            null
+        } catch (e: IllegalArgumentException) {
+            wipe(file)
+            null
+        } catch (e: UserNotAuthenticatedException) {
+            throw Locked()
+        }
+    }
+
+    @Synchronized
+    fun peerAvatar(peer: Int, data: ByteArray?) {
+        val file = File(avatars, "%02x.box".format(peer))
+
+        if (data == null) {
+            wipe(file)
+            return
+        }
+
+        val aad = avatarAad(peer)
+        val static = agreement()?.certificate?.publicKey
+
+        write(file, if (static != null) seal(static, data, aad) else device(aad, data))
+    }
+
+    @Synchronized
+    fun peerName(peer: Int, nick: String, signed: String) {
+        val aad = nameAad(peer)
+        val plain = JSONObject().put("nick", nick).put("signed", signed).toString().toByteArray()
+        val static = agreement()?.certificate?.publicKey
+
+        try {
+            write(
+                File(names, "%02x.box".format(peer)),
+                if (static != null) seal(static, plain, aad) else device(aad, plain)
+            )
+        } finally {
+            plain.fill(0)
+        }
+    }
+
+    @Synchronized
+    fun peerNames(): JSONObject {
+        val out = JSONObject()
+        val files = names.listFiles { f -> f.name.matches(Regex("[0-9a-f]{2}\\.box")) } ?: emptyArray()
+
+        for (file in files) {
+            val peer = file.name.substring(0, 2)
+            val plain = try {
+                unseal(file.readBytes(), nameAad(peer.toInt(16)))
+            } catch (e: AEADBadTagException) {
+                wipe(file)
+                continue
+            } catch (e: IllegalArgumentException) {
+                wipe(file)
+                continue
+            } catch (e: UserNotAuthenticatedException) {
+                throw Locked()
+            }
+
+            try {
+                out.put(peer, JSONObject(String(plain)))
+            } finally {
+                plain.fill(0)
+            }
+        }
+
+        return out
     }
 
     @Synchronized
@@ -868,7 +970,7 @@ class ChatVault(context: Context) {
         return count
     }
 
-    private fun seal(static: PublicKey, plain: ByteArray): ByteArray {
+    private fun seal(static: PublicKey, plain: ByteArray, aad: ByteArray = INBOX_AAD): ByteArray {
         val ephemeral = KeyPairGenerator.getInstance(KeyProperties.KEY_ALGORITHM_EC).run {
             initialize(ECGenParameterSpec("secp256r1"))
             generateKeyPair()
@@ -881,14 +983,14 @@ class ChatVault(context: Context) {
         }
 
         val encoded = ephemeral.public.encoded
-        val key = hkdf(shared, encoded + static.encoded, INBOX_AAD)
+        val key = hkdf(shared, encoded + static.encoded, aad)
         val nonce = ByteArray(NONCE).also(random::nextBytes)
         shared.fill(0)
 
         val sealed = try {
             Cipher.getInstance(GCM).run {
                 init(Cipher.ENCRYPT_MODE, SecretKeySpec(key, "AES"), GCMParameterSpec(TAG, nonce))
-                updateAAD(INBOX_AAD)
+                updateAAD(aad)
                 doFinal(plain)
             }
         } finally {
@@ -904,9 +1006,9 @@ class ChatVault(context: Context) {
             .array()
     }
 
-    private fun unseal(data: ByteArray): ByteArray {
+    private fun unseal(data: ByteArray, aad: ByteArray = INBOX_AAD): ByteArray {
         if (data.isNotEmpty() && data[0] == SEALED_DEVICE) {
-            return unwrap(outbox(), INBOX_AAD, data.copyOfRange(1, data.size))
+            return unwrap(outbox(), aad, data.copyOfRange(1, data.size))
         }
 
         require(data.size > 3 && data[0] == SEALED_HARDWARE) { "unknown inbox record" }
@@ -926,13 +1028,13 @@ class ChatVault(context: Context) {
             generateSecret()
         }
 
-        val key = hkdf(shared, encoded + entry.certificate.publicKey.encoded, INBOX_AAD)
+        val key = hkdf(shared, encoded + entry.certificate.publicKey.encoded, aad)
         shared.fill(0)
 
         try {
             return Cipher.getInstance(GCM).run {
                 init(Cipher.DECRYPT_MODE, SecretKeySpec(key, "AES"), GCMParameterSpec(TAG, nonce))
-                updateAAD(INBOX_AAD)
+                updateAAD(aad)
                 doFinal(sealed)
             }
         } finally {
@@ -1066,6 +1168,10 @@ class ChatVault(context: Context) {
 
     private fun keyAad(chat: String): ByteArray = KEY_AAD + label(chat)
 
+    private fun avatarAad(peer: Int): ByteArray = AVATAR_AAD + byteArrayOf(peer.toByte())
+
+    private fun nameAad(peer: Int): ByteArray = NAME_AAD + byteArrayOf(peer.toByte())
+
     private fun recordAad(chat: String, seq: Long): ByteArray {
         val label = label(chat)
 
@@ -1122,6 +1228,7 @@ class ChatVault(context: Context) {
         private const val LOG = ".log"
         private const val OUTBOX = "outbox.box"
         private const val RECEIPTS = "receipts.box"
+        private const val AVATAR = "avatar.box"
         private const val FLAG_TRUNCATED = 1L
         private const val SEALED_HARDWARE: Byte = 1
         private const val SEALED_DEVICE: Byte = 2
@@ -1132,5 +1239,7 @@ class ChatVault(context: Context) {
         private val DATA_AAD = "VIGIL.CHAT.DATA".toByteArray()
         private val OUTBOX_AAD = "VIGIL.CHAT.OUTBOX".toByteArray()
         private val RECEIPTS_AAD = "VIGIL.CHAT.RECEIPTS".toByteArray()
+        private val AVATAR_AAD = "VIGIL.CHAT.AVATAR".toByteArray()
+        private val NAME_AAD = "VIGIL.CHAT.NAME".toByteArray()
     }
 }

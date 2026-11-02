@@ -78,6 +78,9 @@ object Vigil {
     external fun chatNick(name: String): Boolean
 
     @JvmStatic
+    external fun chatAvatar(data: ByteArray?): Boolean
+
+    @JvmStatic
     external fun chatGroup(group: Int): Boolean
 
     @JvmStatic

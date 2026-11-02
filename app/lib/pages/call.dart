@@ -473,6 +473,11 @@ class _PeerMark extends StatelessWidget {
                 onTap: peer.isEmpty ? null : () => renamePeer(peer),
                 child: Column(
                   children: [
+                    Avatar(
+                      peer,
+                      size: 112,
+                      margin: const EdgeInsets.only(bottom: 14),
+                    ),
                     Text(
                       peer.toUpperCase(),
                       style: Styles.title.copyWith(

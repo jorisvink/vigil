@@ -401,6 +401,35 @@ class MainActivity : FlutterActivity() {
                     result.success("")
                 }
                 "voicePosition" -> result.success(Voice.position())
+                "chatAvatar" -> {
+                    val peer = call.arguments as String
+
+                    background(result) {
+                        if (peer == ChatVault.SELF) {
+                            Chats.vault(this).ownAvatar()
+                        } else {
+                            require(peer.matches(Regex("[0-9a-f]{2}"))) { "There is no peer $peer." }
+                            Chats.vault(this).peerAvatar(peer.toInt(16))
+                        }
+                    }
+                }
+                "chatNames" -> background(result) { Chats.vault(this).peerNames().toString() }
+                "chatAvatarSet" -> {
+                    val picked = call.arguments as ByteArray?
+
+                    background(result) {
+                        val image = picked?.let { Images.avatar(it) }
+
+                        try {
+                            Chats.avatar(this, image)
+                        } finally {
+                            image?.fill(0)
+                            picked?.fill(0)
+                        }
+
+                        ""
+                    }
+                }
                 "chatData" -> {
                     val id = chat(call.argument<String>("peer")!!)
                     val file = call.argument<String>("data")!!

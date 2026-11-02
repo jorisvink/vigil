@@ -226,6 +226,8 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             if vigil_chat_nick(ChatVault.defaults.string(forKey: "chatNick") ?? "") == -1 {
                 NSLog("vigil: our nickname was refused")
             }
+        case "chat-avatar":
+            submitAvatar()
         case "chat-open", "chat-typing":
             if words.count == 3, let peer = UInt8(words[1], radix: 16), peer > 0, peer < 0xff {
                 let on: Int32 = words[2] == "1" ? 1 : 0
@@ -314,6 +316,8 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
                 NSLog("vigil: our nickname was refused")
             }
 
+            submitAvatar()
+
             let joined = vigil_chat_group(UInt16(truncatingIfNeeded: defaults.integer(forKey: "chatGroup"))) == 0
 
             if submitOutbox(), joined { chatSession = session }
@@ -395,6 +399,30 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
                         notifyChat(chat, peer, nick, Self.summary(media, name),
                                    badge: unseen.values.reduce(0, +))
                     }
+                case "name":
+                    try vault.peerName(peer, nick: event["nick"] as? String ?? "",
+                                       signed: event["signed"] as? String ?? "")
+                    defaults.set(defaults.integer(forKey: "chatNames") + 1, forKey: "chatNames")
+                case "avatar":
+                    let token = (event["token"] as? NSNumber)?.uint64Value ?? 0
+                    let size = (event["size"] as? NSNumber)?.intValue ?? 0
+
+                    if token == 0 {
+                        try vault.peerAvatar(peer, nil)
+                    } else {
+                        guard size > 0, size <= Int(VIGIL_CHAT_AVATAR_MAX) else { continue }
+
+                        var bytes = [UInt8](repeating: 0, count: size)
+                        let taken = vigil_chat_data_take(token, &bytes, bytes.count)
+
+                        guard taken > 0 else { continue }
+
+                        try vault.peerAvatar(peer, Data(bytes[0..<taken]))
+                        stored(token)
+                        TunnelKeychain.wipe(&bytes)
+                    }
+
+                    defaults.set(defaults.integer(forKey: "chatAvatars") + 1, forKey: "chatAvatars")
                 case "sent", "delivered":
                     receipt(chat, ref: (event["ref"] as? NSNumber)?.int64Value ?? 0, kind: kind)
                 case "acks":
@@ -411,6 +439,21 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
 
         defaults.set(unseen, forKey: "chatUnseen")
         defaults.set(defaults.integer(forKey: "chatVersion") + 1, forKey: "chatVersion")
+    }
+
+    private func submitAvatar() {
+        do {
+            let avatar = try ChatVault.shared.ownAvatar() ?? Data()
+
+            guard avatar.count <= Int(VIGIL_CHAT_AVATAR_MAX) else {
+                NSLog("vigil: our avatar is too large")
+                return
+            }
+
+            avatar.withUnsafeBytes { vigil_chat_avatar($0.baseAddress, avatar.count) }
+        } catch {
+            NSLog("vigil: failed to load our avatar: \(error)")
+        }
     }
 
     private func attachGospel() {

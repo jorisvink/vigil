@@ -191,13 +191,20 @@ On Android before version 12 there is no Keystore key agreement. There
 an incoming message is stored as `0x02 || GCM(ok, "VIGIL.CHAT.INBOX", m)`
 and is only protected by the outbox key.
 
-### Inbox, outbox and receipts
+### Inbox, outbox, receipts, pictures and names
 
 ```
 inbox/<time>-<random>.box = seal(message, "VIGIL.CHAT.INBOX")
 outbox.box                = GCM(ok, "VIGIL.CHAT.OUTBOX", json list)
 receipts.box              = GCM(ok, "VIGIL.CHAT.RECEIPTS", json list)
+avatar.box                = GCM(ok, "VIGIL.CHAT.AVATAR", jpeg)
+avatars/<id>.box          = seal(jpeg, "VIGIL.CHAT.AVATAR" || id)
+names/<id>.box            = seal(json, "VIGIL.CHAT.NAME" || id)
 ```
+
+`id` is the one byte device id of the peer. `avatar.box` is our own
+picture. As with the inbox, Android before version 12 stores the peer
+files under the outbox key instead.
 
 ### Conversation keys (CK)
 

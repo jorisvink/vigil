@@ -124,6 +124,19 @@ encrypted with the conversation key. The encryption is bound to the
 conversation and the file name, so files cannot be swapped between
 conversations.
 
+## Pictures and names
+
+The picture of a peer is sealed to the inbox public key the same way an
+incoming message is, bound to the id of that peer. The network side can
+replace it at any time, only the app can open it while the phone is
+unlocked. A peer only has one picture, a new one overwrites the old.
+
+Your own picture is encrypted with the outbox key, since the network
+side must send it to your peers while the phone is locked.
+
+The last nickname and signed name of each peer are kept the same way as
+its picture, sealed to the inbox public key and bound to its id.
+
 ## The outbox and receipts
 
 Messages you send are first added to your own conversation log. One-to-one

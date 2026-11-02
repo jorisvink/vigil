@@ -564,7 +564,7 @@ class _PeerRow extends StatelessWidget {
 
     void chat() {
       Navigator.of(context).pop();
-      push(ChatPage(peer: peer));
+      push(ChatPage(peer: peer), opaque: false);
     }
 
     return Panel(
@@ -574,6 +574,7 @@ class _PeerRow extends StatelessWidget {
         children: [
           chatDot(status, peer),
           const SizedBox(width: 12),
+          Avatar(peer),
           Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,

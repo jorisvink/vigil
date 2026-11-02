@@ -1,4 +1,6 @@
 import 'dart:async';
+import 'dart:math' as math;
+import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 import 'package:url_launcher/url_launcher.dart';
@@ -125,7 +127,7 @@ class _ShellState extends State<Shell> with WidgetsBindingObserver {
         goTab(NavTab.gospel);
 
         if (peer != 'gospel') {
-          push(ChatPage(peer: peer));
+          push(ChatPage(peer: peer), opaque: false);
         }
       }
     });
@@ -351,8 +353,9 @@ void goTab(NavTab tab) {
   currentTab.value = tab;
 }
 
-Route<T> route<T>(Widget page) {
+Route<T> route<T>(Widget page, {bool opaque = true}) {
   return PageRouteBuilder<T>(
+    opaque: opaque,
     pageBuilder: (context, _, _) => page,
     transitionDuration: const Duration(milliseconds: 220),
     reverseTransitionDuration: const Duration(milliseconds: 160),
@@ -377,8 +380,94 @@ Route<T> route<T>(Widget page) {
   );
 }
 
-Future<T?> push<T>(Widget page) {
-  return navigatorKey.currentState!.push<T>(route<T>(page));
+Future<T?> push<T>(Widget page, {bool opaque = true}) {
+  return navigatorKey.currentState!.push<T>(route<T>(page, opaque: opaque));
+}
+
+class SwipeBack extends StatefulWidget {
+  const SwipeBack({super.key, required this.child});
+
+  final Widget child;
+
+  @override
+  State<SwipeBack> createState() => _SwipeBackState();
+}
+
+class _SwipeBackState extends State<SwipeBack>
+    with SingleTickerProviderStateMixin {
+  static const _edge = 24.0;
+  static const _fling = 700.0;
+
+  late final AnimationController _slide = AnimationController(
+    vsync: this,
+    duration: const Duration(milliseconds: 200),
+  );
+
+  double _width = 1;
+
+  @override
+  void dispose() {
+    _slide.dispose();
+    super.dispose();
+  }
+
+  void _drag(DragUpdateDetails details) {
+    _slide.value += details.delta.dx / _width;
+  }
+
+  Future<void> _release(DragEndDetails details) async {
+    final speed = details.velocity.pixelsPerSecond.dx;
+
+    if (_slide.value < 0.33 && speed < _fling) {
+      await _slide.animateBack(0, curve: Curves.easeOutCubic);
+      return;
+    }
+
+    await _slide.animateTo(1, curve: Curves.easeOutCubic);
+
+    if (!mounted) {
+      return;
+    }
+
+    if (!await Navigator.of(context).maybePop()) {
+      _slide.value = 0;
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return LayoutBuilder(
+      builder: (context, box) {
+        _width = box.maxWidth;
+
+        return Stack(
+          children: [
+            AnimatedBuilder(
+              animation: _slide,
+              builder: (context, child) => Transform.translate(
+                offset: Offset(_slide.value * _width, 0),
+                child: child,
+              ),
+              child: widget.child,
+            ),
+            Positioned(
+              top: 0,
+              left: 0,
+              bottom: 0,
+              width: _edge,
+              child: GestureDetector(
+                behavior: HitTestBehavior.translucent,
+                onHorizontalDragUpdate: _drag,
+                onHorizontalDragEnd: _release,
+                onHorizontalDragCancel: () =>
+                    _slide.animateBack(0, curve: Curves.easeOutCubic),
+              ),
+            ),
+          ],
+        );
+      },
+    );
+  }
 }
 
 Future<T?> replace<T>(Widget page) {
@@ -465,19 +554,58 @@ class PeerName extends StatelessWidget {
     required this.style,
     this.name,
     this.picked,
+    this.shrink,
   });
 
   final String peer;
   final TextStyle style;
   final String? name;
   final bool? picked;
+  final double? shrink;
 
   @override
   Widget build(BuildContext context) {
     final vigil = Vigil.instance;
     final shown = name ?? vigil.name(peer);
     final sealed = vigil.authenticated(peer) && shown == vigil.name(peer);
-    final size = (style.fontSize ?? 14) * 0.95;
+    final styled = peerStyle(style, picked ?? vigil.picked(peer));
+    final smallest = shrink;
+
+    if (smallest == null) {
+      return _row(shown, styled, sealed);
+    }
+
+    return LayoutBuilder(
+      builder: (context, box) {
+        final base = styled.fontSize ?? 14;
+        final painter = TextPainter(
+          text: TextSpan(text: shown, style: styled),
+          textDirection: TextDirection.ltr,
+          textScaler: MediaQuery.textScalerOf(context),
+          maxLines: 1,
+        )..layout();
+        final room = box.maxWidth - (sealed ? base * 0.95 * 1.4 : 0);
+        final width = painter.width;
+
+        painter.dispose();
+
+        if (width <= room) {
+          return _row(shown, styled, sealed);
+        }
+
+        final font = math.max(smallest, base * room / width);
+        final fitted = styled.copyWith(
+          fontSize: font,
+          letterSpacing: (styled.letterSpacing ?? 0) * font / base,
+        );
+
+        return _row(shown, fitted, sealed);
+      },
+    );
+  }
+
+  Widget _row(String shown, TextStyle styled, bool sealed) {
+    final size = (styled.fontSize ?? 14) * 0.95;
 
     return Row(
       mainAxisSize: MainAxisSize.min,
@@ -485,7 +613,8 @@ class PeerName extends StatelessWidget {
         Flexible(
           child: Text(
             shown,
-            style: peerStyle(style, picked ?? vigil.picked(peer)),
+            style: styled,
+            maxLines: 1,
             overflow: TextOverflow.ellipsis,
           ),
         ),
@@ -497,6 +626,139 @@ class PeerName extends StatelessWidget {
           ),
         ],
       ],
+    );
+  }
+}
+
+class Avatar extends StatelessWidget {
+  const Avatar(
+    this.peer, {
+    super.key,
+    this.size = 36,
+    this.margin = const EdgeInsets.only(right: 12),
+    this.zoom = false,
+  });
+
+  final String peer;
+  final double size;
+  final EdgeInsets margin;
+  final bool zoom;
+
+  @override
+  Widget build(BuildContext context) {
+    final ratio = MediaQuery.devicePixelRatioOf(context);
+
+    return FutureBuilder<Uint8List?>(
+      future: Vigil.instance.avatar(peer),
+      builder: (context, snapshot) {
+        final data = snapshot.data;
+
+        if (data == null) {
+          return const SizedBox.shrink();
+        }
+
+        final circle = Container(
+          width: size,
+          height: size,
+          padding: const EdgeInsets.all(1),
+          decoration: const BoxDecoration(
+            shape: BoxShape.circle,
+            color: Palette.line2,
+          ),
+          child: ClipOval(
+            child: Image.memory(
+              data,
+              fit: BoxFit.cover,
+              gaplessPlayback: true,
+              cacheWidth: (size * ratio).round(),
+              errorBuilder: (context, error, stack) => const SizedBox.shrink(),
+            ),
+          ),
+        );
+
+        if (!zoom) {
+          return Padding(padding: margin, child: circle);
+        }
+
+        return Padding(
+          padding: margin,
+          child: Semantics(
+            button: true,
+            label: 'Show picture',
+            child: GestureDetector(
+              behavior: HitTestBehavior.opaque,
+              onTap: () => push(_AvatarView(peer: peer, data: data)),
+              child: circle,
+            ),
+          ),
+        );
+      },
+    );
+  }
+}
+
+class _AvatarView extends StatelessWidget {
+  const _AvatarView({required this.peer, required this.data});
+
+  final String peer;
+  final Uint8List data;
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      behavior: HitTestBehavior.opaque,
+      onTap: () => Navigator.of(context).maybePop(),
+      child: ColoredBox(
+        color: Palette.bg,
+        child: SafeArea(
+          child: Stack(
+            children: [
+              Center(
+                child: LayoutBuilder(
+                  builder: (context, box) {
+                    final side =
+                        math.min(box.maxWidth, box.maxHeight) -
+                        Metrics.edge * 4;
+
+                    return Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Container(
+                          width: side,
+                          height: side,
+                          padding: const EdgeInsets.all(2),
+                          decoration: const BoxDecoration(
+                            shape: BoxShape.circle,
+                            color: Palette.line2,
+                          ),
+                          child: ClipOval(
+                            child: Image.memory(
+                              data,
+                              fit: BoxFit.cover,
+                              filterQuality: FilterQuality.medium,
+                            ),
+                          ),
+                        ),
+                        const SizedBox(height: 20),
+                        PeerName(peer, style: Styles.title),
+                      ],
+                    );
+                  },
+                ),
+              ),
+              Positioned(
+                top: 4,
+                left: Metrics.edge - 12,
+                child: GlyphBtn(
+                  GlyphKind.close,
+                  label: 'Close',
+                  onTap: () => Navigator.of(context).maybePop(),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
     );
   }
 }

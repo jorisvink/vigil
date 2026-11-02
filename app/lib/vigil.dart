@@ -316,6 +316,8 @@ class Chats {
   static final Chats none = Chats(const {});
 
   int get version => json['version'] as int? ?? 0;
+  int get avatars => json['avatars'] as int? ?? 0;
+  int get names => json['names'] as int? ?? 0;
   int get unseen => json['unseen'] as int? ?? 0;
   bool get hardware => json['hardware'] as bool? ?? true;
   String? get open => json['open'] as String?;
@@ -503,6 +505,10 @@ class Vigil {
   static const _dataMax = 24;
   final Map<String, String> _nicks = {};
   final Map<String, String> _signed = {};
+  final Map<String, Future<Uint8List?>> _avatars = {};
+  int _avatarsSeen = 0;
+  int? _namesSeen;
+  bool _namesLoading = false;
 
   static const _connectLimit = Duration(seconds: 20);
 
@@ -959,6 +965,34 @@ class Vigil {
     return loading;
   }
 
+  Future<Uint8List?> avatar(String peer) {
+    if (peer.length != 2) {
+      return Future.value(null);
+    }
+
+    final cached = _avatars[peer];
+    if (cached != null) {
+      return cached;
+    }
+
+    final loading = _channel
+        .invokeMethod<Uint8List>('chatAvatar', peer)
+        .catchError((Object _) {
+          _avatars.remove(peer);
+          return null;
+        });
+
+    _avatars[peer] = loading;
+
+    return loading;
+  }
+
+  Future<void> setAvatar(Uint8List? image) async {
+    await _invoke('chatAvatarSet', image);
+    _avatars.clear();
+    await refresh();
+  }
+
   Future<void> read(String peer) => _invoke('chatRead', peer);
 
   Future<void> favorite(String peer, int ref, bool on) async {
@@ -1026,6 +1060,15 @@ class Vigil {
       status.linking,
     );
 
+    if (_last.chats.avatars != _avatarsSeen) {
+      _avatarsSeen = _last.chats.avatars;
+      _avatars.clear();
+    }
+
+    if (_last.chats.names != _namesSeen && !_namesLoading) {
+      unawaited(_namesLoad(_last.chats.names));
+    }
+
     for (final p in _last.chat?.peers ?? const <ChatPeer>[]) {
       if (p.nick.isNotEmpty) {
         _nicks[p.id] = p.nick;
@@ -1044,10 +1087,41 @@ class Vigil {
   }
 
   void _signedSeen(String peer, String signed) {
-    if (signed.isEmpty) {
-      _signed.remove(peer);
-    } else {
+    if (signed.isNotEmpty) {
       _signed[peer] = signed;
+    }
+  }
+
+  Future<void> _namesLoad(int seen) async {
+    _namesLoading = true;
+
+    try {
+      final raw = jsonDecode(await _invoke('chatNames', null));
+
+      for (final entry in (raw as Map<String, dynamic>).entries) {
+        final name = entry.value as Map<String, dynamic>;
+        final nick = name['nick'] as String? ?? '';
+        final signed = name['signed'] as String? ?? '';
+
+        if (nick.isEmpty) {
+          _nicks.remove(entry.key);
+        } else {
+          _nicks[entry.key] = nick;
+        }
+
+        if (signed.isEmpty) {
+          _signed.remove(entry.key);
+        } else {
+          _signed[entry.key] = signed;
+        }
+      }
+
+      _namesSeen = seen;
+      _status.add(_last);
+    } on VigilError catch (_) {
+      return;
+    } finally {
+      _namesLoading = false;
     }
   }
 
@@ -1061,6 +1135,8 @@ class Vigil {
 }
 
 String chosen(String nick) => '~$nick';
+
+const selfPeer = '00';
 
 String bytes(int value) {
   const units = ['B', 'KiB', 'MiB', 'GiB', 'TiB'];
