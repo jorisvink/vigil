@@ -1039,6 +1039,49 @@ class Vigil {
 
   Future<void> allowBackground() => _invoke('allowBackground', null);
 
+  Future<List<String>> remoteWordList() async =>
+      (await _invoke('remoteWordList', null)).split(' ');
+
+  Future<Map<String, dynamic>?> remoteWords(String words) async {
+    final bytes = utf8.encode(words);
+    final String raw;
+
+    try {
+      raw = await _invoke('remoteWords', bytes);
+    } finally {
+      bytes.fillRange(0, bytes.length, 0);
+    }
+
+    if (raw.isEmpty) {
+      return null;
+    }
+
+    return jsonDecode(raw) as Map<String, dynamic>;
+  }
+
+  Future<void> remoteStart(String id, String secret) =>
+      _invoke('remoteStart', {'id': id, 'secret': secret});
+
+  Future<int> remoteRun() async {
+    try {
+      return await _channel.invokeMethod<int>('remoteRun') ?? -1;
+    } on PlatformException catch (e) {
+      throw VigilError(e.message ?? e.code, e.code);
+    }
+  }
+
+  Future<String?> remoteConfig() async {
+    final bytes = await _channel.invokeMethod<Uint8List>('remoteConfig');
+
+    if (bytes == null || bytes.isEmpty) {
+      return null;
+    }
+
+    return utf8.decode(bytes);
+  }
+
+  Future<void> remoteStop() => _invoke('remoteStop', null);
+
   Future<String> version() async =>
       await _channel.invokeMethod<String>('version') ?? 'unknown';
 

@@ -27,6 +27,7 @@ final class VigilPlugin: NSObject, FlutterPlugin, UIDocumentPickerDelegate,
     private var version = 0
     private var avatars = 0
     private let reader = DispatchQueue(label: "se.sanctorum.vigil.chats")
+    private let remote = DispatchQueue(label: "se.sanctorum.vigil.remote")
     private var opened: String?
     private var last: String?
     private var silent: TimeInterval?
@@ -356,6 +357,79 @@ final class VigilPlugin: NSObject, FlutterPlugin, UIDocumentPickerDelegate,
             result(UserDefaults.standard.bool(forKey: key) ? "true" : "false")
         case "eraseAll":
             erase(result: result)
+        case "remoteWordList":
+            remote.async {
+                var words: [String] = []
+                var idx: UInt16 = 0
+
+                while let word = vigil_remote_word(idx) {
+                    words.append(String(cString: word))
+                    idx += 1
+                }
+
+                DispatchQueue.main.async { result(words.joined(separator: " ")) }
+            }
+        case "remoteWords":
+            var words = Self.bytes(call.arguments)
+            words.append(0)
+            defer { TunnelKeychain.wipe(&words) }
+
+            var out = [CChar](repeating: 0, count: 256)
+            let outlen = out.count
+
+            let ok = words.withUnsafeBytes { raw in
+                vigil_remote_words(raw.baseAddress?.assumingMemoryBound(to: CChar.self),
+                                   &out, outlen) == 0
+            }
+
+            if ok {
+                result(String(cString: out))
+            } else {
+                result("")
+            }
+        case "remoteStart":
+            let args = call.arguments as? [String: Any] ?? [:]
+            let id = args["id"] as? String ?? ""
+            let secret = args["secret"] as? String ?? ""
+
+            remote.async {
+                let ok = vigil_remote_start(id, secret) == 0
+
+                DispatchQueue.main.async {
+                    if ok {
+                        result("")
+                    } else {
+                        result(FlutterError(code: "invalid",
+                                            message: "The tunnel to Covenant could not be set up.",
+                                            details: nil))
+                    }
+                }
+            }
+        case "remoteRun":
+            remote.async {
+                let state = Int(vigil_remote_run())
+                DispatchQueue.main.async { result(state) }
+            }
+        case "remoteConfig":
+            var out = [CChar](repeating: 0, count: 4096)
+            let outlen = out.count
+            defer {
+                for idx in out.indices {
+                    out[idx] = 0
+                }
+            }
+
+            if vigil_remote_config(&out, outlen) == 0 {
+                let bytes = out.prefix(while: { $0 != 0 }).map { UInt8(bitPattern: $0) }
+                result(FlutterStandardTypedData(bytes: Data(bytes)))
+            } else {
+                result(FlutterStandardTypedData(bytes: Data()))
+            }
+        case "remoteStop":
+            remote.async {
+                vigil_remote_stop()
+                DispatchQueue.main.async { result("") }
+            }
         case "version":
             result(String(cString: vigil_version()))
         case "kyrkaVersion":

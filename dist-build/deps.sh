@@ -7,9 +7,9 @@ SRC=$TOPDIR/build/src
 
 . ./dist-build/fetch.sh
 
-LIBKYRKA_REV=17b52d2e95d7e0aa8e02a8431484130f59fbd197
-LIBKYRKA_URL=https://github.com/jorisvink/libkyrka/archive/$LIBKYRKA_REV.tar.gz
-LIBKYRKA_SHA256=80a7def87b85d097c1f7a76868a69294f6531cde9f18a4e94291a26a3a67912c
+LIBKYRKA_VERSION=1.2.1
+LIBKYRKA_URL=https://sanctorum.se/releases/libkyrka-$LIBKYRKA_VERSION.tgz
+LIBKYRKA_SHA256=d9450f3b626d34e7f2ebcc7fae8eeb7b1633a67dcf6eb9ebbe0b8c0ce0529fd2
 
 # libsodium, used by libkyrka for x25519, ed25519 and (on hosts) AES-GCM.
 LIBSODIUM_VERSION=1.0.22
@@ -27,15 +27,10 @@ OPUS_URL=https://downloads.xiph.org/releases/opus/opus-$OPUS_VERSION.tar.gz
 OPUS_SHA256=65c1d2f78b9f2fb20082c38cbe47c951ad5839345876e46941612ee87f9a7ce1
 
 fetch libkyrka $LIBKYRKA_URL $LIBKYRKA_SHA256 \
-    libkyrka-$LIBKYRKA_REV.tar.gz $SRC
+    libkyrka-$LIBKYRKA_VERSION.tgz $SRC
 fetch libsodium $LIBSODIUM_URL $LIBSODIUM_SHA256 \
     libsodium-$LIBSODIUM_VERSION.tar.gz $SRC
 fetch mbedtls $MBEDTLS_URL $MBEDTLS_SHA256 \
     mbedtls-$MBEDTLS_VERSION.tar.bz2 $SRC
 fetch opus $OPUS_URL $OPUS_SHA256 \
     opus-$OPUS_VERSION.tar.gz $SRC
-
-# libkyrka wants a git checkout or a RELEASE file for its version.
-if [ ! -f $SRC/libkyrka/RELEASE ]; then
-	echo "master-`echo $LIBKYRKA_REV | cut -c1-8`" > $SRC/libkyrka/RELEASE
-fi

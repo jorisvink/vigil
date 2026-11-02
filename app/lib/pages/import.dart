@@ -10,10 +10,50 @@ import '../theme.dart';
 import '../widgets/buttons.dart';
 import '../widgets/marks.dart';
 import '../widgets/ui.dart';
+import 'call.dart';
+import 'join.dart';
 import 'tunnel.dart';
 import 'tunnels.dart';
 
 const _magic = 'vigil ';
+
+Future<void> addConfig() async {
+  final context = navigatorKey.currentContext;
+  if (context == null) {
+    return;
+  }
+
+  final page = await sheet<Widget>(
+    context,
+    (context) => Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        sheetTitle('Add config'),
+        const SizedBox(height: 16),
+        LinkList(
+          rows: [
+            LinkRow(
+              'QR code',
+              () => Navigator.of(context).pop(const ScanPage()),
+              detail: 'Scan the QR code you were given',
+            ),
+            LinkRow(
+              'Covenant',
+              () => Navigator.of(context).pop(const JoinPage()),
+              detail: 'Type the words you were given',
+            ),
+          ],
+        ),
+      ],
+    ),
+  );
+
+  if (page == null) {
+    return;
+  }
+
+  await push<void>(page);
+}
 
 class ScanPage extends StatefulWidget {
   const ScanPage({super.key});
@@ -248,6 +288,7 @@ class _ScanPageState extends State<ScanPage> with WidgetsBindingObserver {
                         onTap: () => replace<void>(const PastePage()).ignore(),
                       ),
                     ),
+
                   ],
                 ),
               ),

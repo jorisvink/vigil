@@ -159,20 +159,11 @@ class _GospelPageState extends State<GospelPage> with WidgetsBindingObserver {
                   text:
                       'Scan the QR code of a Gospel configuration to make '
                       'calls and send text messages to anyone in your flock.',
-                  action: BtnPair(
-                    first: Btn(
-                      label: 'Scan QR',
-                      glyph: GlyphKind.scan,
-                      expand: true,
-                      onTap: () => push(const ScanPage()),
-                    ),
-                    second: Btn(
-                      label: 'Paste',
-                      glyph: GlyphKind.paste,
-                      kind: BtnKind.secondary,
-                      expand: true,
-                      onTap: () => push(const PastePage()),
-                    ),
+                  action: Btn(
+                    label: 'Add config',
+                    glyph: GlyphKind.scan,
+                    expand: true,
+                    onTap: addConfig,
                   ),
                 )
               else ...[

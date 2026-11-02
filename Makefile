@@ -39,6 +39,7 @@ SRC=	src/vigil.c \
 	src/liturgy.c \
 	src/peer.c \
 	src/remembrance.c \
+	src/remote.c \
 	src/ring.c \
 	src/status.c \
 	src/video.c \

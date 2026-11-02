@@ -539,6 +539,36 @@ class MainActivity : FlutterActivity() {
                     allowBackground()
                     result.success("")
                 }
+                "remoteWordList" -> background(result) {
+                    generateSequence(0) { it + 1 }
+                        .map { Vigil.remoteWord(it) }
+                        .takeWhile { it != null }
+                        .joinToString(" ")
+                }
+                "remoteWords" -> {
+                    val words = call.arguments as ByteArray
+
+                    try {
+                        result.success(Vigil.remoteWords(words) ?: "")
+                    } finally {
+                        words.fill(0)
+                    }
+                }
+                "remoteStart" -> {
+                    val id = call.argument<String>("id") ?: ""
+                    val secret = call.argument<String>("secret") ?: ""
+
+                    background(result) {
+                        require(Vigil.remoteStart(id, secret)) { "The tunnel to Covenant could not be set up." }
+                        ""
+                    }
+                }
+                "remoteRun" -> background(result) { Vigil.remoteRun() }
+                "remoteConfig" -> result.success(Vigil.remoteConfig() ?: ByteArray(0))
+                "remoteStop" -> background(result) {
+                    Vigil.remoteStop()
+                    ""
+                }
                 "version" -> result.success(Vigil.version())
                 "kyrkaVersion" -> result.success(Vigil.kyrkaVersion())
                 else -> result.notImplemented()

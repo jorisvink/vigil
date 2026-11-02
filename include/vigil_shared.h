@@ -92,6 +92,23 @@
 /* The maximum length of a configuration we accept. */
 #define VIGIL_CONFIG_MAX		4096
 
+/*
+ * The words from covenant to join a flock remotely, the route to covenant
+ * followed by the passphrase for the tunnel. All of them come from the
+ * cephas word list, see vigil_remote_word().
+ */
+#define VIGIL_REMOTE_ROUTE_WORDS	13
+#define VIGIL_REMOTE_PASS_WORDS		20
+#define VIGIL_REMOTE_WORDS		\
+    (VIGIL_REMOTE_ROUTE_WORDS + VIGIL_REMOTE_PASS_WORDS)
+
+/*
+ * The states of the tunnel to covenant when joining remotely.
+ */
+#define VIGIL_REMOTE_WAITING		1
+#define VIGIL_REMOTE_ONLINE		2
+#define VIGIL_REMOTE_DONE		3
+
 /* The buffer vigil_status() needs at most, with all log lines escaped. */
 #define VIGIL_STATUS_MAX		(512 * 1024)
 
@@ -309,6 +326,15 @@ int	vigil_link_ready(void);
 int	vigil_link_open(const u_int8_t *, size_t);
 ssize_t	vigil_link_input(const u_int8_t *, size_t, u_int8_t *, size_t);
 ssize_t	vigil_link_output(const u_int8_t *, size_t, u_int8_t *, size_t);
+
+/* src/remote.c */
+int	vigil_remote_run(void);
+void	vigil_remote_stop(void);
+int	vigil_remote_config(char *, size_t);
+int	vigil_remote_start(const char *, const char *);
+int	vigil_remote_words(const char *, char *, size_t);
+
+const char	*vigil_remote_word(u_int16_t);
 
 /* src/config.c */
 int	vigil_config_check(const char *, size_t, char *, size_t);

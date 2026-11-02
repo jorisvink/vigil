@@ -62,7 +62,7 @@ class _TunnelsPageState extends State<TunnelsPage> {
               GlyphBtn(
                 GlyphKind.plus,
                 label: 'Add a tunnel',
-                onTap: () => push(const ScanPage()),
+                onTap: addConfig,
               ),
             ],
             children: [
@@ -83,7 +83,7 @@ class _TunnelsPageState extends State<TunnelsPage> {
                   text:
                       'Scan the QR code you were given, it holds '
                       'everything needed to set up a tunnel.',
-                  action: _addButtons(first: true),
+                  action: _addButton(first: true),
                 )
               else ...[
                 GroupLabel(
@@ -100,7 +100,7 @@ class _TunnelsPageState extends State<TunnelsPage> {
                         : () => _toggle(t),
                   ),
                 const SizedBox(height: 4),
-                _addButtons(),
+                _addButton(),
               ],
             ],
           );
@@ -123,22 +123,13 @@ class _TunnelsPageState extends State<TunnelsPage> {
     return list.first;
   }
 
-  Widget _addButtons({bool first = false}) {
-    return BtnPair(
-      first: Btn(
-        label: 'Scan QR',
-        glyph: GlyphKind.scan,
-        kind: first ? BtnKind.primary : BtnKind.secondary,
-        expand: true,
-        onTap: () => push(const ScanPage()),
-      ),
-      second: Btn(
-        label: 'Paste',
-        glyph: GlyphKind.paste,
-        kind: BtnKind.secondary,
-        expand: true,
-        onTap: () => push(const PastePage()),
-      ),
+  Widget _addButton({bool first = false}) {
+    return Btn(
+      label: 'Add config',
+      glyph: GlyphKind.scan,
+      kind: first ? BtnKind.primary : BtnKind.secondary,
+      expand: true,
+      onTap: addConfig,
     );
   }
 }

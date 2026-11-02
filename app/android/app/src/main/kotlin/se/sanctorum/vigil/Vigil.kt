@@ -103,4 +103,22 @@ object Vigil {
 
     @JvmStatic
     external fun gospel(config: ByteArray?): Boolean
+
+    @JvmStatic
+    external fun remoteWord(idx: Int): String?
+
+    @JvmStatic
+    external fun remoteWords(words: ByteArray): String?
+
+    @JvmStatic
+    external fun remoteStart(id: String, secret: String): Boolean
+
+    @JvmStatic
+    external fun remoteRun(): Int
+
+    @JvmStatic
+    external fun remoteConfig(): ByteArray?
+
+    @JvmStatic
+    external fun remoteStop()
 }

@@ -58,6 +58,14 @@ static jstring	android_voice_status(JNIEnv *, jclass);
 static void	android_voice_mute(JNIEnv *, jclass, jboolean);
 static void	android_voice_call(JNIEnv *, jclass, jint, jint);
 
+static jint		android_remote_run(JNIEnv *, jclass);
+static void		android_remote_stop(JNIEnv *, jclass);
+static jbyteArray	android_remote_config(JNIEnv *, jclass);
+static jstring		android_remote_word(JNIEnv *, jclass, jint);
+static jstring		android_remote_words(JNIEnv *, jclass, jbyteArray);
+static jboolean		android_remote_start(JNIEnv *, jclass, jstring,
+			    jstring);
+
 static jbyteArray	android_chat_events(JNIEnv *, jclass);
 static jbyteArray	android_chat_data_take(JNIEnv *, jclass, jlong, jint);
 static jboolean		android_chat_group(JNIEnv *, jclass, jint);
@@ -116,6 +124,14 @@ static JNINativeMethod	methods[] = {
 	    (void *)android_chat_group_data_send },
 	{ "chatDataTake", "(JI)[B", (void *)android_chat_data_take },
 	{ "gospel", "([B)Z", (void *)android_gospel },
+	{ "remoteWord", "(I)Ljava/lang/String;", (void *)android_remote_word },
+	{ "remoteWords", "([B)Ljava/lang/String;",
+	    (void *)android_remote_words },
+	{ "remoteStart", "(Ljava/lang/String;Ljava/lang/String;)Z",
+	    (void *)android_remote_start },
+	{ "remoteRun", "()I", (void *)android_remote_run },
+	{ "remoteConfig", "()[B", (void *)android_remote_config },
+	{ "remoteStop", "()V", (void *)android_remote_stop },
 };
 
 /*
@@ -957,6 +973,128 @@ android_gospel(JNIEnv *env, jclass cls, jbyteArray config)
 		return (JNI_FALSE);
 
 	return (JNI_TRUE);
+}
+
+/*
+ * Vigil.remoteWord(), returns the word at idx in the word list or null
+ * once past its end.
+ */
+static jstring
+android_remote_word(JNIEnv *env, jclass cls, jint idx)
+{
+	const char	*word;
+
+	if (idx < 0 || idx > USHRT_MAX)
+		return (NULL);
+
+	if ((word = vigil_remote_word((u_int16_t)idx)) == NULL)
+		return (NULL);
+
+	return (android_string_new(env, word));
+}
+
+/*
+ * Vigil.remoteWords(), reads the route from the words covenant gave us
+ * and wipes them from the array. Returns the flock, cathedral and our
+ * cosk as json or null if the words are not right.
+ */
+static jstring
+android_remote_words(JNIEnv *env, jclass cls, jbyteArray words)
+{
+	int		ret;
+	size_t		len;
+	char		*buf, out[256];
+
+	if (words == NULL)
+		return (NULL);
+
+	buf = android_bytes_copy(env, words, VIGIL_CONFIG_MAX, &len);
+	if (buf == NULL)
+		return (NULL);
+
+	android_bytes_wipe(env, words, len);
+
+	ret = vigil_remote_words(buf, out, sizeof(out));
+	android_bytes_free(buf, len);
+
+	if (ret == -1)
+		return (NULL);
+
+	return (android_string_new(env, out));
+}
+
+/*
+ * Vigil.remoteStart(), sets up the tunnel to covenant once we joined the
+ * flock under the given cathedral id and secret.
+ */
+static jboolean
+android_remote_start(JNIEnv *env, jclass cls, jstring id, jstring secret)
+{
+	int		ret;
+	const char	*cid, *cs;
+
+	if (id == NULL || secret == NULL)
+		return (JNI_FALSE);
+
+	if ((cid = (*env)->GetStringUTFChars(env, id, NULL)) == NULL)
+		return (JNI_FALSE);
+
+	if ((cs = (*env)->GetStringUTFChars(env, secret, NULL)) == NULL) {
+		(*env)->ReleaseStringUTFChars(env, id, cid);
+		return (JNI_FALSE);
+	}
+
+	ret = vigil_remote_start(cid, cs);
+
+	(*env)->ReleaseStringUTFChars(env, secret, cs);
+	(*env)->ReleaseStringUTFChars(env, id, cid);
+
+	if (ret == -1)
+		return (JNI_FALSE);
+
+	return (JNI_TRUE);
+}
+
+/*
+ * Vigil.remoteRun(), runs the tunnel to covenant for up to a second.
+ */
+static jint
+android_remote_run(JNIEnv *env, jclass cls)
+{
+	return (vigil_remote_run());
+}
+
+/*
+ * Vigil.remoteConfig(), the configuration covenant sent us, null if we
+ * do not have it (yet).
+ */
+static jbyteArray
+android_remote_config(JNIEnv *env, jclass cls)
+{
+	size_t		len;
+	jbyteArray	ret;
+	char		out[VIGIL_CONFIG_MAX];
+
+	if (vigil_remote_config(out, sizeof(out)) == -1)
+		return (NULL);
+
+	len = strlen(out);
+
+	if ((ret = (*env)->NewByteArray(env, len)) != NULL)
+		(*env)->SetByteArrayRegion(env, ret, 0, len, (jbyte *)out);
+
+	nyfe_mem_zero(out, sizeof(out));
+
+	return (ret);
+}
+
+/*
+ * Vigil.remoteStop(), forgets everything about joining remotely.
+ */
+static void
+android_remote_stop(JNIEnv *env, jclass cls)
+{
+	vigil_remote_stop();
 }
 
 /*
