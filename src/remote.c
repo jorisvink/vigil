@@ -169,6 +169,7 @@ vigil_remote_word(u_int16_t idx)
 int
 vigil_remote_words(const char *words, char *out, size_t outlen)
 {
+	int			ret;
 	struct vigil_buf	buf;
 	char			hex[REMOTE_HEX_MAX];
 	u_int8_t		pk[VIGIL_KEY_LENGTH];
@@ -177,6 +178,8 @@ vigil_remote_words(const char *words, char *out, size_t outlen)
 	PRECOND(words != NULL);
 	PRECOND(out != NULL);
 	PRECOND(outlen > 0);
+
+	ret = -1;
 
 	remote_lock();
 	remote_free();
@@ -187,36 +190,23 @@ vigil_remote_words(const char *words, char *out, size_t outlen)
 	nyfe_zeroize_register(remote, sizeof(*remote));
 	remote->fd = -1;
 
-	if (remote_words_parse(words, all, VIGIL_REMOTE_WORDS) == -1) {
-		remote_free();
-		remote_unlock();
-		return (-1);
-	}
+	nyfe_zeroize_register(all, sizeof(all));
+
+	if (remote_words_parse(words, all, VIGIL_REMOTE_WORDS) == -1)
+		goto cleanup;
 
 	if (remote_route_decode(all, VIGIL_REMOTE_ROUTE_WORDS,
-	    remote->route, sizeof(remote->route)) == -1) {
-		remote_free();
-		remote_unlock();
-		return (-1);
-	}
+	    remote->route, sizeof(remote->route)) == -1)
+		goto cleanup;
 
-	if (remote_passphrase(all, VIGIL_REMOTE_WORDS) == -1) {
-		remote_free();
-		remote_unlock();
-		return (-1);
-	}
+	if (remote_passphrase(all, VIGIL_REMOTE_WORDS) == -1)
+		goto cleanup;
 
-	if (remote_route_check() == -1) {
-		remote_free();
-		remote_unlock();
-		return (-1);
-	}
+	if (remote_route_check() == -1)
+		goto cleanup;
 
-	if (remote_route_apply() == -1) {
-		remote_free();
-		remote_unlock();
-		return (-1);
-	}
+	if (remote_route_apply() == -1)
+		goto cleanup;
 
 	if (crypto_sign_keypair(pk, remote->sk) != 0)
 		fatal("failed to create cosk pair");
@@ -229,15 +219,20 @@ vigil_remote_words(const char *words, char *out, size_t outlen)
 	    "\"cosk\":\"%s\"}", remote->cfg.flock_src,
 	    vigil_address(&remote->cathedral), hex);
 
-	if (buf.flags & VIGIL_BUF_FULL) {
+	if (buf.flags & VIGIL_BUF_FULL)
+		goto cleanup;
+
+	ret = 0;
+
+cleanup:
+	nyfe_zeroize(all, sizeof(all));
+
+	if (ret == -1)
 		remote_free();
-		remote_unlock();
-		return (-1);
-	}
 
 	remote_unlock();
 
-	return (0);
+	return (ret);
 }
 
 /*
@@ -933,6 +928,8 @@ remote_read(void)
 
 	PRECOND(remote != NULL);
 
+	nyfe_zeroize_register(&pkt, sizeof(pkt));
+
 	for (;;) {
 		if ((ptr = kyrka_packet_recvbuf(remote->kyrka,
 		    &pkt, &len)) == NULL)
@@ -946,6 +943,7 @@ remote_read(void)
 				    "[remote] recv: %s", errno_s);
 				remote->error = 1;
 			}
+			nyfe_zeroize(&pkt, sizeof(pkt));
 			return;
 		}
 
@@ -969,6 +967,8 @@ remote_read(void)
 			}
 		}
 	}
+
+	nyfe_zeroize(&pkt, sizeof(pkt));
 }
 
 /*

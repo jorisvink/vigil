@@ -420,7 +420,8 @@ final class VigilPlugin: NSObject, FlutterPlugin, UIDocumentPickerDelegate,
             }
 
             if vigil_remote_config(&out, outlen) == 0 {
-                let bytes = out.prefix(while: { $0 != 0 }).map { UInt8(bitPattern: $0) }
+                var bytes = out.prefix(while: { $0 != 0 }).map { UInt8(bitPattern: $0) }
+                defer { TunnelKeychain.wipe(&bytes) }
                 result(FlutterStandardTypedData(bytes: Data(bytes)))
             } else {
                 result(FlutterStandardTypedData(bytes: Data()))

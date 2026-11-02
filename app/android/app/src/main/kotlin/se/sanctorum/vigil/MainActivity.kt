@@ -545,15 +545,7 @@ class MainActivity : FlutterActivity() {
                         .takeWhile { it != null }
                         .joinToString(" ")
                 }
-                "remoteWords" -> {
-                    val words = call.arguments as ByteArray
-
-                    try {
-                        result.success(Vigil.remoteWords(words) ?: "")
-                    } finally {
-                        words.fill(0)
-                    }
-                }
+                "remoteWords" -> wiped(call.arguments as ByteArray) { result.success(Vigil.remoteWords(it) ?: "") }
                 "remoteStart" -> {
                     val id = call.argument<String>("id") ?: ""
                     val secret = call.argument<String>("secret") ?: ""
@@ -564,7 +556,7 @@ class MainActivity : FlutterActivity() {
                     }
                 }
                 "remoteRun" -> background(result) { Vigil.remoteRun() }
-                "remoteConfig" -> result.success(Vigil.remoteConfig() ?: ByteArray(0))
+                "remoteConfig" -> wiped(Vigil.remoteConfig() ?: ByteArray(0)) { result.success(it) }
                 "remoteStop" -> background(result) {
                     Vigil.remoteStop()
                     ""
