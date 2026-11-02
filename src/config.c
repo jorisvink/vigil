@@ -796,12 +796,18 @@ config_validate_tier6(struct config_parser *cp)
 
 	mask = 0xffffffff << (32 - cfg->tun_prefix);
 
-	cfg->route_count = 1;
+	cfg->route_count = 3;
 	cfg->routes[0].prefix = cfg->tun_prefix;
 
 	cfg->routes[0].net.s_addr = ntohl(cfg->ip.s_addr);
 	cfg->routes[0].net.s_addr &= mask;
 	cfg->routes[0].net.s_addr = htonl(cfg->routes[0].net.s_addr);
+
+	cfg->routes[1].prefix = 32;
+	cfg->routes[1].net.s_addr = htonl(INADDR_BROADCAST);
+
+	cfg->routes[2].prefix = 4;
+	cfg->routes[2].net.s_addr = htonl(INADDR_UNSPEC_GROUP);
 
 	return (config_validate_mtu(cp));
 }

@@ -113,6 +113,11 @@ With tier6 turned on, the tunnels carry ethernet frames instead of IP
 packets. This allows talking to the tier6 daemon, which builds a layer 2
 network. The key handling is the same as in the other modes.
 
+Broadcast (255.255.255.255) and multicast (224.0.0.0/4) are routed into
+the tunnel as well, so apps that look for devices on the local network
+find them on the tier6 network. While tier6 is up, those apps do not
+see devices on the network your phone is connected to.
+
 When two tier6 peers share the same public address, they look for each
 other on their local networks. Each side sends the other its local IPv4
 addresses inside the tunnel. The other side then sends a discovery probe
