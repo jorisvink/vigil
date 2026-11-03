@@ -193,7 +193,6 @@ class _GospelPageState extends State<GospelPage> with WidgetsBindingObserver {
     final peers = chats.where((c) => !isGroup(c.peer)).toList();
 
     return [
-      const GroupLabel('Chats'),
       if (_error != null) Notice(text: _error!, kind: NoticeKind.warn),
       if (!status.chats.hardware)
         const Notice(
@@ -215,9 +214,11 @@ class _GospelPageState extends State<GospelPage> with WidgetsBindingObserver {
             onTap: () => newChat(status),
           ),
         ),
+      if (groups.isNotEmpty) const GroupLabel('Groups'),
       for (final chat in groups)
         ChatRow(key: ValueKey(chat.peer), chat: chat, status: status),
-      if (groups.isNotEmpty && peers.isNotEmpty) const Line(),
+      if (peers.isNotEmpty) const Line(),
+      if (peers.isNotEmpty) const GroupLabel('Chats'),
       for (final chat in peers)
         ChatRow(key: ValueKey(chat.peer), chat: chat, status: status),
     ];
