@@ -5,6 +5,7 @@ import 'package:flutter/widgets.dart';
 
 import '../theme.dart';
 import '../vigil.dart';
+import 'ui.dart';
 
 const _detailMax = 24;
 
@@ -17,31 +18,8 @@ class NetworkMap extends StatefulWidget {
   State<NetworkMap> createState() => _NetworkMapState();
 }
 
-class _NetworkMapState extends State<NetworkMap>
-    with SingleTickerProviderStateMixin {
-  late final AnimationController _clock = AnimationController(
-    vsync: this,
-    duration: const Duration(minutes: 10),
-  );
-
+class _NetworkMapState extends State<NetworkMap> {
   String? _focus;
-
-  @override
-  void didChangeDependencies() {
-    super.didChangeDependencies();
-
-    if (MediaQuery.disableAnimationsOf(context)) {
-      _clock.stop();
-    } else if (!_clock.isAnimating) {
-      _clock.repeat();
-    }
-  }
-
-  @override
-  void dispose() {
-    _clock.dispose();
-    super.dispose();
-  }
 
   void _tap(Offset at, Size size, _Network net) {
     if (_focus != null) {
@@ -100,7 +78,12 @@ class _NetworkMapState extends State<NetworkMap>
             builder: (context, box) => GestureDetector(
               behavior: HitTestBehavior.opaque,
               onTapUp: (d) => _tap(d.localPosition, box.biggest, net),
-              child: CustomPaint(painter: _MapPainter(_clock, net)),
+              child: CustomPaint(
+                painter: _MapPainter(
+                  AmbientClock.live(context) ? AmbientClock.net : null,
+                  net,
+                ),
+              ),
             ),
           ),
         ),
@@ -131,43 +114,15 @@ class _NetworkMapState extends State<NetworkMap>
   }
 }
 
-class CallMap extends StatefulWidget {
+class CallMap extends StatelessWidget {
   const CallMap({super.key, required this.peer, required this.voice});
 
   final String peer;
   final VoiceStatus voice;
 
   @override
-  State<CallMap> createState() => _CallMapState();
-}
-
-class _CallMapState extends State<CallMap> with SingleTickerProviderStateMixin {
-  late final AnimationController _clock = AnimationController(
-    vsync: this,
-    duration: const Duration(minutes: 10),
-  );
-
-  @override
-  void didChangeDependencies() {
-    super.didChangeDependencies();
-
-    if (MediaQuery.disableAnimationsOf(context)) {
-      _clock.stop();
-    } else if (!_clock.isAnimating) {
-      _clock.repeat();
-    }
-  }
-
-  @override
-  void dispose() {
-    _clock.dispose();
-    super.dispose();
-  }
-
-  @override
   Widget build(BuildContext context) {
-    final voice = widget.voice;
-    final net = _Network.call(widget.peer, voice);
+    final net = _Network.call(peer, voice);
     final online = voice.state != 'connecting';
     final cathedral = (voice.cathedral ?? '').split(':').first;
 
@@ -177,7 +132,12 @@ class _CallMapState extends State<CallMap> with SingleTickerProviderStateMixin {
       children: [
         AspectRatio(
           aspectRatio: 2.4,
-          child: CustomPaint(painter: _CallPainter(_clock, net)),
+          child: CustomPaint(
+            painter: _CallPainter(
+              AmbientClock.live(context) ? AmbientClock.net : null,
+              net,
+            ),
+          ),
         ),
         const SizedBox(height: 10),
         Center(
@@ -399,7 +359,7 @@ class _Layout {
 class _MapPainter extends CustomPainter {
   _MapPainter(this.clock, this.net) : super(repaint: clock);
 
-  final Animation<double> clock;
+  final Listenable? clock;
   final _Network net;
 
   static final _labels = <String, TextPainter>{};
@@ -407,7 +367,7 @@ class _MapPainter extends CustomPainter {
   @override
   void paint(Canvas canvas, Size size) {
     final layout = _Layout(net, size);
-    final seconds = clock.value * 600;
+    final seconds = AmbientClock.net.value;
 
     final rings = Paint()
       ..style = PaintingStyle.stroke
@@ -882,7 +842,7 @@ class _CallPainter extends _MapPainter {
   @override
   void paint(Canvas canvas, Size size) {
     final layout = _Layout.call(net, size);
-    final seconds = clock.value * 600;
+    final seconds = AmbientClock.net.value;
 
     for (final c in net.cathedrals.values) {
       _line(

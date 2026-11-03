@@ -404,11 +404,48 @@ class _SwipeBackState extends State<SwipeBack>
   );
 
   double _width = 1;
+  ModalRoute<Object?>? _route;
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+
+    final route = ModalRoute.of(context);
+
+    if (route != _route) {
+      _route?.animation?.removeStatusListener(_settled);
+      _route = route;
+      _route?.animation?.addStatusListener(_settled);
+    }
+  }
 
   @override
   void dispose() {
+    _route?.animation?.removeStatusListener(_settled);
     _slide.dispose();
     super.dispose();
+  }
+
+  void _settled(AnimationStatus status) {
+    if (status.isCompleted) {
+      _cover(true);
+    }
+  }
+
+  void _cover(bool on) {
+    final entries = _route?.overlayEntries ?? const <OverlayEntry>[];
+
+    if (entries.isNotEmpty) {
+      entries.first.opaque = on;
+    }
+  }
+
+  Future<void> _back() async {
+    await _slide.animateBack(0, curve: Curves.easeOutCubic);
+
+    if (mounted) {
+      _cover(true);
+    }
   }
 
   void _drag(DragUpdateDetails details) {
@@ -419,7 +456,7 @@ class _SwipeBackState extends State<SwipeBack>
     final speed = details.velocity.pixelsPerSecond.dx;
 
     if (_slide.value < 0.33 && speed < _fling) {
-      await _slide.animateBack(0, curve: Curves.easeOutCubic);
+      await _back();
       return;
     }
 
@@ -431,6 +468,7 @@ class _SwipeBackState extends State<SwipeBack>
 
     if (!await Navigator.of(context).maybePop()) {
       _slide.value = 0;
+      _cover(true);
     }
   }
 
@@ -457,10 +495,10 @@ class _SwipeBackState extends State<SwipeBack>
               width: _edge,
               child: GestureDetector(
                 behavior: HitTestBehavior.translucent,
+                onHorizontalDragStart: (_) => _cover(false),
                 onHorizontalDragUpdate: _drag,
                 onHorizontalDragEnd: _release,
-                onHorizontalDragCancel: () =>
-                    _slide.animateBack(0, curve: Curves.easeOutCubic),
+                onHorizontalDragCancel: _back,
               ),
             ),
           ],

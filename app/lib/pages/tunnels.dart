@@ -36,11 +36,8 @@ class _TunnelsPageState extends State<TunnelsPage> {
     return StreamBuilder<List<Tunnel>>(
       stream: vigil.tunnelUpdates,
       initialData: vigil.tunnels,
-      builder: (context, tunnels) => StreamBuilder<Status>(
-        stream: vigil.statuses,
-        initialData: vigil.status,
-        builder: (context, snapshot) {
-          final status = snapshot.data!;
+      builder: (context, tunnels) => LiveStatus(
+        builder: (context, status) {
           final voice = tunnels.data!.where((t) => t.summary.voice).firstOrNull;
           final list = tunnels.data!.where((t) => !t.summary.voice).toList();
           final alone = status.running && status.mode == 'gospel';

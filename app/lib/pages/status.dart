@@ -13,11 +13,8 @@ class StatusPage extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return StreamBuilder<Status>(
-      stream: Vigil.instance.statuses,
-      initialData: Vigil.instance.status,
-      builder: (context, snapshot) {
-        final status = snapshot.data!;
+    return LiveStatus(
+      builder: (context, status) {
         final running = status.running && status.mode != 'gospel';
 
         return TabPage(

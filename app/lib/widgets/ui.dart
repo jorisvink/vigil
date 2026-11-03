@@ -1,8 +1,11 @@
+import 'dart:async';
 import 'dart:math' as math;
+import 'dart:ui' as ui;
 
 import 'package:flutter/widgets.dart';
 
 import '../theme.dart';
+import '../vigil.dart';
 import 'buttons.dart';
 import 'marks.dart';
 import 'net_data.dart';
@@ -28,13 +31,19 @@ class _DotsPainter extends CustomPainter {
   void paint(Canvas canvas, Size size) {
     canvas.drawRect(Offset.zero & size, Paint()..color = Palette.bg);
 
-    final paint = Paint()..color = const Color(0x0dffffff);
+    final paint = Paint()
+      ..color = const Color(0x0dffffff)
+      ..strokeWidth = 2.3
+      ..strokeCap = StrokeCap.round;
+    final dots = <Offset>[];
 
     for (double y = 12; y < size.height; y += 24) {
       for (double x = 12; x < size.width; x += 24) {
-        canvas.drawCircle(Offset(x, y), 1.15, paint);
+        dots.add(Offset(x, y));
       }
     }
+
+    canvas.drawPoints(ui.PointMode.points, dots, paint);
   }
 
   @override
@@ -379,23 +388,17 @@ class StateDot extends StatelessWidget {
   }
 }
 
-class AroundDot extends StatefulWidget {
-  const AroundDot({super.key, this.size = 8});
+class AmbientClock extends ValueNotifier<double> {
+  AmbientClock(this._sample) : super(_sample(0));
 
-  final double size;
+  static const _step = Duration(milliseconds: 50);
 
-  @override
-  State<AroundDot> createState() => _AroundDotState();
-}
+  static final net = AmbientClock((seconds) => seconds);
+  static final blip = AmbientClock(_blip);
 
-class _AroundDotState extends State<AroundDot>
-    with SingleTickerProviderStateMixin {
-  late final AnimationController _clock = AnimationController(
-    vsync: this,
-    duration: const Duration(milliseconds: 4000),
-  );
+  static double _blip(double seconds) {
+    final p = seconds % 4 / 4;
 
-  static double _blip(double p) {
     if (p < 0.9375) {
       return 0;
     }
@@ -407,49 +410,109 @@ class _AroundDotState extends State<AroundDot>
     return 1 - (p - 0.9575) / 0.0425;
   }
 
+  static bool live(BuildContext context) {
+    return TickerMode.valuesOf(context).enabled &&
+        !MediaQuery.disableAnimationsOf(context);
+  }
+
+  final double Function(double seconds) _sample;
+
+  Timer? _timer;
+  var _ticks = 0;
+
+  void _tick(Timer _) {
+    _ticks++;
+    value = _sample(_ticks * _step.inMilliseconds / 1000);
+  }
+
+  @override
+  void addListener(VoidCallback listener) {
+    super.addListener(listener);
+    _timer ??= Timer.periodic(_step, _tick);
+  }
+
+  @override
+  void removeListener(VoidCallback listener) {
+    super.removeListener(listener);
+
+    if (!hasListeners) {
+      _timer?.cancel();
+      _timer = null;
+    }
+  }
+}
+
+class LiveStatus extends StatefulWidget {
+  const LiveStatus({super.key, required this.builder});
+
+  final Widget Function(BuildContext context, Status status) builder;
+
+  @override
+  State<LiveStatus> createState() => _LiveStatusState();
+}
+
+class _LiveStatusState extends State<LiveStatus> {
+  StreamSubscription<Status>? _updates;
+
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
 
-    if (MediaQuery.disableAnimationsOf(context)) {
-      _clock.stop();
-      _clock.value = 0;
-    } else if (!_clock.isAnimating) {
-      _clock.repeat();
+    if (!TickerMode.valuesOf(context).enabled) {
+      _updates?.cancel();
+      _updates = null;
+      return;
     }
+
+    _updates ??= Vigil.instance.statuses.listen((_) => setState(() {}));
   }
 
   @override
   void dispose() {
-    _clock.dispose();
+    _updates?.cancel();
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
-    return RepaintBoundary(
-      child: AnimatedBuilder(
-        animation: _clock,
-        builder: (context, _) {
-          final t = _blip(_clock.value);
+    return widget.builder(context, Vigil.instance.status);
+  }
+}
 
-          return Container(
-            width: widget.size,
-            height: widget.size,
-            decoration: BoxDecoration(
-              color: Palette.good.withValues(alpha: 0.9 * t),
-              border: Border.all(color: Palette.good.withValues(alpha: 0.75)),
-              boxShadow: t == 0
-                  ? null
-                  : [
-                      BoxShadow(
-                        color: Palette.good.withValues(alpha: 0.55 * t),
-                        blurRadius: 8,
-                      ),
-                    ],
-            ),
-          );
-        },
+class AroundDot extends StatelessWidget {
+  const AroundDot({super.key, this.size = 8});
+
+  final double size;
+
+  Widget _dot(double t) {
+    return Container(
+      width: size,
+      height: size,
+      decoration: BoxDecoration(
+        color: Palette.good.withValues(alpha: 0.9 * t),
+        border: Border.all(color: Palette.good.withValues(alpha: 0.75)),
+        boxShadow: t == 0
+            ? null
+            : [
+                BoxShadow(
+                  color: Palette.good.withValues(alpha: 0.55 * t),
+                  blurRadius: 8,
+                ),
+              ],
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (!AmbientClock.live(context)) {
+      return _dot(0);
+    }
+
+    return RepaintBoundary(
+      child: ValueListenableBuilder<double>(
+        valueListenable: AmbientClock.blip,
+        builder: (context, t, _) => _dot(t),
       ),
     );
   }
@@ -753,53 +816,22 @@ class EmptyState extends StatelessWidget {
   }
 }
 
-class NetBackdrop extends StatefulWidget {
+class NetBackdrop extends StatelessWidget {
   const NetBackdrop({super.key, this.intensity = 1, this.centered = false});
 
   final double intensity;
   final bool centered;
 
   @override
-  State<NetBackdrop> createState() => _NetBackdropState();
-}
-
-class _NetBackdropState extends State<NetBackdrop>
-    with SingleTickerProviderStateMixin {
-  late final AnimationController _clock;
-
-  @override
-  void initState() {
-    super.initState();
-
-    _clock = AnimationController(
-      vsync: this,
-      duration: const Duration(minutes: 10),
-    );
-  }
-
-  @override
-  void didChangeDependencies() {
-    super.didChangeDependencies();
-
-    if (MediaQuery.disableAnimationsOf(context)) {
-      _clock.stop();
-    } else if (!_clock.isAnimating) {
-      _clock.repeat();
-    }
-  }
-
-  @override
-  void dispose() {
-    _clock.dispose();
-    super.dispose();
-  }
-
-  @override
   Widget build(BuildContext context) {
     return IgnorePointer(
       child: ClipRect(
         child: CustomPaint(
-          painter: _NetPainter(_clock, widget.intensity, widget.centered),
+          painter: _NetPainter(
+            AmbientClock.live(context) ? AmbientClock.net : null,
+            intensity,
+            centered,
+          ),
         ),
       ),
     );
@@ -810,7 +842,7 @@ class _NetPainter extends CustomPainter {
   _NetPainter(this.clock, this.intensity, this.centered)
     : super(repaint: clock);
 
-  final Animation<double> clock;
+  final Listenable? clock;
   final double intensity;
   final bool centered;
 
@@ -854,7 +886,7 @@ class _NetPainter extends CustomPainter {
     final scale = math.max(size.width / 900, size.height / 480);
     final ox = size.width - 1600 * scale;
     final oy = (size.height - 480 * scale) / 2;
-    final seconds = clock.value * 600;
+    final seconds = AmbientClock.net.value;
 
     Offset map(double x, double y) => Offset(ox + x * scale, oy + y * scale);
 

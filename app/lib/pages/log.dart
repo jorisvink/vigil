@@ -20,17 +20,15 @@ class LogPage extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return StreamBuilder<Status>(
-      stream: Vigil.instance.statuses,
-      initialData: Vigil.instance.status,
-      builder: (context, snapshot) {
-        final log = snapshot.data!.log;
+    return LiveStatus(
+      builder: (context, status) {
+        final log = status.log;
 
         return TabPage(
           index: 4,
           rubric: 'Log',
           title: 'Log',
-          glow: snapshot.data!.online,
+          glow: status.online,
           actions: [
             if (log.isNotEmpty)
               GlyphBtn(

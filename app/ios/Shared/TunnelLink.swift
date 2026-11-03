@@ -47,20 +47,21 @@ enum TunnelLink {
 
     /// The caller must wipe the returned message.
     static func input(_ batch: Data) -> [UInt8]? {
-        var msg = [UInt8](repeating: 0, count: Int(VIGIL_LINK_MESSAGE_MAX))
-        let msglen = msg.count
+        let msg = [UInt8](unsafeUninitializedCapacity: Int(VIGIL_LINK_MESSAGE_MAX)) { out, count in
+            let len = batch.withUnsafeBytes { raw in
+                vigil_link_input(raw.baseAddress?.assumingMemoryBound(to: UInt8.self), raw.count,
+                                 out.baseAddress, out.count)
+            }
 
-        let len = batch.withUnsafeBytes { raw in
-            vigil_link_input(raw.baseAddress?.assumingMemoryBound(to: UInt8.self), raw.count,
-                             &msg, msglen)
+            guard len > 0 else {
+                _ = memset_s(out.baseAddress, out.count, 0, out.count)
+                return
+            }
+
+            count = len
         }
 
-        guard len > 0 else {
-            TunnelKeychain.wipe(&msg)
-            return nil
-        }
-
-        msg.removeSubrange(len...)
+        guard !msg.isEmpty else { return nil }
 
         return msg
     }

@@ -33,6 +33,7 @@ final class VigilPlugin: NSObject, FlutterPlugin, UIDocumentPickerDelegate,
     private var silent: TimeInterval?
     private var linking = false
     private var badged: Int?
+    private var loaded: NETunnelProviderManager?
 
     private static let silence: TimeInterval = 10
     private var picking: (String, FlutterResult)?
@@ -54,6 +55,12 @@ final class VigilPlugin: NSObject, FlutterPlugin, UIDocumentPickerDelegate,
             NotificationCenter.default.addObserver(
                 forName: name, object: nil, queue: .main
             ) { [weak plugin] _ in plugin?.background() }
+        }
+
+        for name in [Notification.Name.NEVPNConfigurationChange, .NEVPNStatusDidChange] {
+            NotificationCenter.default.addObserver(
+                forName: name, object: nil, queue: .main
+            ) { [weak plugin] _ in plugin?.loaded = nil }
         }
 
         NotificationCenter.default.addObserver(
@@ -608,6 +615,8 @@ final class VigilPlugin: NSObject, FlutterPlugin, UIDocumentPickerDelegate,
             }
 
             manager.removeFromPreferences { error in
+                DispatchQueue.main.async { self.loaded = nil }
+
                 if let error {
                     result(FlutterError(code: "failed", message: "\(error.localizedDescription)", details: nil))
                 } else {
@@ -633,6 +642,18 @@ final class VigilPlugin: NSObject, FlutterPlugin, UIDocumentPickerDelegate,
     private func manager(_ done: @escaping (NETunnelProviderManager?) -> Void) {
         NETunnelProviderManager.loadAllFromPreferences { managers, _ in
             DispatchQueue.main.async { done(managers?.first) }
+        }
+    }
+
+    private func current(_ done: @escaping (NETunnelProviderManager?) -> Void) {
+        if let loaded {
+            done(loaded)
+            return
+        }
+
+        manager { manager in
+            self.loaded = manager
+            done(manager)
         }
     }
 
@@ -681,6 +702,7 @@ final class VigilPlugin: NSObject, FlutterPlugin, UIDocumentPickerDelegate,
                 // A freshly saved manager must be reloaded before it can start.
                 manager.loadFromPreferences { _ in
                     DispatchQueue.main.async {
+                        self.loaded = nil
                         self.whenStopped(manager.connection) { stopped in
                             do {
                                 if stopped {
@@ -1134,7 +1156,7 @@ final class VigilPlugin: NSObject, FlutterPlugin, UIDocumentPickerDelegate,
     }
 
     private func status(result: @escaping FlutterResult) {
-        manager { manager in
+        current { manager in
             guard let manager,
                   let session = manager.connection as? NETunnelProviderSession,
                   [.connected, .connecting, .reasserting].contains(session.status) else {
@@ -1473,6 +1495,7 @@ final class VigilPlugin: NSObject, FlutterPlugin, UIDocumentPickerDelegate,
             }
 
             removed.notify(queue: .main) {
+                self.loaded = nil
                 ChatVault.shared.lock()
                 Self.wipe()
                 result("")

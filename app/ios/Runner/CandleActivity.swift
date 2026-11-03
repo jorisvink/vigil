@@ -6,11 +6,23 @@ enum CandleActivity {
     static let onKey = "ui.candle"
 
     private static let relight: TimeInterval = 4 * 3600
+    private static let recheck: TimeInterval = 30
+
+    private static var seen: (since: Date?, on: Bool, at: TimeInterval)?
 
     static func update(since: Date?) {
+        let on = UserDefaults.standard.bool(forKey: onKey)
+        let uptime = ProcessInfo.processInfo.systemUptime
+
+        if let seen, seen.since == since, seen.on == on, uptime - seen.at < recheck {
+            return
+        }
+
+        seen = (since, on, uptime)
+
         let lit = Activity<VigilAttributes>.activities
 
-        guard let since, UserDefaults.standard.bool(forKey: onKey) else {
+        guard let since, on else {
             end(lit)
             return
         }
