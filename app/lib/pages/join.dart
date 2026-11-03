@@ -166,7 +166,9 @@ class _JoinPageState extends State<JoinPage> {
     final typed = _typed;
 
     if (typed.length != _wordCount || _unknown.isNotEmpty) {
-      setState(() => _problem = 'Type all $_wordCount words you were given.');
+      setState(
+        () => _problem = 'Type all $_wordCount secret words you were given.',
+      );
       return;
     }
 
@@ -178,12 +180,12 @@ class _JoinPageState extends State<JoinPage> {
     });
 
     try {
-      _at('Checking the words');
+      _at('Checking the secret words');
 
       final route = await Vigil.instance.remoteWords(typed.join(' '));
       if (route == null) {
         throw VigilError(
-          'These words are not right, check them against the ones you '
+          'These secret words are not right, check them against the ones you '
           'were given.',
         );
       }
@@ -229,8 +231,8 @@ class _JoinPageState extends State<JoinPage> {
 
         if (DateTime.now().isAfter(until)) {
           throw VigilError(
-            'Covenant did not show up in time, ask for new words and start '
-            'over.',
+            'Covenant did not show up in time, ask for new secret words and '
+            'start over.',
           );
         }
       }
@@ -264,7 +266,7 @@ class _JoinPageState extends State<JoinPage> {
 
     return PushedPage(
       rubric: 'Import',
-      title: 'Join with words',
+      title: 'Join with secret words',
       bottom: Btn(
         label: 'Join',
         expand: true,
@@ -273,7 +275,7 @@ class _JoinPageState extends State<JoinPage> {
       ),
       children: [
         const Text(
-          'Type the words you got from the flock administrator, in the '
+          'Type the secret words you got from the flock administrator, in the '
           'order you were given them. This device then joins the flock and '
           'gets its configuration straight from Covenant.',
           style: Styles.body,

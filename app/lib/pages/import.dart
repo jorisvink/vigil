@@ -40,7 +40,7 @@ Future<void> addConfig() async {
             LinkRow(
               'Covenant',
               () => Navigator.of(context).pop(const JoinPage()),
-              detail: 'Type the words you were given',
+              detail: 'Type the secret words you were given',
             ),
           ],
         ),

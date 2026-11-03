@@ -144,7 +144,7 @@ object Chats {
 
                         if (!foreground || opened != id) {
                             unseen[id] = (unseen[id] ?: 0) + 1
-                            notify(service, id, peer, nick, text, time)
+                            notify(service, id, peer, nick, event.optString("signed"), text, time)
                         }
                     }
                     "data" -> {
@@ -166,7 +166,7 @@ object Chats {
 
                         if (!foreground || opened != id) {
                             unseen[id] = (unseen[id] ?: 0) + 1
-                            notify(service, id, peer, nick, summary(media, name), time)
+                            notify(service, id, peer, nick, event.optString("signed"), summary(media, name), time)
                         }
                     }
                     "name" -> {
@@ -399,6 +399,22 @@ object Chats {
     private fun peer(id: String): Int? =
         if (id.length == 2) id.toInt(16).takeIf { it in 1..0xfe } else null
 
+    private fun sender(context: Context, peer: Int, nick: String, signed: String): String {
+        if (PeerNames.load(context).has(Calls.hex(peer))) {
+            return PeerNames.name(context, peer)
+        }
+
+        if (signed.isNotEmpty()) {
+            return signed
+        }
+
+        if (nick.isNotEmpty()) {
+            return "~$nick"
+        }
+
+        return PeerNames.name(context, peer)
+    }
+
     private fun summary(media: String, name: String): String =
         when (media) {
             "image" -> "Image"
@@ -407,10 +423,10 @@ object Chats {
         }
 
     private fun notify(
-        service: VigilVpnService, id: String, peer: Int, nick: String, text: String, time: Long
+        service: VigilVpnService, id: String, peer: Int, nick: String, signed: String, text: String,
+        time: Long
     ) {
-        val named = PeerNames.load(service).has(Calls.hex(peer))
-        val name = if (named || nick.isEmpty()) Calls.name(peer) else "~$nick"
+        val name = sender(service, peer, nick, signed)
         val messages = shown.getOrPut(id) { mutableListOf() }
 
         messages.add(Shown(if (preview(service)) text else "New message", time, name, Calls.hex(peer)))

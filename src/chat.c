@@ -399,6 +399,7 @@ struct chat_event {
 	u_int32_t			pending;
 	struct chat_quote		quote;
 
+	char				name[VIGIL_INSTANCE_MAX];
 	char				nick[VIGIL_CHAT_NICK_MAX + 1];
 	char				text[VIGIL_CHAT_MESSAGE_MAX + 1];
 
@@ -3231,6 +3232,7 @@ chat_reply_report(struct chat_tunnel *tun, u_int64_t token,
 
 	memcpy(evt->text, data, len);
 	memcpy(&evt->quote, quote, sizeof(*quote));
+	memcpy(evt->name, tun->peer->name, sizeof(evt->name));
 	memcpy(evt->nick, tun->peer->nick, sizeof(evt->nick));
 
 	return (chat_event_insert(evt));
@@ -3713,6 +3715,7 @@ chat_event_queue(int type, struct chat_peer *peer, u_int16_t id,
 	evt->value = value;
 	evt->peer = peer->id;
 
+	memcpy(evt->name, peer->name, sizeof(evt->name));
 	memcpy(evt->nick, peer->nick, sizeof(evt->nick));
 
 	if (len > 0)
@@ -3844,6 +3847,8 @@ chat_event_render(struct vigil_buf *buf, struct chat_event *evt, int first)
 		    ",\"type\":\"message\",\"token\":%" PRIu64
 		    ",\"nick\":", evt->value);
 		vigil_buf_quote(buf, evt->nick);
+		vigil_buf_appendf(buf, ",\"signed\":");
+		vigil_buf_quote(buf, evt->name);
 		vigil_buf_appendf(buf, ",\"text\":");
 		vigil_buf_quote(buf, evt->text);
 
@@ -3882,6 +3887,8 @@ chat_event_render(struct vigil_buf *buf, struct chat_event *evt, int first)
 		vigil_buf_quote(buf, evt->text);
 		vigil_buf_appendf(buf, ",\"nick\":");
 		vigil_buf_quote(buf, evt->nick);
+		vigil_buf_appendf(buf, ",\"signed\":");
+		vigil_buf_quote(buf, evt->name);
 		break;
 	case CHAT_EVENT_NAME:
 		vigil_buf_appendf(buf, ",\"type\":\"name\",\"nick\":");
@@ -5050,6 +5057,7 @@ chat_data_report(struct chat_tunnel *tun, struct chat_parcel *parcel)
 		evt->type = CHAT_EVENT_AVATAR;
 
 	memcpy(evt->text, head->name, head->len);
+	memcpy(evt->name, tun->peer->name, sizeof(evt->name));
 	memcpy(evt->nick, tun->peer->nick, sizeof(evt->nick));
 
 	return (chat_event_insert(evt));

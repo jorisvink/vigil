@@ -368,7 +368,8 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
 
                     if defaults.string(forKey: "chatOpen") != chat {
                         unseen[chat, default: 0] += 1
-                        notifyChat(chat, peer, nick, text, badge: unseen.values.reduce(0, +))
+                        notifyChat(chat, peer, nick, event["signed"] as? String ?? "", text,
+                                   badge: unseen.values.reduce(0, +))
                     }
                 case "joined", "left":
                     try vault.deliver(chat: chat, peer: peer, nick: event["nick"] as? String ?? "",
@@ -396,8 +397,8 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
 
                     if defaults.string(forKey: "chatOpen") != chat {
                         unseen[chat, default: 0] += 1
-                        notifyChat(chat, peer, nick, Self.summary(media, name),
-                                   badge: unseen.values.reduce(0, +))
+                        notifyChat(chat, peer, nick, event["signed"] as? String ?? "",
+                                   Self.summary(media, name), badge: unseen.values.reduce(0, +))
                     }
                 case "name":
                     try vault.peerName(peer, nick: event["nick"] as? String ?? "",
@@ -580,12 +581,28 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         }
     }
 
-    private func notifyChat(_ chat: String, _ peer: UInt8, _ nick: String, _ text: String, badge: Int) {
+    private static func sender(_ peer: UInt8, _ nick: String, _ signed: String) -> String {
+        if ChatVault.names()[ChatVault.hex(peer)] != nil {
+            return ChatVault.name(peer)
+        }
+
+        if !signed.isEmpty {
+            return signed
+        }
+
+        if !nick.isEmpty {
+            return "~\(nick)"
+        }
+
+        return ChatVault.name(peer)
+    }
+
+    private func notifyChat(_ chat: String, _ peer: UInt8, _ nick: String, _ signed: String, _ text: String,
+                            badge: Int) {
         let preview = ChatVault.defaults.object(forKey: "chatPreview") as? Bool ?? false
         let content = UNMutableNotificationContent()
         let body = preview ? text : "New message"
-        let named = ChatVault.names()[ChatVault.hex(peer)] != nil
-        let sender = named || nick.isEmpty ? ChatVault.name(peer) : "~\(nick)"
+        let sender = Self.sender(peer, nick, signed)
 
         content.title = ChatVault.group(chat) == nil ? sender : ChatVault.name(chat: chat)
         content.body = ChatVault.group(chat) == nil ? body : "\(sender): \(body)"
