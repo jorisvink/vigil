@@ -3989,8 +3989,7 @@ chat_mention_check(struct chat_event *evt)
 static int
 chat_mention_name(const char *text, const char *name)
 {
-	size_t		len;
-	const char	*at;
+	size_t		idx, len;
 
 	PRECOND(text != NULL);
 	PRECOND(name != NULL);
@@ -3999,14 +3998,17 @@ chat_mention_name(const char *text, const char *name)
 	if (len == 0)
 		return (0);
 
-	for (at = strchr(text, '@'); at != NULL; at = strchr(at + 1, '@')) {
-		if (at != text && chat_mention_char(at[-1]))
+	for (idx = 0; text[idx] != '\0'; idx++) {
+		if (text[idx] != '@')
 			continue;
 
-		if (strncasecmp(at + 1, name, len))
+		if (idx > 0 && chat_mention_char(text[idx - 1]))
 			continue;
 
-		if (!chat_mention_char(at[len + 1]))
+		if (strncasecmp(&text[idx + 1], name, len))
+			continue;
+
+		if (!chat_mention_char(text[idx + len + 1]))
 			return (1);
 	}
 
