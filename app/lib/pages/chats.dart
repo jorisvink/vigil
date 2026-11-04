@@ -92,6 +92,9 @@ var _voiceRate = 1.0;
   return (Liveness.off, 'NOBODY ELSE HERE', Palette.fg2);
 }
 
+bool chatOnline(Status status, String peer) =>
+    _link(status, peer).$1 == Liveness.online;
+
 Widget chatDot(Status status, String peer, {double size = 8}) {
   final state = _link(status, peer).$1;
 

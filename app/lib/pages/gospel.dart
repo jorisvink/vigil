@@ -187,7 +187,8 @@ class _GospelPageState extends State<GospelPage> with WidgetsBindingObserver {
   List<Widget> _chatList(Status status) {
     final chats = _list(status, _chats);
     final groups = chats.where((c) => isGroup(c.peer)).toList();
-    final peers = chats.where((c) => !isGroup(c.peer)).toList();
+    final peers = chats.where((c) => !isGroup(c.peer)).toList()
+      ..sort((a, b) => _order(status, a.peer, b.peer));
 
     return [
       if (_error != null) Notice(text: _error!, kind: NoticeKind.warn),
@@ -219,6 +220,28 @@ class _GospelPageState extends State<GospelPage> with WidgetsBindingObserver {
       for (final chat in peers)
         ChatRow(key: ValueKey(chat.peer), chat: chat, status: status),
     ];
+  }
+
+  int _order(Status status, String a, String b) {
+    final vigil = Vigil.instance;
+    final online = chatOnline(status, a);
+
+    if (online != chatOnline(status, b)) {
+      if (online) {
+        return -1;
+      }
+
+      return 1;
+    }
+
+    final name = vigil.name(a).toLowerCase();
+    final order = name.compareTo(vigil.name(b).toLowerCase());
+
+    if (order != 0) {
+      return order;
+    }
+
+    return a.compareTo(b);
   }
 
   List<Widget> _peers(Status status) {
