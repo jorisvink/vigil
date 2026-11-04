@@ -589,6 +589,8 @@ class Vigil {
     return chat != null && chat.signed.isEmpty && chat.nick.isNotEmpty;
   }
 
+  bool get selfSigned => _last.chat?.signed.isNotEmpty ?? false;
+
   Set<String> get selfNames {
     final chat = _last.chat;
 

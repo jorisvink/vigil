@@ -604,9 +604,15 @@ class PeerName extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final vigil = Vigil.instance;
-    final shown = name ?? vigil.name(peer);
-    final sealed = vigil.authenticated(peer) && shown == vigil.name(peer);
-    final styled = peerStyle(style, picked ?? vigil.picked(peer));
+    final own = peer == selfPeer;
+    final shown = name ?? (own ? vigil.selfName : vigil.name(peer));
+    final sealed = own
+        ? vigil.selfSigned
+        : vigil.authenticated(peer) && shown == vigil.name(peer);
+    final styled = peerStyle(
+      style,
+      picked ?? (own ? vigil.selfPicked : vigil.picked(peer)),
+    );
     final smallest = shrink;
 
     if (smallest == null) {
@@ -781,16 +787,7 @@ class _AvatarView extends StatelessWidget {
                           ),
                         ),
                         const SizedBox(height: 20),
-                        if (peer == selfPeer)
-                          Text(
-                            Vigil.instance.selfName,
-                            style: peerStyle(
-                              Styles.title,
-                              Vigil.instance.selfPicked,
-                            ),
-                          )
-                        else
-                          PeerName(peer, style: Styles.title),
+                        PeerName(peer, style: Styles.title),
                       ],
                     );
                   },

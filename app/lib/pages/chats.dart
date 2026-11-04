@@ -788,7 +788,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
 
     if (!isGroup(peer)) {
       if (status.chat?.peer(peer)?.typing ?? false) {
-        return '';
+        return vigil.name(peer);
       }
 
       return null;
@@ -1753,11 +1753,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
                                         itemCount: messages.length + extra,
                                         itemBuilder: (context, index) {
                                           if (index < extra) {
-                                            return _Typing(
-                                              sender: typing!.isEmpty
-                                                  ? null
-                                                  : typing,
-                                            );
+                                            return _Typing(sender: typing!);
                                           }
 
                                           final at =
@@ -2054,9 +2050,9 @@ class _Member extends StatelessWidget {
 }
 
 class _Typing extends StatefulWidget {
-  const _Typing({this.sender});
+  const _Typing({required this.sender});
 
-  final String? sender;
+  final String sender;
 
   @override
   State<_Typing> createState() => _TypingState();
@@ -2081,20 +2077,19 @@ class _TypingState extends State<_Typing> with SingleTickerProviderStateMixin {
     return Padding(
       padding: const EdgeInsets.only(top: 10, left: _portrait + _portraitGap),
       child: Semantics(
-        label: sender == null ? 'Typing' : '$sender typing',
+        label: '$sender typing',
         child: Row(
           children: [
-            if (sender != null)
-              Flexible(
-                child: Padding(
-                  padding: const EdgeInsets.only(right: 8),
-                  child: Text(
-                    sender,
-                    overflow: TextOverflow.ellipsis,
-                    style: Styles.rubric.copyWith(color: Palette.amber),
-                  ),
+            Flexible(
+              child: Padding(
+                padding: const EdgeInsets.only(right: 8),
+                child: Text(
+                  sender,
+                  overflow: TextOverflow.ellipsis,
+                  style: Styles.rubric.copyWith(color: Palette.amber),
                 ),
               ),
+            ),
             AnimatedBuilder(
               animation: _pulse,
               builder: (context, _) => Row(
@@ -2987,11 +2982,7 @@ class _Entry extends StatelessWidget {
                     style: style,
                     picked: senderPicked(message),
                   )
-                : Text(
-                    Vigil.instance.selfName,
-                    overflow: TextOverflow.ellipsis,
-                    style: peerStyle(style, Vigil.instance.selfPicked),
-                  ),
+                : PeerName(selfPeer, style: style),
           ),
           const SizedBox(width: 8),
           Text(time, style: Styles.detail.copyWith(fontSize: 10.5)),
