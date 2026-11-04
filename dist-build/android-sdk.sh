@@ -27,16 +27,16 @@ if [ -z "$SDK" ] || [ ! -d "$SDK" ]; then
 fi
 
 ndk_fetch() {
-	NDK_RELEASE=r28c
+	NDK_RELEASE=r30
 
 	case `uname -s` in
 	Linux)
 		ndk_host=linux
-		ndk_sha1=a7b54a5de87fecd125a17d54f73c446199e72a64
+		ndk_sha1=5107f898313790e449e87eee2183d9a20602dee9
 		;;
 	Darwin)
 		ndk_host=darwin
-		ndk_sha1=fc20a6bf15a30fb3428c9b60a7308793a362dc6d
+		ndk_sha1=c060be96767eefbb8e0a27796d6f43115fc1a0c4
 		;;
 	*)
 		echo "no android ndk $NDK_VERSION found and none to fetch"

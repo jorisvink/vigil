@@ -21,7 +21,7 @@ android {
     compileSdk = flutter.compileSdkVersion
     // Must be the same NDK dist-build/android-build.sh used, see
     // dist-build/android-sdk.sh for how it is found.
-    val pinnedNdk = "28.2.13676358"
+    val pinnedNdk = "30.0.16248370"
     val fetchedNdk = "${rootDir.parentFile.parentFile}/build/tools/android-ndk"
     val standaloneNdk = (System.getenv("ANDROID_NDK_HOME")
         ?: System.getenv("ANDROID_NDK_ROOT"))?.takeIf { it.isNotEmpty() }
