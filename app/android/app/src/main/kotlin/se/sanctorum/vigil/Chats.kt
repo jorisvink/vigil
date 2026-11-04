@@ -142,7 +142,7 @@ object Chats {
                         vault.deliver(id, peer, nick, text, time, quote = quote)
                         stored(event.getLong("token"))
 
-                        if (!foreground || opened != id) {
+                        if (alerts(service, id, event.optBoolean("mention"))) {
                             unseen[id] = (unseen[id] ?: 0) + 1
                             notify(service, id, peer, nick, event.optString("signed"), text, time)
                         }
@@ -164,7 +164,7 @@ object Chats {
 
                         stored(token)
 
-                        if (!foreground || opened != id) {
+                        if (alerts(service, id, false)) {
                             unseen[id] = (unseen[id] ?: 0) + 1
                             notify(service, id, peer, nick, event.optString("signed"), summary(media, name), time)
                         }
@@ -394,6 +394,43 @@ object Chats {
         }
 
         return JSONObject().put("nick", nick(context)).put("preview", preview(context))
+    }
+
+    fun mute(context: Context, id: String, until: Long?): Long {
+        if (until != null) {
+            val mutes = mutes(context)
+
+            if (until == 0L) {
+                mutes.remove(id)
+            } else {
+                mutes.put(id, until)
+            }
+
+            prefs(context).edit().putString("mutes", mutes.toString()).apply()
+        }
+
+        return muted(context, id)
+    }
+
+    private fun muted(context: Context, id: String): Long {
+        val until = mutes(context).optLong(id)
+
+        if (until > 0 && until <= System.currentTimeMillis()) {
+            return 0L
+        }
+
+        return until
+    }
+
+    private fun mutes(context: Context): JSONObject =
+        JSONObject(prefs(context).getString("mutes", "{}") ?: "{}")
+
+    private fun alerts(context: Context, id: String, mention: Boolean): Boolean {
+        if (foreground && opened == id) {
+            return false
+        }
+
+        return mention || muted(context, id) == 0L
     }
 
     private fun peer(id: String): Int? =

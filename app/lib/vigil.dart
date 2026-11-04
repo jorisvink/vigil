@@ -266,6 +266,9 @@ class ChatStatus {
   final Map<String, dynamic> json;
 
   bool get alive => json['alive'] as bool? ?? false;
+  String get id => json['id'] as String? ?? '00';
+  String get nick => json['nick'] as String? ?? '';
+  String get signed => json['signed'] as String? ?? '';
 
   List<ChatPeer> get peers => (json['peers'] as List<dynamic>? ?? const [])
       .map((p) => ChatPeer(p as Map<String, dynamic>))
@@ -543,6 +546,23 @@ class Vigil {
     }
 
     return 'Peer $peer';
+  }
+
+  String mentionName(String peer) => _signed[peer] ?? _nicks[peer] ?? peer;
+
+  Set<String> get mentionable {
+    final chat = _last.chat;
+
+    return {
+      ..._signed.values,
+      ..._nicks.values,
+      if (chat != null) ...[
+        chat.id,
+        if (chat.nick.isNotEmpty) chat.nick,
+        if (chat.signed.isNotEmpty) chat.signed,
+      ],
+      for (final m in chat?.group?.members ?? const <ChatMember>[]) m.id,
+    };
   }
 
   bool picked(String peer) => !known(peer) && _nicks.containsKey(peer);
@@ -1025,6 +1045,9 @@ class Vigil {
     await _invoke('chatGroup', group);
     await refresh();
   }
+
+  Future<int> chatMute(String peer, [int? until]) async =>
+      int.parse(await _invoke('chatMute', {'peer': peer, 'until': until}));
 
   Future<ChatSettings> chatSettings({String? nick, bool? preview}) async =>
       ChatSettings(

@@ -171,6 +171,12 @@ default the notification shows the message text. You can turn previews
 off in the app. The notification then only says that there is a new
 message.
 
+You can snooze a group chat with the bell at the top of it, for a set time
+or until you turn it off. While it is snoozed you only get a notification
+for a message that mentions you. A mention is `@` followed by the nickname,
+signed name or device id of a member, in the text of the message. Type `@`
+to pick a member from a list. In gospel you type the name yourself.
+
 Notification text is handled by the operating system. It is not part of
 the chat vault and can be shown on the lock screen.
 

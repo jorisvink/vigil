@@ -218,6 +218,8 @@ enum GlyphKind {
   pin,
   reply,
   seal,
+  bell,
+  snoozed,
 }
 
 class Glyph extends StatelessWidget {
@@ -414,6 +416,32 @@ class _GlyphPainter extends CustomPainter {
         poly([6, 11, 6, 13, 9, 16, 15, 16, 18, 13, 18, 11]);
         poly([12, 16, 12, 21]);
         poly([8, 21, 16, 21]);
+      case GlyphKind.bell || GlyphKind.snoozed:
+        poly([
+          5,
+          17,
+          7,
+          14,
+          7,
+          9,
+          9,
+          5,
+          12,
+          4,
+          15,
+          5,
+          17,
+          9,
+          17,
+          14,
+          19,
+          17,
+        ], close: true);
+        poly([10, 20, 14, 20]);
+
+        if (kind == GlyphKind.snoozed) {
+          poly([4, 3, 20, 21]);
+        }
       case GlyphKind.speaker:
         poly([3, 9, 7, 9, 12, 5, 12, 19, 7, 15, 3, 15], close: true);
         poly([15, 9, 17, 12, 15, 15]);

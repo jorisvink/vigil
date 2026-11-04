@@ -501,6 +501,7 @@ class MainActivity : FlutterActivity() {
                     }
 
                     Chats.vault(this).delete(id)
+                    Chats.mute(this, id, 0L)
                     Chats.changed()
                     result.success("")
                 }
@@ -510,6 +511,12 @@ class MainActivity : FlutterActivity() {
                     Chats.join(this, group.toInt(16))
                     result.success("")
                 }
+                "chatMute" -> result.success(
+                    Chats.mute(
+                        this, chat(call.argument<String>("peer")!!),
+                        call.argument<Number>("until")?.toLong()
+                    ).toString()
+                )
                 "chatSettings" -> result.success(
                     Chats.settings(
                         this, call.argument<String>("nick"), call.argument<Boolean>("preview")

@@ -31,6 +31,21 @@ final _ipv4 = RegExp(r'^\d{1,3}(?:\.\d{1,3}){3}$');
 
 const _trailing = '.,;:!?';
 
+List<Link> mentions(String text, Iterable<String> names) {
+  if (!text.contains('@') || names.isEmpty) {
+    return const [];
+  }
+
+  final longest = names.toList()..sort((a, b) => b.length - a.length);
+  final pattern = RegExp(
+    '(?<![0-9A-Za-z_-])@(?:${longest.map(RegExp.escape).join('|')})'
+    '(?![0-9A-Za-z_-])',
+    caseSensitive: false,
+  );
+
+  return [for (final m in pattern.allMatches(text)) Link(m.start, m.end)];
+}
+
 List<Link> links(String text) {
   final found = <Link>[];
 

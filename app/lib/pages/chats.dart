@@ -729,8 +729,12 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
   DateTime? _recording;
   Timer? _ticker;
   int _version = -1;
+  int _muted = 0;
 
   String get peer => widget.peer;
+
+  bool get _snoozed =>
+      _muted == -1 || _muted > DateTime.now().millisecondsSinceEpoch;
 
   String? _typers(Status status) {
     final vigil = Vigil.instance;
@@ -781,6 +785,10 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
     unawaited(Vigil.instance.openChat(peer, true).catchError((Object _) {}));
     unawaited(_clipboard());
     _load();
+
+    if (isGroup(peer)) {
+      unawaited(_mute());
+    }
   }
 
   @override
@@ -1343,6 +1351,152 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
     }
   }
 
+  Future<void> _mute([int? until]) async {
+    try {
+      final muted = await Vigil.instance.chatMute(peer, until);
+
+      if (mounted) {
+        setState(() => _muted = muted);
+      }
+    } on VigilError catch (e) {
+      notify(e.message);
+    }
+  }
+
+  Future<void> _snooze() async {
+    final snoozed = _snoozed;
+
+    final minutes = await sheet<int>(context, (context) {
+      Widget option(String label, int minutes) => Btn(
+        label: label,
+        kind: BtnKind.secondary,
+        expand: true,
+        onTap: () => Navigator.of(context).pop(minutes),
+      );
+
+      return Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          sheetTitle('Snooze ${Vigil.instance.name(peer)}'),
+          const SizedBox(height: 8),
+          Text(
+            'While snoozed you only get a notification if someone writes '
+            '@ and your name.',
+            style: Styles.detail,
+          ),
+          if (snoozed) ...[
+            const SizedBox(height: 8),
+            Text(
+              _muted == -1
+                  ? 'SNOOZED UNTIL YOU TURN IT OFF'
+                  : 'SNOOZED UNTIL ${_snoozeEnd(_muted).toUpperCase()}',
+              style: Styles.rubric.copyWith(color: Palette.amber),
+            ),
+          ],
+          const SizedBox(height: 20),
+          BtnPair(first: option('1 hour', 60), second: option('8 hours', 480)),
+          const SizedBox(height: 10),
+          BtnPair(
+            first: option('1 day', 1440),
+            second: option('1 week', 10080),
+          ),
+          const SizedBox(height: 10),
+          option('Until I turn it off', -1),
+          if (snoozed) ...[
+            const SizedBox(height: 10),
+            Btn(
+              label: 'Turn it off',
+              expand: true,
+              onTap: () => Navigator.of(context).pop(0),
+            ),
+          ],
+        ],
+      );
+    });
+
+    if (minutes == null) {
+      return;
+    }
+
+    if (minutes <= 0) {
+      await _mute(minutes);
+      return;
+    }
+
+    final until = DateTime.now().add(Duration(minutes: minutes));
+    await _mute(until.millisecondsSinceEpoch);
+  }
+
+  (int, List<ChatMember>)? _mentioning(TextEditingValue value, Status status) {
+    final group = status.chat?.group;
+    final caret = value.selection.baseOffset;
+
+    if (group?.chat != peer || !value.selection.isCollapsed || caret < 0) {
+      return null;
+    }
+
+    final typed = value.text.substring(0, caret);
+    final at = typed.lastIndexOf('@');
+
+    if (at == -1) {
+      return null;
+    }
+
+    if (at > 0 && RegExp('[0-9A-Za-z_-]').hasMatch(typed[at - 1])) {
+      return null;
+    }
+
+    final query = typed.substring(at + 1).toLowerCase();
+
+    if (query.contains('\n')) {
+      return null;
+    }
+
+    final vigil = Vigil.instance;
+    final found = [
+      for (final m in group!.members)
+        if ([
+          vigil.name(m.id),
+          vigil.mentionName(m.id),
+          m.nick,
+          m.id,
+        ].any((name) => name.toLowerCase().startsWith(query)))
+          m,
+    ];
+
+    if (found.isEmpty) {
+      return null;
+    }
+
+    found.sort((a, b) {
+      if (a.online != b.online) {
+        return a.online ? -1 : 1;
+      }
+
+      return vigil.name(a.id).compareTo(vigil.name(b.id));
+    });
+
+    return (at, found);
+  }
+
+  void _mention(int at, ChatMember member) {
+    final value = _input.value;
+    final name = '@${Vigil.instance.mentionName(member.id)} ';
+    final text = value.text.replaceRange(at, value.selection.baseOffset, name);
+
+    if (utf8.encode(text).length >
+        (_replying == null ? _messageMax : _replyMax)) {
+      notify('That name does not fit in this message.');
+      return;
+    }
+
+    _input.value = TextEditingValue(
+      text: text,
+      selection: TextSelection.collapsed(offset: at + name.length),
+    );
+  }
+
   Future<void> _membership(bool join) async {
     try {
       await Vigil.instance.joinGroup(join ? peer.substring(1) : '');
@@ -1457,6 +1611,13 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
                             ),
                             if (group)
                               GlyphBtn(
+                                _snoozed ? GlyphKind.snoozed : GlyphKind.bell,
+                                label: _snoozed ? 'Snoozed' : 'Snooze',
+                                color: _snoozed ? Palette.amber : Palette.fg2,
+                                onTap: _snooze,
+                              ),
+                            if (group)
+                              GlyphBtn(
                                 joined ? GlyphKind.hangup : GlyphKind.plus,
                                 label: joined ? 'Leave group' : 'Join group',
                                 onTap: () => _membership(!joined),
@@ -1499,108 +1660,152 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
                           ),
                         ),
                       Expanded(
-                        child: GestureDetector(
-                          behavior: HitTestBehavior.opaque,
-                          onTap: () =>
-                              FocusManager.instance.primaryFocus?.unfocus(),
-                          child: messages.isEmpty && typing == null
-                              ? Center(
-                                  child: Padding(
-                                    padding: const EdgeInsets.all(
-                                      Metrics.edge * 2,
-                                    ),
-                                    child: Text(
-                                      _history == null
-                                          ? ''
-                                          : group
-                                          ? 'Messages go to the members of '
-                                                '${vigil.name(peer)} that are '
-                                                'around right now.'
-                                          : 'Say something to ${vigil.name(peer)}, '
-                                                'it is held until they are around.',
-                                      textAlign: TextAlign.center,
-                                      style: Styles.body.copyWith(
-                                        color: Palette.dim,
+                        child: Stack(
+                          children: [
+                            Positioned.fill(
+                              child: GestureDetector(
+                                behavior: HitTestBehavior.opaque,
+                                onTap: () => FocusManager.instance.primaryFocus
+                                    ?.unfocus(),
+                                child: messages.isEmpty && typing == null
+                                    ? Center(
+                                        child: Padding(
+                                          padding: const EdgeInsets.all(
+                                            Metrics.edge * 2,
+                                          ),
+                                          child: Text(
+                                            _history == null
+                                                ? ''
+                                                : group
+                                                ? 'Messages go to the members of '
+                                                      '${vigil.name(peer)} that are '
+                                                      'around right now.'
+                                                : 'Say something to ${vigil.name(peer)}, '
+                                                      'it is held until they are around.',
+                                            textAlign: TextAlign.center,
+                                            style: Styles.body.copyWith(
+                                              color: Palette.dim,
+                                            ),
+                                          ),
+                                        ),
+                                      )
+                                    : ListView.builder(
+                                        controller: _scroll,
+                                        reverse: true,
+                                        physics:
+                                            const AlwaysScrollableScrollPhysics(),
+                                        keyboardDismissBehavior:
+                                            ScrollViewKeyboardDismissBehavior
+                                                .onDrag,
+                                        padding: const EdgeInsets.fromLTRB(
+                                          Metrics.edge,
+                                          12,
+                                          Metrics.edge,
+                                          12,
+                                        ),
+                                        itemCount: messages.length + extra,
+                                        itemBuilder: (context, index) {
+                                          if (index < extra) {
+                                            return _Typing(
+                                              sender: typing!.isEmpty
+                                                  ? null
+                                                  : typing,
+                                            );
+                                          }
+
+                                          final at =
+                                              messages.length -
+                                              1 -
+                                              index +
+                                              extra;
+                                          final message = messages[at];
+                                          final previous = at > 0
+                                              ? messages[at - 1]
+                                              : null;
+                                          final day = _day(message.time);
+
+                                          return Column(
+                                            key: _keys.putIfAbsent(
+                                              message.ref,
+                                              GlobalKey.new,
+                                            ),
+                                            children: [
+                                              if (previous == null ||
+                                                  _day(previous.time) != day)
+                                                Padding(
+                                                  padding:
+                                                      const EdgeInsets.symmetric(
+                                                        vertical: 14,
+                                                      ),
+                                                  child: Text(
+                                                    day.toUpperCase(),
+                                                    style: Styles.rubric,
+                                                  ),
+                                                ),
+                                              if (message.kind.isNotEmpty)
+                                                _Presence(
+                                                  text: memberLine(message),
+                                                )
+                                              else
+                                                _SwipeReply(
+                                                  onReply: () =>
+                                                      _reply(message),
+                                                  child: _Bubble(
+                                                    chat: peer,
+                                                    message: message,
+                                                    quote: _quote(
+                                                      message.reply,
+                                                    ),
+                                                    flash:
+                                                        _flash == message.ref,
+                                                    onQuote: () =>
+                                                        _jump(message.reply),
+                                                    onReply: () =>
+                                                        _reply(message),
+                                                    sender:
+                                                        group &&
+                                                            message.incoming
+                                                        ? sender(message)
+                                                        : null,
+                                                    joined:
+                                                        previous != null &&
+                                                        previous.kind.isEmpty &&
+                                                        previous.incoming ==
+                                                            message.incoming &&
+                                                        previous.from ==
+                                                            message.from &&
+                                                        _day(previous.time) ==
+                                                            day,
+                                                  ),
+                                                ),
+                                            ],
+                                          );
+                                        },
                                       ),
-                                    ),
-                                  ),
-                                )
-                              : ListView.builder(
-                                  controller: _scroll,
-                                  reverse: true,
-                                  physics:
-                                      const AlwaysScrollableScrollPhysics(),
-                                  keyboardDismissBehavior:
-                                      ScrollViewKeyboardDismissBehavior.onDrag,
-                                  padding: const EdgeInsets.fromLTRB(
-                                    Metrics.edge,
-                                    12,
-                                    Metrics.edge,
-                                    12,
-                                  ),
-                                  itemCount: messages.length + extra,
-                                  itemBuilder: (context, index) {
-                                    if (index < extra) {
-                                      return _Typing(
-                                        sender: typing!.isEmpty ? null : typing,
-                                      );
+                              ),
+                            ),
+                            if (group && joined && _recording == null)
+                              Positioned(
+                                left: Metrics.edge,
+                                right: Metrics.edge,
+                                bottom: 4,
+                                child: ValueListenableBuilder<TextEditingValue>(
+                                  valueListenable: _input,
+                                  builder: (context, value, _) {
+                                    final found = _mentioning(value, status);
+
+                                    if (found == null) {
+                                      return const SizedBox.shrink();
                                     }
 
-                                    final at =
-                                        messages.length - 1 - index + extra;
-                                    final message = messages[at];
-                                    final previous = at > 0
-                                        ? messages[at - 1]
-                                        : null;
-                                    final day = _day(message.time);
-
-                                    return Column(
-                                      key: _keys.putIfAbsent(
-                                        message.ref,
-                                        GlobalKey.new,
-                                      ),
-                                      children: [
-                                        if (previous == null ||
-                                            _day(previous.time) != day)
-                                          Padding(
-                                            padding: const EdgeInsets.symmetric(
-                                              vertical: 14,
-                                            ),
-                                            child: Text(
-                                              day.toUpperCase(),
-                                              style: Styles.rubric,
-                                            ),
-                                          ),
-                                        if (message.kind.isNotEmpty)
-                                          _Presence(text: memberLine(message))
-                                        else
-                                          _SwipeReply(
-                                            onReply: () => _reply(message),
-                                            child: _Bubble(
-                                              chat: peer,
-                                              message: message,
-                                              quote: _quote(message.reply),
-                                              flash: _flash == message.ref,
-                                              onQuote: () =>
-                                                  _jump(message.reply),
-                                              onReply: () => _reply(message),
-                                              sender: group && message.incoming
-                                                  ? sender(message)
-                                                  : null,
-                                              joined:
-                                                  previous != null &&
-                                                  previous.kind.isEmpty &&
-                                                  previous.incoming ==
-                                                      message.incoming &&
-                                                  previous.from ==
-                                                      message.from &&
-                                                  _day(previous.time) == day,
-                                            ),
-                                          ),
-                                      ],
+                                    return _Mentions(
+                                      members: found.$2,
+                                      onPick: (m) => _mention(found.$1, m),
                                     );
                                   },
                                 ),
+                              ),
+                          ],
                         ),
                       ),
                       if (_replying != null)
@@ -1671,6 +1876,78 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
               ),
             );
           },
+        ),
+      ),
+    );
+  }
+}
+
+String _snoozeEnd(int until) {
+  final time = DateTime.fromMillisecondsSinceEpoch(until);
+
+  return '${_day(time)} ${_clock(time)}';
+}
+
+class _Mentions extends StatelessWidget {
+  const _Mentions({required this.members, required this.onPick});
+
+  final List<ChatMember> members;
+  final ValueChanged<ChatMember> onPick;
+
+  @override
+  Widget build(BuildContext context) {
+    final vigil = Vigil.instance;
+
+    return ConstrainedBox(
+      constraints: const BoxConstraints(maxHeight: 200),
+      child: CustomPaint(
+        painter: const CutPainter(
+          fill: Palette.bg2,
+          stroke: Palette.line2,
+          cut: 8,
+        ),
+        child: ListView(
+          shrinkWrap: true,
+          padding: const EdgeInsets.symmetric(vertical: 4),
+          children: [
+            for (final member in members)
+              Pressable(
+                label: 'Mention ${vigil.name(member.id)}',
+                onTap: () => onPick(member),
+                builder: (context, pressed) => Padding(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 12,
+                    vertical: 6,
+                  ),
+                  child: Row(
+                    children: [
+                      Avatar(
+                        member.id,
+                        size: 28,
+                        margin: const EdgeInsets.only(right: 10),
+                      ),
+                      Expanded(
+                        child: Text(
+                          vigil.name(member.id),
+                          overflow: TextOverflow.ellipsis,
+                          style: Styles.cardTitle.copyWith(
+                            color: pressed ? Palette.amber : Palette.fg,
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: 10),
+                      Flexible(
+                        child: Text(
+                          '@${vigil.mentionName(member.id)}',
+                          overflow: TextOverflow.ellipsis,
+                          style: Styles.detail,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+          ],
         ),
       ),
     );
@@ -3450,18 +3727,43 @@ class _TextState extends State<_Text> {
     final text = widget.message.text;
     final style = Styles.body.copyWith(color: Palette.fg);
     final found = links(text);
+    final named = isGroup(widget.chat)
+        ? mentions(text, Vigil.instance.mentionable)
+        : const <Link>[];
 
-    if (found.isEmpty) {
+    if (found.isEmpty && named.isEmpty) {
       return Text(text, style: style);
     }
 
     _release();
 
     final spans = <TextSpan>[];
+    final marks = [
+      ...found,
+      ...named.where(
+        (m) => !found.any((l) => m.start < l.end && l.start < m.end),
+      ),
+    ]..sort((a, b) => a.start - b.start);
     var at = 0;
 
-    for (final link in found) {
+    for (final link in marks) {
       final raw = text.substring(link.start, link.end);
+
+      if (!found.contains(link)) {
+        spans.add(TextSpan(text: text.substring(at, link.start)));
+        spans.add(
+          TextSpan(
+            text: raw,
+            style: const TextStyle(
+              color: Palette.amber,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+        );
+        at = link.end;
+        continue;
+      }
+
       final tap = TapGestureRecognizer()..onTap = () => _visit(raw);
 
       _taps.add(tap);

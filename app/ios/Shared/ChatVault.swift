@@ -1206,6 +1206,23 @@ final class ChatVault {
         return clean
     }
 
+    static func mute(_ chat: String, until: Int) {
+        var mutes = defaults.dictionary(forKey: mutesKey) as? [String: Int] ?? [:]
+        mutes[chat] = until == 0 ? nil : until
+        defaults.set(mutes, forKey: mutesKey)
+    }
+
+    static func muted(_ chat: String) -> Int {
+        let mutes = defaults.dictionary(forKey: mutesKey) as? [String: Int] ?? [:]
+        let until = mutes[chat] ?? 0
+
+        if until > 0 && until <= Int(Date().timeIntervalSince1970 * 1000) {
+            return 0
+        }
+
+        return until
+    }
+
     static let callCategory = "call"
 
     static func callActions() {
@@ -1218,4 +1235,5 @@ final class ChatVault {
     }
 
     private static let namesKey = "peerNames"
+    private static let mutesKey = "chatMutes"
 }

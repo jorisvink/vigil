@@ -229,11 +229,18 @@ class Toggle extends StatelessWidget {
 }
 
 class GlyphBtn extends StatelessWidget {
-  const GlyphBtn(this.glyph, {super.key, required this.label, this.onTap});
+  const GlyphBtn(
+    this.glyph, {
+    super.key,
+    required this.label,
+    this.onTap,
+    this.color = Palette.fg2,
+  });
 
   final GlyphKind glyph;
   final String label;
   final VoidCallback? onTap;
+  final Color color;
 
   Color _color(bool pressed) {
     if (onTap == null) {
@@ -244,7 +251,7 @@ class GlyphBtn extends StatelessWidget {
       return Palette.amber;
     }
 
-    return Palette.fg2;
+    return color;
   }
 
   @override

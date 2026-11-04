@@ -20,9 +20,11 @@
 #include <arpa/inet.h>
 #include <netinet/in.h>
 
+#include <ctype.h>
 #include <inttypes.h>
 #include <pthread.h>
 #include <stdio.h>
+#include <strings.h>
 #include <unistd.h>
 
 #include "vigil.h"
@@ -397,8 +399,9 @@ struct chat_event {
 	u_int64_t			value;
 	u_int32_t			acked;
 	u_int32_t			pending;
-	struct chat_quote		quote;
+	int				mention;
 
+	struct chat_quote		quote;
 	char				name[VIGIL_INSTANCE_MAX];
 	char				nick[VIGIL_CHAT_NICK_MAX + 1];
 	char				text[VIGIL_CHAT_MESSAGE_MAX + 1];
@@ -550,6 +553,10 @@ static int	chat_bits_test(const u_int8_t *, u_int32_t);
 
 static void	chat_lock(void);
 static void	chat_unlock(void);
+
+static int	chat_mention_char(char);
+static void	chat_mention_check(struct chat_event *);
+static int	chat_mention_name(const char *, const char *);
 
 static void	chat_events_free(void);
 static int	chat_event_insert(struct chat_event *);
@@ -1180,6 +1187,7 @@ vigil_chat_status(struct vigil_buf *buf)
 	const char		*link;
 	size_t			queued;
 	int			first, online, p2p;
+	char			name[VIGIL_CHAT_NICK_MAX + 1];
 
 	PRECOND(buf != NULL);
 
@@ -1187,8 +1195,19 @@ vigil_chat_status(struct vigil_buf *buf)
 		return;
 
 	vigil_buf_appendf(buf,
-	    ",\"chat\":{\"session\":%" PRIu64 ",\"alive\":%s,\"liturgies\":[",
-	    session, signaling.last != 0 ? "true" : "false");
+	    ",\"chat\":{\"session\":%" PRIu64 ",\"alive\":%s,\"id\":\"%02x\"",
+	    session, signaling.last != 0 ? "true" : "false",
+	    vigil->gospel->spi & 0xff);
+
+	chat_lock();
+	memcpy(name, nick, sizeof(name));
+	chat_unlock();
+
+	vigil_buf_appendf(buf, ",\"nick\":");
+	vigil_buf_quote(buf, name);
+	vigil_buf_appendf(buf, ",\"signed\":");
+	vigil_buf_quote(buf, named ? vigil->gospel->instance : "");
+	vigil_buf_appendf(buf, ",\"liturgies\":[");
 
 	vigil_status_liturgy(buf, "chat", signaling.group,
 	    &signaling.cathedral, signaling.rx, signaling.tx);
@@ -3235,6 +3254,8 @@ chat_reply_report(struct chat_tunnel *tun, u_int64_t token,
 	memcpy(evt->name, tun->peer->name, sizeof(evt->name));
 	memcpy(evt->nick, tun->peer->nick, sizeof(evt->nick));
 
+	chat_mention_check(evt);
+
 	return (chat_event_insert(evt));
 }
 
@@ -3721,6 +3742,9 @@ chat_event_queue(int type, struct chat_peer *peer, u_int16_t id,
 	if (len > 0)
 		memcpy(evt->text, data, len);
 
+	if (type == CHAT_EVENT_MESSAGE)
+		chat_mention_check(evt);
+
 	return (chat_event_insert(evt));
 }
 
@@ -3852,6 +3876,9 @@ chat_event_render(struct vigil_buf *buf, struct chat_event *evt, int first)
 		vigil_buf_appendf(buf, ",\"text\":");
 		vigil_buf_quote(buf, evt->text);
 
+		if (evt->mention)
+			vigil_buf_appendf(buf, ",\"mention\":true");
+
 		if (evt->quote.hash != 0) {
 			vigil_buf_appendf(buf,
 			    ",\"author\":\"%02x\",\"hash\":\"%016" PRIx64 "\"",
@@ -3924,6 +3951,78 @@ chat_events_free(void)
 	event_count = 0;
 
 	chat_unlock();
+}
+
+/*
+ * Flag the given group message if it mentions us by our nickname, our
+ * signed name or our id.
+ */
+static void
+chat_mention_check(struct chat_event *evt)
+{
+	char		id[3];
+	char		name[VIGIL_CHAT_NICK_MAX + 1];
+
+	PRECOND(evt != NULL);
+
+	if (evt->group == 0)
+		return;
+
+	chat_lock();
+	memcpy(name, nick, sizeof(name));
+	chat_unlock();
+
+	(void)snprintf(id, sizeof(id), "%02x", vigil->gospel->spi & 0xff);
+
+	if (chat_mention_name(evt->text, name) ||
+	    chat_mention_name(evt->text, id))
+		evt->mention = 1;
+
+	if (named && chat_mention_name(evt->text, vigil->gospel->instance))
+		evt->mention = 1;
+}
+
+/*
+ * Returns 1 if the given text has @name in it with no other part of a
+ * name right next to it.
+ */
+static int
+chat_mention_name(const char *text, const char *name)
+{
+	size_t		len;
+	const char	*at;
+
+	PRECOND(text != NULL);
+	PRECOND(name != NULL);
+
+	len = strlen(name);
+	if (len == 0)
+		return (0);
+
+	for (at = strchr(text, '@'); at != NULL; at = strchr(at + 1, '@')) {
+		if (at != text && chat_mention_char(at[-1]))
+			continue;
+
+		if (strncasecmp(at + 1, name, len))
+			continue;
+
+		if (!chat_mention_char(at[len + 1]))
+			return (1);
+	}
+
+	return (0);
+}
+
+/*
+ * Returns 1 if the given character can be part of a name.
+ */
+static int
+chat_mention_char(char c)
+{
+	if (c == '-' || c == '_')
+		return (1);
+
+	return (isalnum((unsigned char)c) != 0);
 }
 
 /*

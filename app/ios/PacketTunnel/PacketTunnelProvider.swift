@@ -366,7 +366,8 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
                                       time: Int64(Date().timeIntervalSince1970 * 1000), quote: quote)
                     stored((event["token"] as? NSNumber)?.uint64Value ?? 0)
 
-                    if defaults.string(forKey: "chatOpen") != chat {
+                    if defaults.string(forKey: "chatOpen") != chat,
+                       event["mention"] as? Bool == true || ChatVault.muted(chat) == 0 {
                         unseen[chat, default: 0] += 1
                         notifyChat(chat, peer, nick, event["signed"] as? String ?? "", text,
                                    badge: unseen.values.reduce(0, +))
@@ -395,7 +396,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
                     stored(token)
                     TunnelKeychain.wipe(&bytes)
 
-                    if defaults.string(forKey: "chatOpen") != chat {
+                    if defaults.string(forKey: "chatOpen") != chat, ChatVault.muted(chat) == 0 {
                         unseen[chat, default: 0] += 1
                         notifyChat(chat, peer, nick, event["signed"] as? String ?? "",
                                    Self.summary(media, name), badge: unseen.values.reduce(0, +))
