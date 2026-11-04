@@ -33,6 +33,7 @@ final class ChatVault {
         var flags: UInt64
         var unread: Int64 = -1
         var last: Data?
+        var ambry: UInt32 = 0
     }
 
     private final class History {
@@ -188,6 +189,12 @@ final class ChatVault {
                 }
 
                 let kind = message["kind"] as? String ?? ""
+
+                if kind == "ambry", try !rotated(chat, text) {
+                    try wipe(file)
+                    continue
+                }
+
                 let ref = ref()
                 var record: [String: Any] = [
                     "t": kind.isEmpty ? "msg" : "member", "kind": kind, "dir": "in", "ref": ref,
@@ -235,6 +242,20 @@ final class ChatVault {
                 try wipe(receipts)
             }
         }
+    }
+
+    private func rotated(_ chat: String, _ text: String) throws -> Bool {
+        guard let generation = UInt32(text, radix: 16),
+              var conversation = try conversation(chat, create: false),
+              conversation.ambry != generation else { return false }
+
+        let known = conversation.ambry != 0
+
+        conversation.ambry = generation
+        open[chat] = conversation
+        try save(chat, conversation)
+
+        return known
     }
 
     func conversations() throws -> [[String: Any]] {
@@ -497,7 +518,7 @@ final class ChatVault {
                 "ref": record["ref"] ?? 0,
                 "dir": "in",
                 "kind": record["kind"] ?? "",
-                "text": "",
+                "text": record["text"] ?? "",
                 "time": record["time"] ?? 0,
                 "nick": record["nick"] ?? "",
                 "peer": record["peer"] ?? "",
@@ -926,12 +947,19 @@ final class ChatVault {
         if plain.count >= 68 {
             let size = Int(plain[64]) << 24 | Int(plain[65]) << 16 | Int(plain[66]) << 8 | Int(plain[67])
 
-            guard plain.count == 68 + size else { throw Failure(description: "invalid conversation key") }
+            guard plain.count == 68 + size || plain.count == 72 + size else {
+                throw Failure(description: "invalid conversation key")
+            }
 
             conversation.unread = Int64(bitPattern: Self.number(plain, 56))
 
             if size > 0 {
-                conversation.last = Data(plain[68...])
+                conversation.last = Data(plain[68..<(68 + size)])
+            }
+
+            if plain.count == 72 + size {
+                conversation.ambry = UInt32(plain[68 + size]) << 24 | UInt32(plain[69 + size]) << 16 |
+                    UInt32(plain[70 + size]) << 8 | UInt32(plain[71 + size])
             }
         }
 
@@ -958,6 +986,7 @@ final class ChatVault {
         plain.append(contentsOf: Self.bytes(UInt64(bitPattern: conversation.unread)))
         plain.append(contentsOf: Self.bytes(UInt32(conversation.last?.count ?? 0)))
         plain.append(conversation.last ?? Data())
+        plain.append(contentsOf: Self.bytes(conversation.ambry))
 
         try store("key.\(chat)",
                   seal(plain, to: agreementPublic(), info: Self.keyAad + Self.label(chat)),

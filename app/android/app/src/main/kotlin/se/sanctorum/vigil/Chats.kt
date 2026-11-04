@@ -197,6 +197,10 @@ object Chats {
                         id, peer, event.optString("nick"), "", System.currentTimeMillis(),
                         event.getString("type")
                     )
+                    "ambry" -> vault.deliver(
+                        id, peer, "", event.getString("generation"), System.currentTimeMillis(),
+                        "ambry"
+                    )
                     "sent", "delivered" ->
                         receipt(vault, Receipt(id, event.getLong("ref"), event.getString("type")))
                     "acks" -> receipt(

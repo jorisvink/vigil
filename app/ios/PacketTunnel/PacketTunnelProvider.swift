@@ -376,6 +376,11 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
                     try vault.deliver(chat: chat, peer: peer, nick: event["nick"] as? String ?? "",
                                       text: "", time: Int64(Date().timeIntervalSince1970 * 1000),
                                       kind: kind)
+                case "ambry":
+                    try vault.deliver(chat: chat, peer: peer, nick: "",
+                                      text: event["generation"] as? String ?? "",
+                                      time: Int64(Date().timeIntervalSince1970 * 1000),
+                                      kind: kind)
                 case "data":
                     let nick = event["nick"] as? String ?? ""
                     let name = event["name"] as? String ?? "file"

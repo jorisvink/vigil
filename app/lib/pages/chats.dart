@@ -132,6 +132,10 @@ bool senderPicked(ChatMessage message) {
 }
 
 String memberLine(ChatMessage message) {
+  if (message.kind == 'ambry') {
+    return 'The keys have been rotated, bundle ${message.text}';
+  }
+
   if (message.kind == 'joined') {
     return '${sender(message)} has joined';
   }
@@ -1742,7 +1746,11 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
                                                     style: Styles.rubric,
                                                   ),
                                                 ),
-                                              if (message.kind.isNotEmpty)
+                                              if (message.kind == 'ambry')
+                                                _Rotation(
+                                                  text: memberLine(message),
+                                                )
+                                              else if (message.kind.isNotEmpty)
                                                 _Presence(
                                                   text: memberLine(message),
                                                 )
@@ -2454,6 +2462,29 @@ class _Presence extends StatelessWidget {
             style: Styles.detail.copyWith(fontStyle: FontStyle.italic),
           ),
         ),
+      ),
+    );
+  }
+}
+
+class _Rotation extends StatelessWidget {
+  const _Rotation({required this.text});
+
+  final String text;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: double.infinity,
+      margin: const EdgeInsets.symmetric(vertical: 10),
+      padding: const EdgeInsets.symmetric(vertical: 8),
+      decoration: BoxDecoration(
+        border: Border.symmetric(horizontal: BorderSide(color: Palette.line)),
+      ),
+      child: Text(
+        text,
+        textAlign: TextAlign.center,
+        style: Styles.detail.copyWith(fontStyle: FontStyle.italic),
       ),
     );
   }

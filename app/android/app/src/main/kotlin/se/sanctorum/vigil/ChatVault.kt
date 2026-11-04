@@ -47,7 +47,8 @@ class ChatVault(context: Context) {
         var read: Long,
         var flags: Long,
         var unread: Long = -1,
-        var last: String? = null
+        var last: String? = null,
+        var ambry: Int = 0
     )
 
     private class History(val chat: String, val epoch: Long) {
@@ -155,6 +156,12 @@ class ChatVault(context: Context) {
                 val chat = message.optString("chat", message.getString("peer"))
 
                 val kind = message.optString("kind")
+
+                if (kind == "ambry" && !rotated(chat, message.getString("text"))) {
+                    wipe(file)
+                    continue
+                }
+
                 val ref = ref()
                 val record = JSONObject()
                     .put("t", if (kind.isEmpty()) "msg" else "member")
@@ -585,6 +592,22 @@ class ChatVault(context: Context) {
         }
     }
 
+    private fun rotated(chat: String, text: String): Boolean {
+        val conversation = conversation(chat, false) ?: return false
+        val generation = text.toLong(16).toInt()
+
+        if (conversation.ambry == generation) {
+            return false
+        }
+
+        val known = conversation.ambry != 0
+
+        conversation.ambry = generation
+        save(chat, conversation)
+
+        return known
+    }
+
     private fun cached(chat: String): History {
         val current = history
 
@@ -719,7 +742,7 @@ class ChatVault(context: Context) {
                 .put("ref", record.getLong("ref"))
                 .put("dir", "in")
                 .put("kind", record.getString("kind"))
-                .put("text", "")
+                .put("text", record.optString("text"))
                 .put("time", record.getLong("time"))
                 .put("nick", record.optString("nick"))
                 .put("peer", record.optString("peer"))
@@ -906,6 +929,10 @@ class ChatVault(context: Context) {
             }
 
             last.fill(0)
+
+            if (buffer.remaining() >= 4) {
+                conversation.ambry = buffer.int
+            }
         }
 
         plain.fill(0)
@@ -929,7 +956,7 @@ class ChatVault(context: Context) {
 
     private fun save(chat: String, conversation: Conversation) {
         val last = conversation.last?.toByteArray() ?: ByteArray(0)
-        val plain = ByteBuffer.allocate(68 + last.size)
+        val plain = ByteBuffer.allocate(72 + last.size)
             .put(conversation.key)
             .putLong(conversation.count)
             .putLong(conversation.read)
@@ -937,6 +964,7 @@ class ChatVault(context: Context) {
             .putLong(conversation.unread)
             .putInt(last.size)
             .put(last)
+            .putInt(conversation.ambry)
             .array()
 
         try {

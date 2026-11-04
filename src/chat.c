@@ -50,6 +50,7 @@
 #define CHAT_EVENT_DATA			7
 #define CHAT_EVENT_AVATAR		8
 #define CHAT_EVENT_NAME			9
+#define CHAT_EVENT_AMBRY		10
 
 /* Time between heartbeats we send to our peers. */
 #define CHAT_HEARTBEAT			(12 * 1000)
@@ -366,6 +367,8 @@ struct chat_liturgy {
 	u_int64_t		rx;
 	u_int64_t		tx;
 
+	u_int32_t		ambry;
+
 	struct vigil_cathedral	cathedral;
 };
 
@@ -466,6 +469,7 @@ static int	chat_nick_valid(const char *);
 static void	chat_name_report(struct chat_peer *);
 static int	chat_signal_check(struct chat_peer *);
 static void	chat_utf8_normalize(u_int8_t *, size_t);
+static void	chat_ambry_report(struct chat_tunnel *, u_int32_t);
 static void	chat_member_report(struct chat_peer *, u_int16_t, int);
 static void	chat_heaven_input(struct kyrka_packet *, u_int64_t, void *);
 static void	chat_hb_recv(struct chat_tunnel *, struct vigil_chat_frame *);
@@ -2437,6 +2441,9 @@ chat_tunnel_event(KYRKA *ctx, union kyrka_event *evt, void *udata)
 		vigil_log(LOG_INFO, "[chat] exchange: %s",
 		    evt->exchange.reason);
 		break;
+	case KYRKA_EVENT_AMBRY_RECEIVED:
+		chat_ambry_report(tun, evt->ambry.generation);
+		break;
 	case KYRKA_EVENT_LOGMSG:
 		vigil_log(LOG_INFO, "[chat] libkyrka: %s", evt->logmsg.log);
 		break;
@@ -3722,7 +3729,8 @@ chat_event_queue(int type, struct chat_peer *peer, u_int16_t id,
 	    type == CHAT_EVENT_JOINED ||
 	    type == CHAT_EVENT_LEFT ||
 	    type == CHAT_EVENT_AVATAR ||
-	    type == CHAT_EVENT_NAME);
+	    type == CHAT_EVENT_NAME ||
+	    type == CHAT_EVENT_AMBRY);
 	PRECOND(peer != NULL);
 	PRECOND(data != NULL || len == 0);
 	PRECOND(len <= VIGIL_CHAT_MESSAGE_MAX);
@@ -3770,6 +3778,32 @@ chat_member_report(struct chat_peer *peer, u_int16_t group, int joined)
 		vigil_log(LOG_NOTICE, "[chat] %02x left %04x, "
 		    "too many events to tell", peer->id, group);
 	}
+}
+
+/*
+ * Tell the platform the ambry generation the given tunnel received. All
+ * tunnels in our group share a generation so we report it only once there.
+ */
+static void
+chat_ambry_report(struct chat_tunnel *tun, u_int32_t generation)
+{
+	PRECOND(tun != NULL);
+
+	vigil_log(LOG_INFO, "[chat] %02x ambry generation %08x",
+	    tun->peer->id, generation);
+
+	if (tun->group != 0 && generation == discovery.ambry)
+		return;
+
+	if (chat_event_queue(CHAT_EVENT_AMBRY,
+	    tun->peer, tun->group, generation, NULL, 0) == -1) {
+		vigil_log(LOG_NOTICE, "[chat] %02x ambry generation %08x, "
+		    "too many events to tell", tun->peer->id, generation);
+		return;
+	}
+
+	if (tun->group != 0)
+		discovery.ambry = generation;
 }
 
 /*
@@ -3926,6 +3960,10 @@ chat_event_render(struct vigil_buf *buf, struct chat_event *evt, int first)
 	case CHAT_EVENT_AVATAR:
 		vigil_buf_appendf(buf, ",\"type\":\"avatar\",\"token\":%" PRIu64
 		    ",\"size\":%zu", evt->value, evt->size);
+		break;
+	case CHAT_EVENT_AMBRY:
+		vigil_buf_appendf(buf, ",\"type\":\"ambry\""
+		    ",\"generation\":\"%08" PRIx64 "\"", evt->value);
 		break;
 	}
 
