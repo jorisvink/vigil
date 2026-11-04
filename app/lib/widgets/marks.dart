@@ -17,6 +17,29 @@ Path cutPath(Size size, {double cut = Metrics.cut}) {
     ..close();
 }
 
+Path portraitPath(Size size) {
+  final cut = size.shortestSide * 0.22;
+
+  return Path()
+    ..moveTo(0, 0)
+    ..lineTo(size.width - cut, 0)
+    ..lineTo(size.width, cut)
+    ..lineTo(size.width, size.height)
+    ..lineTo(cut, size.height)
+    ..lineTo(0, size.height - cut)
+    ..close();
+}
+
+class PortraitClipper extends CustomClipper<Path> {
+  const PortraitClipper();
+
+  @override
+  Path getClip(Size size) => portraitPath(size);
+
+  @override
+  bool shouldReclip(covariant PortraitClipper oldClipper) => false;
+}
+
 class CutClipper extends CustomClipper<Path> {
   const CutClipper({this.cut = Metrics.cut});
 

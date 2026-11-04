@@ -695,27 +695,29 @@ class Avatar extends StatelessWidget {
           return const SizedBox.shrink();
         }
 
-        final circle = Container(
-          width: size,
-          height: size,
-          padding: const EdgeInsets.all(1),
-          decoration: const BoxDecoration(
-            shape: BoxShape.circle,
+        final portrait = ClipPath(
+          clipper: const PortraitClipper(),
+          child: Container(
+            width: size,
+            height: size,
+            padding: const EdgeInsets.all(1),
             color: Palette.line2,
-          ),
-          child: ClipOval(
-            child: Image.memory(
-              data,
-              fit: BoxFit.cover,
-              gaplessPlayback: true,
-              cacheWidth: (size * ratio).round(),
-              errorBuilder: (context, error, stack) => const SizedBox.shrink(),
+            child: ClipPath(
+              clipper: const PortraitClipper(),
+              child: Image.memory(
+                data,
+                fit: BoxFit.cover,
+                gaplessPlayback: true,
+                cacheWidth: (size * ratio).round(),
+                errorBuilder: (context, error, stack) =>
+                    const SizedBox.shrink(),
+              ),
             ),
           ),
         );
 
         if (!zoom) {
-          return Padding(padding: margin, child: circle);
+          return Padding(padding: margin, child: portrait);
         }
 
         return Padding(
@@ -726,7 +728,7 @@ class Avatar extends StatelessWidget {
             child: GestureDetector(
               behavior: HitTestBehavior.opaque,
               onTap: () => push(_AvatarView(peer: peer, data: data)),
-              child: circle,
+              child: portrait,
             ),
           ),
         );
@@ -761,24 +763,34 @@ class _AvatarView extends StatelessWidget {
                     return Column(
                       mainAxisSize: MainAxisSize.min,
                       children: [
-                        Container(
-                          width: side,
-                          height: side,
-                          padding: const EdgeInsets.all(2),
-                          decoration: const BoxDecoration(
-                            shape: BoxShape.circle,
+                        ClipPath(
+                          clipper: const PortraitClipper(),
+                          child: Container(
+                            width: side,
+                            height: side,
+                            padding: const EdgeInsets.all(2),
                             color: Palette.line2,
-                          ),
-                          child: ClipOval(
-                            child: Image.memory(
-                              data,
-                              fit: BoxFit.cover,
-                              filterQuality: FilterQuality.medium,
+                            child: ClipPath(
+                              clipper: const PortraitClipper(),
+                              child: Image.memory(
+                                data,
+                                fit: BoxFit.cover,
+                                filterQuality: FilterQuality.medium,
+                              ),
                             ),
                           ),
                         ),
                         const SizedBox(height: 20),
-                        PeerName(peer, style: Styles.title),
+                        if (peer == selfPeer)
+                          Text(
+                            Vigil.instance.selfName,
+                            style: peerStyle(
+                              Styles.title,
+                              Vigil.instance.selfPicked,
+                            ),
+                          )
+                        else
+                          PeerName(peer, style: Styles.title),
                       ],
                     );
                   },

@@ -265,6 +265,46 @@ String _day(DateTime time) {
   return '$date ${time.year}';
 }
 
+const _portrait = 36.0;
+const _portraitGap = 12.0;
+const _groupGap = Duration(minutes: 7);
+
+String _speaker(String chat, ChatMessage message) {
+  if (!message.incoming) {
+    return selfPeer;
+  }
+
+  if (message.from.isEmpty) {
+    return chat;
+  }
+
+  return message.from;
+}
+
+bool _continues(ChatMessage? previous, ChatMessage message) {
+  if (previous == null) {
+    return false;
+  }
+
+  if (previous.kind.isNotEmpty) {
+    return false;
+  }
+
+  if (previous.incoming != message.incoming) {
+    return false;
+  }
+
+  if (previous.from != message.from) {
+    return false;
+  }
+
+  if (_day(previous.time) != _day(message.time)) {
+    return false;
+  }
+
+  return message.time.difference(previous.time).abs() < _groupGap;
+}
+
 String _when(DateTime time) {
   final day = _day(time);
   if (day == 'Today') {
@@ -1761,7 +1801,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
                                                 _SwipeReply(
                                                   onReply: () =>
                                                       _reply(message),
-                                                  child: _Bubble(
+                                                  child: _Entry(
                                                     chat: peer,
                                                     message: message,
                                                     quote: _quote(
@@ -1773,20 +1813,10 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
                                                         _jump(message.reply),
                                                     onReply: () =>
                                                         _reply(message),
-                                                    sender:
-                                                        group &&
-                                                            message.incoming
-                                                        ? sender(message)
-                                                        : null,
-                                                    joined:
-                                                        previous != null &&
-                                                        previous.kind.isEmpty &&
-                                                        previous.incoming ==
-                                                            message.incoming &&
-                                                        previous.from ==
-                                                            message.from &&
-                                                        _day(previous.time) ==
-                                                            day,
+                                                    joined: _continues(
+                                                      previous,
+                                                      message,
+                                                    ),
                                                   ),
                                                 ),
                                             ],
@@ -2049,47 +2079,35 @@ class _TypingState extends State<_Typing> with SingleTickerProviderStateMixin {
     final sender = widget.sender;
 
     return Padding(
-      padding: const EdgeInsets.only(top: 10),
-      child: Align(
-        alignment: Alignment.centerLeft,
-        child: Semantics(
-          label: sender == null ? 'Typing' : '$sender typing',
-          child: CustomPaint(
-            painter: const CutPainter(
-              fill: Palette.bg2,
-              stroke: Palette.line2,
-              cut: 8,
-            ),
-            child: Padding(
-              padding: const EdgeInsets.fromLTRB(12, 8, 12, 10),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
+      padding: const EdgeInsets.only(top: 10, left: _portrait + _portraitGap),
+      child: Semantics(
+        label: sender == null ? 'Typing' : '$sender typing',
+        child: Row(
+          children: [
+            if (sender != null)
+              Flexible(
+                child: Padding(
+                  padding: const EdgeInsets.only(right: 8),
+                  child: Text(
+                    sender,
+                    overflow: TextOverflow.ellipsis,
+                    style: Styles.rubric.copyWith(color: Palette.amber),
+                  ),
+                ),
+              ),
+            AnimatedBuilder(
+              animation: _pulse,
+              builder: (context, _) => Row(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  if (sender != null)
-                    Padding(
-                      padding: const EdgeInsets.only(bottom: 6),
-                      child: Text(
-                        sender,
-                        style: Styles.rubric.copyWith(color: Palette.amber),
-                      ),
-                    ),
-                  AnimatedBuilder(
-                    animation: _pulse,
-                    builder: (context, _) => Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        for (var i = 0; i < 3; i++) ...[
-                          if (i > 0) const SizedBox(width: 5),
-                          Container(width: 6, height: 6, color: _dot(i)),
-                        ],
-                      ],
-                    ),
-                  ),
+                  for (var i = 0; i < 3; i++) ...[
+                    if (i > 0) const SizedBox(width: 5),
+                    Container(width: 6, height: 6, color: _dot(i)),
+                  ],
                 ],
               ),
             ),
-          ),
+          ],
         ),
       ),
     );
@@ -2106,7 +2124,7 @@ class _TypingState extends State<_Typing> with SingleTickerProviderStateMixin {
 
 String _author(ChatMessage message) {
   if (!message.incoming) {
-    return 'You';
+    return Vigil.instance.selfName;
   }
 
   return sender(message);
@@ -2407,7 +2425,6 @@ class _FavoritesState extends State<_Favorites> {
   @override
   Widget build(BuildContext context) {
     final peer = widget.peer;
-    final group = isGroup(peer);
     final messages = _messages ?? const <ChatMessage>[];
 
     return PushedPage(
@@ -2432,11 +2449,10 @@ class _FavoritesState extends State<_Favorites> {
                     style: Styles.rubric,
                   ),
                 ),
-              _Bubble(
+              _Entry(
                 chat: peer,
                 message: message,
                 quote: _refs[message.reply],
-                sender: group && message.incoming ? sender(message) : null,
                 joined: false,
               ),
             ],
@@ -2892,12 +2908,46 @@ class _PhotoPageState extends State<_PhotoPage> {
   }
 }
 
-class _Bubble extends StatelessWidget {
-  const _Bubble({
+class _Portrait extends StatelessWidget {
+  const _Portrait({required this.peer, required this.name});
+
+  final String peer;
+  final String name;
+
+  @override
+  Widget build(BuildContext context) {
+    final plain = name.replaceFirst('~', '');
+    final initial = plain.isEmpty ? '' : String.fromCharCode(plain.runes.first);
+
+    return SizedBox.square(
+      dimension: _portrait,
+      child: Stack(
+        children: [
+          ClipPath(
+            clipper: const PortraitClipper(),
+            child: Container(
+              alignment: Alignment.center,
+              color: Palette.line2,
+              child: ExcludeSemantics(
+                child: Text(
+                  initial.toUpperCase(),
+                  style: Styles.body.copyWith(color: Palette.fg, height: 1),
+                ),
+              ),
+            ),
+          ),
+          Avatar(peer, size: _portrait, margin: EdgeInsets.zero, zoom: true),
+        ],
+      ),
+    );
+  }
+}
+
+class _Entry extends StatelessWidget {
+  const _Entry({
     required this.chat,
     required this.message,
     required this.joined,
-    this.sender,
     this.quote,
     this.onQuote,
     this.onReply,
@@ -2907,18 +2957,50 @@ class _Bubble extends StatelessWidget {
   final String chat;
   final ChatMessage message;
   final bool joined;
-  final String? sender;
   final ChatMessage? quote;
   final VoidCallback? onQuote;
   final VoidCallback? onReply;
   final bool flash;
 
-  @override
-  Widget build(BuildContext context) {
-    final incoming = message.incoming;
-    final width = MediaQuery.sizeOf(context).width;
-    final header = sender != null && !joined;
+  bool get _named =>
+      message.incoming &&
+      isGroup(chat) &&
+      mentions(message.text, Vigil.instance.selfNames).isNotEmpty;
 
+  Widget _header() {
+    final time = '${_day(message.time)} ${_clock(message.time)}';
+    final style = Styles.body.copyWith(
+      height: 1.3,
+      fontWeight: FontWeight.w600,
+      color: Palette.amber,
+    );
+
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 2),
+      child: Row(
+        children: [
+          Flexible(
+            child: message.incoming
+                ? PeerName(
+                    _speaker(chat, message),
+                    name: sender(message),
+                    style: style,
+                    picked: senderPicked(message),
+                  )
+                : Text(
+                    Vigil.instance.selfName,
+                    overflow: TextOverflow.ellipsis,
+                    style: peerStyle(style, Vigil.instance.selfPicked),
+                  ),
+          ),
+          const SizedBox(width: 8),
+          Text(time, style: Styles.detail.copyWith(fontSize: 10.5)),
+        ],
+      ),
+    );
+  }
+
+  Widget _marks() {
     final acked = message.acked;
     final pending = message.pending;
 
@@ -2930,146 +3012,106 @@ class _Bubble extends StatelessWidget {
       _ => ('◷', Palette.dim),
     };
 
-    return GestureDetector(
-      onLongPress: () => _actions(context, chat, message, onReply),
-      child: Padding(
-        padding: EdgeInsets.only(top: joined ? 4 : 10),
-        child: Align(
-          alignment: incoming ? Alignment.centerLeft : Alignment.centerRight,
-          child: ConstrainedBox(
-            constraints: BoxConstraints(maxWidth: width * 0.78),
-            child: CustomPaint(
-              painter: CutPainter(
-                fill: incoming && !flash ? Palette.bg2 : Palette.amberWash,
-                stroke: message.pinned || flash
-                    ? Palette.amber
-                    : incoming
-                    ? Palette.line2
-                    : Palette.amberDim,
-                cut: 8,
-              ),
-              child: Padding(
-                padding: const EdgeInsets.fromLTRB(12, 8, 12, 7),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.end,
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Stack(
-                      children: [
-                        Align(
-                          alignment: Alignment.centerLeft,
-                          widthFactor: 1,
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              if (header)
-                                Padding(
-                                  padding: const EdgeInsets.only(bottom: 3),
-                                  child: Row(
-                                    mainAxisSize: MainAxisSize.min,
-                                    children: [
-                                      Flexible(
-                                        child: PeerName(
-                                          message.from,
-                                          name: sender!,
-                                          style: Styles.rubric.copyWith(
-                                            color: Palette.amber,
-                                          ),
-                                          picked: senderPicked(message),
-                                        ),
-                                      ),
-                                      const SizedBox(width: 12),
-                                      ExcludeSemantics(
-                                        child: Opacity(
-                                          opacity: 0,
-                                          child: Text(
-                                            message.from,
-                                            style: Styles.rubric,
-                                          ),
-                                        ),
-                                      ),
-                                    ],
-                                  ),
-                                ),
-                              if (message.quoted)
-                                _Quote(
-                                  chat: chat,
-                                  quote: quote,
-                                  onTap: onQuote,
-                                ),
-                              if (message.data.isEmpty)
-                                _Text(chat: chat, message: message)
-                              else if (message.media == 'image')
-                                _Photo(chat: chat, message: message)
-                              else if (message.media == 'voice')
-                                _VoiceNote(
-                                  key: ValueKey('$chat/${message.data}'),
-                                  chat: chat,
-                                  message: message,
-                                )
-                              else
-                                _File(chat: chat, message: message),
-                            ],
-                          ),
-                        ),
-                        if (header)
-                          Positioned(
-                            top: 0,
-                            right: 0,
-                            child: Semantics(
-                              label: 'KEK ID ${message.from}',
-                              child: Text(message.from, style: Styles.rubric),
-                            ),
-                          ),
-                      ],
-                    ),
-                    const SizedBox(height: 3),
-                    Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        if (message.pinned) ...[
-                          const Glyph(
-                            GlyphKind.pin,
-                            size: 11,
-                            color: Palette.amber,
-                          ),
-                          const SizedBox(width: 6),
-                        ],
-                        if (message.favorite) ...[
-                          const Glyph(
-                            GlyphKind.star,
-                            size: 11,
-                            color: Palette.amber,
-                          ),
-                          const SizedBox(width: 6),
-                        ],
-                        Text(
-                          _clock(message.time),
-                          style: Styles.detail.copyWith(fontSize: 10.5),
-                        ),
-                        if (!incoming) ...[
-                          const SizedBox(width: 6),
-                          Semantics(
-                            label: acked == null
-                                ? message.state
-                                : '$acked acked, $pending pending',
-                            child: Text(
-                              tick.$1,
-                              style: Styles.detail.copyWith(
-                                fontSize: 10.5,
-                                color: tick.$2,
-                              ),
-                            ),
-                          ),
-                        ],
-                      ],
-                    ),
-                  ],
-                ),
-              ),
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        if (message.pinned) ...[
+          const SizedBox(width: 6),
+          const Glyph(GlyphKind.pin, size: 11, color: Palette.amber),
+        ],
+        if (message.favorite) ...[
+          const SizedBox(width: 6),
+          const Glyph(GlyphKind.star, size: 11, color: Palette.amber),
+        ],
+        if (!message.incoming) ...[
+          const SizedBox(width: 6),
+          Semantics(
+            label: acked == null
+                ? message.state
+                : '$acked acked, $pending pending',
+            child: Text(
+              tick.$1,
+              style: Styles.detail.copyWith(fontSize: 10.5, color: tick.$2),
             ),
           ),
+        ],
+      ],
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      behavior: HitTestBehavior.opaque,
+      onLongPress: () => _actions(context, chat, message, onReply),
+      child: Padding(
+        padding: EdgeInsets.only(top: joined ? 2 : 20),
+        child: Stack(
+          clipBehavior: Clip.none,
+          children: [
+            if (flash || _named)
+              Positioned(
+                top: joined ? -1 : -4,
+                bottom: -1,
+                left: -Metrics.edge,
+                right: -Metrics.edge,
+                child: const ColoredBox(color: Palette.amberWash),
+              ),
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                SizedBox(
+                  width: _portrait,
+                  child: joined
+                      ? null
+                      : _Portrait(
+                          peer: _speaker(chat, message),
+                          name: _author(message),
+                        ),
+                ),
+                const SizedBox(width: _portraitGap),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      if (!joined) _header(),
+                      Row(
+                        crossAxisAlignment: CrossAxisAlignment.end,
+                        children: [
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                if (message.quoted)
+                                  _Quote(
+                                    chat: chat,
+                                    quote: quote,
+                                    onTap: onQuote,
+                                  ),
+                                if (message.data.isEmpty)
+                                  _Text(chat: chat, message: message)
+                                else if (message.media == 'image')
+                                  _Photo(chat: chat, message: message)
+                                else if (message.media == 'voice')
+                                  _VoiceNote(
+                                    key: ValueKey('$chat/${message.data}'),
+                                    chat: chat,
+                                    message: message,
+                                  )
+                                else
+                                  _File(chat: chat, message: message),
+                              ],
+                            ),
+                          ),
+                          _marks(),
+                        ],
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ],
         ),
       ),
     );

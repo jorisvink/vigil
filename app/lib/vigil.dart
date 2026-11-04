@@ -565,6 +565,42 @@ class Vigil {
     };
   }
 
+  String get selfName {
+    final chat = _last.chat;
+
+    if (chat == null) {
+      return 'You';
+    }
+
+    if (chat.signed.isNotEmpty) {
+      return chat.signed;
+    }
+
+    if (chat.nick.isNotEmpty) {
+      return chosen(chat.nick);
+    }
+
+    return 'Peer ${chat.id}';
+  }
+
+  bool get selfPicked {
+    final chat = _last.chat;
+
+    return chat != null && chat.signed.isEmpty && chat.nick.isNotEmpty;
+  }
+
+  Set<String> get selfNames {
+    final chat = _last.chat;
+
+    return {
+      if (chat != null) ...[
+        chat.id,
+        if (chat.nick.isNotEmpty) chat.nick,
+        if (chat.signed.isNotEmpty) chat.signed,
+      ],
+    };
+  }
+
   bool picked(String peer) => !known(peer) && _nicks.containsKey(peer);
 
   bool known(String peer) =>
