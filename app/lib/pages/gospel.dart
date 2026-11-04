@@ -188,7 +188,7 @@ class _GospelPageState extends State<GospelPage> with WidgetsBindingObserver {
     final chats = _list(status, _chats);
     final groups = chats.where((c) => isGroup(c.peer)).toList();
     final peers = chats.where((c) => !isGroup(c.peer)).toList()
-      ..sort((a, b) => _order(status, a.peer, b.peer));
+      ..sort((a, b) => _order(status, a, b));
 
     return [
       if (_error != null) Notice(text: _error!, kind: NoticeKind.warn),
@@ -222,11 +222,11 @@ class _GospelPageState extends State<GospelPage> with WidgetsBindingObserver {
     ];
   }
 
-  int _order(Status status, String a, String b) {
+  int _order(Status status, ChatSummary a, ChatSummary b) {
     final vigil = Vigil.instance;
-    final online = chatOnline(status, a);
+    final online = chatOnline(status, a.peer);
 
-    if (online != chatOnline(status, b)) {
+    if (online != chatOnline(status, b.peer)) {
       if (online) {
         return -1;
       }
@@ -234,14 +234,22 @@ class _GospelPageState extends State<GospelPage> with WidgetsBindingObserver {
       return 1;
     }
 
-    final name = vigil.name(a).toLowerCase();
-    final order = name.compareTo(vigil.name(b).toLowerCase());
+    final recent = (b.last?.time ?? DateTime(0)).compareTo(
+      a.last?.time ?? DateTime(0),
+    );
+
+    if (recent != 0) {
+      return recent;
+    }
+
+    final name = vigil.name(a.peer).toLowerCase();
+    final order = name.compareTo(vigil.name(b.peer).toLowerCase());
 
     if (order != 0) {
       return order;
     }
 
-    return a.compareTo(b);
+    return a.peer.compareTo(b.peer);
   }
 
   List<Widget> _peers(Status status) {
