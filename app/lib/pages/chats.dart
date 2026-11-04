@@ -93,7 +93,7 @@ var _voiceRate = 1.0;
 }
 
 bool chatOnline(Status status, String peer) =>
-    _link(status, peer).$1 == Liveness.online;
+    _link(status, peer).$1 == Liveness.online || _reachable(status, peer);
 
 Widget chatDot(Status status, String peer, {double size = 8}) {
   final state = _link(status, peer).$1;
