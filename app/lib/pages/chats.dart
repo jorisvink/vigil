@@ -2993,19 +2993,36 @@ class _Entry extends StatelessWidget {
 
   bool get _marked => !message.incoming || message.pinned || message.favorite;
 
-  Widget _room() {
-    final widest = isGroup(chat) ? '✓ 000 · 000 pending' : '✕ not sent';
+  Widget _gutter() {
+    final widest = isGroup(chat) ? '✓ 00/00' : '✓✓';
 
-    return ExcludeSemantics(child: Opacity(opacity: 0, child: _marks(widest)));
+    return Stack(
+      alignment: Alignment.bottomRight,
+      children: [
+        ExcludeSemantics(
+          child: Opacity(
+            opacity: 0,
+            child: Padding(
+              padding: const EdgeInsets.only(left: 6),
+              child: Text(
+                widest,
+                style: Styles.detail.copyWith(fontSize: 10.5),
+              ),
+            ),
+          ),
+        ),
+        if (_marked) _marks(),
+      ],
+    );
   }
 
-  Widget _marks([String? shown]) {
+  Widget _marks() {
     final acked = message.acked;
     final pending = message.pending;
 
     final tick = switch (message.state) {
       'delivered' => (acked == null ? '✓✓' : '✓✓ $acked', Palette.amber),
-      'sent' when acked != null => ('✓ $acked · $pending pending', Palette.fg2),
+      'sent' when acked != null => ('✓ $acked/${acked + pending}', Palette.fg2),
       'sent' => ('✓', Palette.fg2),
       'failed' => ('✕ not sent', Palette.amber2),
       _ => ('◷', Palette.dim),
@@ -3029,7 +3046,7 @@ class _Entry extends StatelessWidget {
                 ? message.state
                 : '$acked acked, $pending pending',
             child: Text(
-              shown ?? tick.$1,
+              tick.$1,
               style: Styles.detail.copyWith(fontSize: 10.5, color: tick.$2),
             ),
           ),
@@ -3074,11 +3091,11 @@ class _Entry extends StatelessWidget {
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       if (!joined) _header(),
-                      SizedBox(
-                        width: double.infinity,
-                        child: Stack(
-                          children: [
-                            Column(
+                      Row(
+                        crossAxisAlignment: CrossAxisAlignment.end,
+                        children: [
+                          Expanded(
+                            child: Column(
                               crossAxisAlignment: CrossAxisAlignment.start,
                               children: [
                                 if (message.quoted)
@@ -3088,11 +3105,7 @@ class _Entry extends StatelessWidget {
                                     onTap: onQuote,
                                   ),
                                 if (message.data.isEmpty)
-                                  _Text(
-                                    chat: chat,
-                                    message: message,
-                                    tail: _marked ? _room() : null,
-                                  )
+                                  _Text(chat: chat, message: message)
                                 else if (message.media == 'image')
                                   _Photo(chat: chat, message: message)
                                 else if (message.media == 'voice')
@@ -3103,13 +3116,11 @@ class _Entry extends StatelessWidget {
                                   )
                                 else
                                   _File(chat: chat, message: message),
-                                if (_marked && message.data.isNotEmpty) _room(),
                               ],
                             ),
-                            if (_marked)
-                              Positioned(right: 0, bottom: 0, child: _marks()),
-                          ],
-                        ),
+                          ),
+                          _gutter(),
+                        ],
                       ),
                     ],
                   ),
@@ -3777,11 +3788,10 @@ class _WavePainter extends CustomPainter {
 }
 
 class _Text extends StatefulWidget {
-  const _Text({required this.chat, required this.message, this.tail});
+  const _Text({required this.chat, required this.message});
 
   final String chat;
   final ChatMessage message;
-  final Widget? tail;
 
   @override
   State<_Text> createState() => _TextState();
@@ -3808,27 +3818,18 @@ class _TextState extends State<_Text> {
   Widget build(BuildContext context) {
     final text = widget.message.text;
     final style = Styles.body.copyWith(color: Palette.fg);
-    final tail = widget.tail;
     final found = links(text);
     final named = isGroup(widget.chat)
         ? mentions(text, Vigil.instance.mentionable)
         : const <Link>[];
 
     if (found.isEmpty && named.isEmpty) {
-      return Text.rich(
-        TextSpan(
-          style: style,
-          children: [
-            TextSpan(text: text),
-            if (tail != null) WidgetSpan(child: tail),
-          ],
-        ),
-      );
+      return Text(text, style: style);
     }
 
     _release();
 
-    final spans = <InlineSpan>[];
+    final spans = <TextSpan>[];
     final marks = [
       ...found,
       ...named.where(
@@ -3874,10 +3875,6 @@ class _TextState extends State<_Text> {
     }
 
     spans.add(TextSpan(text: text.substring(at)));
-
-    if (tail != null) {
-      spans.add(WidgetSpan(child: tail));
-    }
 
     return Text.rich(TextSpan(style: style, children: spans));
   }
