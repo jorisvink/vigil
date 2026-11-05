@@ -1571,6 +1571,9 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
             final joined = status.chats.group == peer;
             final callable = status.call?.peers.contains(peer) ?? false;
             final messages = _messages;
+            final newest = messages.lastIndexWhere(
+              (m) => !m.incoming && m.kind.isEmpty,
+            );
             final pinned = messages.where((m) => m.pinned).firstOrNull;
             final keyboard = MediaQuery.viewInsetsOf(context).bottom;
             final inset = keyboard > 0
@@ -1758,7 +1761,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
                                         padding: const EdgeInsets.fromLTRB(
                                           Metrics.edge,
                                           12,
-                                          Metrics.edge,
+                                          6,
                                           12,
                                         ),
                                         itemCount: messages.length + extra,
@@ -1816,6 +1819,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
                                                     ),
                                                     flash:
                                                         _flash == message.ref,
+                                                    newest: at == newest,
                                                     onQuote: () =>
                                                         _jump(message.reply),
                                                     onReply: () =>
@@ -2515,6 +2519,34 @@ class _Rotation extends StatelessWidget {
   }
 }
 
+String _delivery(ChatMessage message) {
+  final acked = message.acked;
+
+  return switch (message.state) {
+    'delivered' when acked != null => 'Delivered to $acked',
+    'delivered' => 'Delivered',
+    'sent' when acked != null =>
+      'Delivered to $acked of ${acked + message.pending}',
+    'sent' => 'Sent',
+    'failed' => 'Not sent',
+    _ => 'Sending',
+  };
+}
+
+(String, Color) _tick(ChatMessage message) {
+  final acked = message.acked;
+
+  return switch (message.state) {
+    'delivered' when acked != null => ('✓✓ $acked', Palette.amber),
+    'delivered' => ('✓✓', Palette.amber),
+    'sent' when acked != null =>
+      ('✓ $acked/${acked + message.pending}', Palette.fg2),
+    'sent' => ('✓', Palette.fg2),
+    'failed' => ('✕', Palette.amber2),
+    _ => ('◷', Palette.dim),
+  };
+}
+
 Future<void> _actions(
   BuildContext context,
   String chat,
@@ -2524,6 +2556,7 @@ Future<void> _actions(
   unawaited(HapticFeedback.mediumImpact());
 
   final text = message.data.isEmpty;
+  final tick = _tick(message);
   final keep = Btn(
     label: text ? 'Copy' : _saveLabel(message),
     glyph: text ? GlyphKind.copy : null,
@@ -2546,6 +2579,16 @@ Future<void> _actions(
           overflow: TextOverflow.ellipsis,
           style: Styles.detail,
         ),
+        if (!message.incoming) ...[
+          const SizedBox(height: 8),
+          Semantics(
+            label: _delivery(message),
+            child: Text(
+              tick.$1,
+              style: Styles.detail.copyWith(color: tick.$2),
+            ),
+          ),
+        ],
         const SizedBox(height: 20),
         if (onReply == null)
           keep
@@ -2958,11 +3001,13 @@ class _Entry extends StatelessWidget {
     this.onQuote,
     this.onReply,
     this.flash = false,
+    this.newest = false,
   });
 
   final String chat;
   final ChatMessage message;
   final bool joined;
+  final bool newest;
   final ChatMessage? quote;
   final VoidCallback? onQuote;
   final VoidCallback? onReply;
@@ -2997,71 +3042,81 @@ class _Entry extends StatelessWidget {
           ),
           const SizedBox(width: 8),
           Text(time, style: Styles.detail.copyWith(fontSize: 10.5)),
+          const SizedBox(width: 8),
+          _icons(),
         ],
       ),
     );
   }
 
-  bool get _marked => !message.incoming || message.pinned || message.favorite;
+  Widget _icons() {
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      spacing: 6,
+      children: [
+        if (message.favorite)
+          const Glyph(GlyphKind.star, size: 11, color: Palette.amber),
+        if (message.pinned)
+          const Glyph(GlyphKind.pin, size: 11, color: Palette.amber),
+      ],
+    );
+  }
 
-  Widget _gutter() {
+  Widget _tally() {
     final widest = isGroup(chat) ? '✓ 00/00' : '✓✓';
+    final style = Styles.detail.copyWith(fontSize: 10.5);
+
+    final tick = switch (message.state) {
+      'delivered' => newest ? ('✓✓', Palette.amber) : null,
+      _ => _tick(message),
+    };
 
     return Stack(
-      alignment: Alignment.bottomRight,
+      alignment: Alignment.centerRight,
       children: [
         ExcludeSemantics(
           child: Opacity(
             opacity: 0,
             child: Padding(
               padding: const EdgeInsets.only(left: 6),
-              child: Text(
-                widest,
-                style: Styles.detail.copyWith(fontSize: 10.5),
-              ),
+              child: Text(widest, style: style),
             ),
           ),
         ),
-        if (_marked) _marks(),
+        if (!message.incoming && tick != null)
+          Semantics(
+            label: _delivery(message),
+            child: Text(tick.$1, style: style.copyWith(color: tick.$2)),
+          ),
       ],
     );
   }
 
-  Widget _marks() {
-    final acked = message.acked;
-    final pending = message.pending;
-
-    final tick = switch (message.state) {
-      'delivered' => (acked == null ? '✓✓' : '✓✓ $acked', Palette.amber),
-      'sent' when acked != null => ('✓ $acked/${acked + pending}', Palette.fg2),
-      'sent' => ('✓', Palette.fg2),
-      'failed' => ('✕ not sent', Palette.amber2),
-      _ => ('◷', Palette.dim),
-    };
-
+  Widget _body() {
     return Row(
-      mainAxisSize: MainAxisSize.min,
       children: [
-        if (message.pinned) ...[
-          const SizedBox(width: 6),
-          const Glyph(GlyphKind.pin, size: 11, color: Palette.amber),
-        ],
-        if (message.favorite) ...[
-          const SizedBox(width: 6),
-          const Glyph(GlyphKind.star, size: 11, color: Palette.amber),
-        ],
-        if (!message.incoming) ...[
-          const SizedBox(width: 6),
-          Semantics(
-            label: acked == null
-                ? message.state
-                : '$acked acked, $pending pending',
-            child: Text(
-              tick.$1,
-              style: Styles.detail.copyWith(fontSize: 10.5, color: tick.$2),
-            ),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              if (message.quoted)
+                _Quote(chat: chat, quote: quote, onTap: onQuote),
+              if (message.data.isEmpty)
+                _Text(chat: chat, message: message)
+              else if (message.media == 'image')
+                _Photo(chat: chat, message: message)
+              else if (message.media == 'voice')
+                _VoiceNote(
+                  key: ValueKey('$chat/${message.data}'),
+                  chat: chat,
+                  message: message,
+                )
+              else
+                _File(chat: chat, message: message),
+            ],
           ),
-        ],
+        ),
+        _tally(),
       ],
     );
   }
@@ -3085,12 +3140,14 @@ class _Entry extends StatelessWidget {
                 child: const ColoredBox(color: Palette.amberWash),
               ),
             Row(
-              crossAxisAlignment: CrossAxisAlignment.start,
+              crossAxisAlignment: joined
+                  ? CrossAxisAlignment.center
+                  : CrossAxisAlignment.start,
               children: [
                 SizedBox(
                   width: _portrait,
                   child: joined
-                      ? null
+                      ? _icons()
                       : _Portrait(
                           peer: _speaker(chat, message),
                           name: _author(message),
@@ -3098,43 +3155,12 @@ class _Entry extends StatelessWidget {
                 ),
                 const SizedBox(width: _portraitGap),
                 Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      if (!joined) _header(),
-                      Row(
-                        crossAxisAlignment: CrossAxisAlignment.end,
-                        children: [
-                          Expanded(
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                if (message.quoted)
-                                  _Quote(
-                                    chat: chat,
-                                    quote: quote,
-                                    onTap: onQuote,
-                                  ),
-                                if (message.data.isEmpty)
-                                  _Text(chat: chat, message: message)
-                                else if (message.media == 'image')
-                                  _Photo(chat: chat, message: message)
-                                else if (message.media == 'voice')
-                                  _VoiceNote(
-                                    key: ValueKey('$chat/${message.data}'),
-                                    chat: chat,
-                                    message: message,
-                                  )
-                                else
-                                  _File(chat: chat, message: message),
-                              ],
-                            ),
-                          ),
-                          _gutter(),
-                        ],
-                      ),
-                    ],
-                  ),
+                  child: joined
+                      ? _body()
+                      : Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [_header(), _body()],
+                        ),
                 ),
               ],
             ),
