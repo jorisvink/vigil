@@ -38,13 +38,16 @@
 #define VIDEO_GAP_MAX			3
 
 /* The frames we remember sending for round trips, must be a power of 2. */
-#define VIDEO_SENT			128
+#define VIDEO_SENT			512
 
 /*
  * What we add to the round trip for the time it takes our peer to see a
  * fragment is missing and for the resend to make its way through.
  */
 #define VIDEO_RTT_MARGIN		50
+
+/* The highest RTT we allow a peer to report. */
+#define VIDEO_RTT_MAX			8000
 
 /*
  * A round trip this much longer than the shortest we saw, or a quarter
@@ -2044,16 +2047,23 @@ video_rx_nack(struct vigil_video_link *link, struct video_entry *entry)
 }
 
 /*
- * The round trip to our peer, the longest of what we and it measured,
- * 0 if neither of us did.
+ * The round trip to our peer, the longest of what we and it measured up
+ * to VIDEO_RTT_MAX, 0 if neither of us did.
  */
 static u_int64_t
 video_rtt(void)
 {
-	if (peer_rtt > rtt)
-		return (peer_rtt);
+	u_int64_t	longest;
 
-	return (rtt);
+	longest = rtt;
+
+	if (peer_rtt > longest)
+		longest = peer_rtt;
+
+	if (longest > VIDEO_RTT_MAX)
+		return (VIDEO_RTT_MAX);
+
+	return (longest);
 }
 
 /*
