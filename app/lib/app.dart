@@ -532,7 +532,7 @@ void notify(String message, {bool warn = true}) {
     builder: (context) => Positioned(
       left: Metrics.edge,
       right: Metrics.edge,
-      bottom: tabBarSpace(context),
+      top: MediaQuery.paddingOf(context).top + Metrics.edge,
       child: IgnorePointer(
         child: TweenAnimationBuilder<double>(
           tween: Tween(begin: 0, end: 1),
@@ -540,7 +540,7 @@ void notify(String message, {bool warn = true}) {
           builder: (context, t, child) => Opacity(
             opacity: t,
             child: Transform.translate(
-              offset: Offset(0, (1 - t) * 12),
+              offset: Offset(0, (t - 1) * 12),
               child: child,
             ),
           ),
