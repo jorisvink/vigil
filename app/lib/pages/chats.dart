@@ -13,6 +13,7 @@ import '../app.dart';
 import '../links.dart';
 import '../vigil.dart';
 import '../theme.dart';
+import '../widgets/background.dart';
 import '../widgets/buttons.dart';
 import '../widgets/marks.dart';
 import '../widgets/ui.dart';
@@ -1693,6 +1694,16 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
                       ),
                       const Line(),
                       if (pinned != null) _Pinned(chat: peer, message: pinned),
+                      if (status.running && !status.linked)
+                        const Padding(
+                          padding: EdgeInsets.fromLTRB(
+                            Metrics.edge,
+                            Metrics.gap,
+                            Metrics.edge,
+                            0,
+                          ),
+                          child: LinkNotice(),
+                        ),
                       if (_error != null || _history?.warning != null)
                         Padding(
                           padding: const EdgeInsets.fromLTRB(

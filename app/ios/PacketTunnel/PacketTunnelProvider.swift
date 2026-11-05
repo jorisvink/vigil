@@ -254,7 +254,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             }
         case "chat-group-data":
             if words.count == 6, let ref = UInt64(words[1]),
-               let data = try? ChatVault.shared.data(String(words[3]), file: String(words[2])),
+               let data = try? ChatVault.shared.queued(ref),
                !data.isEmpty, data.count <= Int(VIGIL_CHAT_DATA_MAX),
                let name = Data(base64Encoded: String(words[5])).flatMap({ String(data: $0, encoding: .utf8) }) {
                 let sent = data.withUnsafeBytes {
@@ -265,6 +265,8 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
                 if sent == -1 {
                     NSLog("vigil: group data \(ref) was refused")
                 }
+
+                try? ChatVault.shared.unqueue(ref)
             }
         case "chat-group-send":
             if words.count == 3 || words.count == 5, let ref = UInt64(words[1]),
@@ -522,10 +524,17 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
 
     @discardableResult
     private func submitOutbox(only: Set<UInt64>? = nil) -> Bool {
-        guard let outbox = try? ChatVault.shared.outboxList() else {
+        let outbox: [[String: Any]]
+
+        do {
+            outbox = try ChatVault.shared.outboxList()
+        } catch {
+            NSLog("vigil: failed to read the outbox: \(error)")
+
             if only != nil {
                 chatResubmit = ProcessInfo.processInfo.systemUptime + Self.resubmitInterval
             }
+
             return false
         }
 
@@ -540,8 +549,21 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
 
             if let only, !only.contains(ref) { continue }
 
-            if let file = entry["data"] as? String {
-                guard let data = try? ChatVault.shared.data(chat, file: file) else { return false }
+            if entry["data"] != nil {
+                let data: Data
+
+                do {
+                    guard let found = try ChatVault.shared.queued(ref) else {
+                        NSLog("vigil: the data of \(ref) for \(chat) is gone")
+                        continue
+                    }
+
+                    data = found
+                } catch {
+                    NSLog("vigil: failed to read the data of \(ref) for \(chat): \(error)")
+                    continue
+                }
+
                 guard !data.isEmpty, data.count <= Int(VIGIL_CHAT_DATA_MAX) else { continue }
 
                 let media = entry["media"] as? String ?? "file"

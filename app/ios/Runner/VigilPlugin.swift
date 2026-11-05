@@ -1233,12 +1233,16 @@ final class VigilPlugin: NSObject, FlutterPlugin, UIDocumentPickerDelegate,
         case "chat-group-data":
             guard words.count == 6 else { return }
             chat = String(words[3])
+        case "chat":
+            NSLog("vigil: the tunnel did not hear about our outbox")
+            return
         default:
             return
         }
 
         guard words.count > 1, let ref = Int64(words[1]) else { return }
 
+        try? ChatVault.shared.unqueue(UInt64(bitPattern: ref))
         try? ChatVault.shared.receipt(chat, ref: ref, kind: "failed")
         version += 1
     }

@@ -196,6 +196,7 @@ and is only protected by the outbox key.
 ```
 inbox/<time>-<random>.box = seal(message, "VIGIL.CHAT.INBOX")
 outbox.box                = GCM(ok, "VIGIL.CHAT.OUTBOX", json list)
+outbox-<ref>.dat          = GCM(ok, "VIGIL.CHAT.QUEUED" || name, data)
 receipts.box              = GCM(ok, "VIGIL.CHAT.RECEIPTS", json list)
 avatar.box                = GCM(ok, "VIGIL.CHAT.AVATAR", jpeg)
 avatars/<id>.box          = seal(jpeg, "VIGIL.CHAT.AVATAR" || id)
@@ -204,7 +205,8 @@ names/<id>.box            = seal(json, "VIGIL.CHAT.NAME" || id)
 
 `id` is the one byte device id of the peer. `avatar.box` is our own
 picture. As with the inbox, Android before version 12 stores the peer
-files under the outbox key instead.
+files under the outbox key instead. `outbox-<ref>.dat` exists on iOS only,
+for data on its way out, and is wiped once it is delivered.
 
 ### Conversation keys (CK)
 

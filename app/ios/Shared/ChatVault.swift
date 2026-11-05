@@ -66,6 +66,7 @@ final class ChatVault {
     private static let recordAad = Data("VIGIL.CHAT.V1".utf8)
     private static let inboxAad = Data("VIGIL.CHAT.INBOX".utf8)
     private static let outboxAad = Data("VIGIL.CHAT.OUTBOX".utf8)
+    private static let queuedAad = Data("VIGIL.CHAT.QUEUED".utf8)
     private static let receiptsAad = Data("VIGIL.CHAT.RECEIPTS".utf8)
     private static let dataAad = Data("VIGIL.CHAT.DATA".utf8)
     private static let avatarAad = Data("VIGIL.CHAT.AVATAR".utf8)
@@ -116,6 +117,7 @@ final class ChatVault {
         try locked {
             _ = try agreementPublic()
             _ = try outboxKey()
+            try exclusive { try settleQueued() }
         }
     }
 
@@ -595,6 +597,8 @@ final class ChatVault {
             let ref = ref()
             let file = try dataWrite(chat, ref: ref, data)
 
+            try queue(UInt64(bitPattern: ref), data)
+
             try append(chat, [
                 "t": "msg", "dir": "out", "ref": ref, "text": "", "data": file, "media": media,
                 "name": name, "time": Int64(Date().timeIntervalSince1970 * 1000),
@@ -624,6 +628,58 @@ final class ChatVault {
             guard let sealed = try? Data(contentsOf: path) else { return nil }
 
             return try openBox(sealed, key: conversation.key, aad: Self.dataAad(chat, file))
+        }
+    }
+
+    func queued(_ ref: UInt64) throws -> Data? {
+        return try locked {
+            let name = Self.queuedName(ref)
+            let path = try folder(dir).appendingPathComponent(name)
+            guard let sealed = try? Data(contentsOf: path) else { return nil }
+
+            return try openBox(sealed, key: outboxKey(), aad: Self.queuedAad + Data(name.utf8))
+        }
+    }
+
+    func unqueue(_ ref: UInt64) throws {
+        try locked {
+            try wipe(try folder(dir).appendingPathComponent(Self.queuedName(ref)))
+        }
+    }
+
+    private func queue(_ ref: UInt64, _ data: Data) throws {
+        let name = Self.queuedName(ref)
+        let sealed = try sealBox(data, key: outboxKey(), aad: Self.queuedAad + Data(name.utf8))
+
+        try write(try folder(dir).appendingPathComponent(name), sealed)
+    }
+
+    private static func queuedName(_ ref: UInt64) -> String {
+        String(format: "outbox-%016llx.dat", ref)
+    }
+
+    private func settleQueued() throws {
+        var refs = Set<UInt64>()
+
+        for entry in try outboxList() {
+            guard let chat = entry["peer"] as? String, let file = entry["data"] as? String,
+                  let ref = (entry["ref"] as? NSNumber)?.uint64Value else { continue }
+
+            refs.insert(ref)
+
+            if (try? queued(ref)) == nil, let bytes = try? self.data(chat, file: file) {
+                try queue(ref, bytes)
+            }
+        }
+
+        let names = (try? FileManager.default.contentsOfDirectory(atPath: try folder(dir).path)) ?? []
+
+        for name in names where name.hasPrefix("outbox-") && name.hasSuffix(".dat") {
+            if let ref = UInt64(name.dropFirst(7).dropLast(4), radix: 16), refs.contains(ref) {
+                continue
+            }
+
+            try wipe(try folder(dir).appendingPathComponent(name))
         }
     }
 
@@ -737,7 +793,11 @@ final class ChatVault {
         if kind == "delivered" {
             let list = try outboxList()
             let kept = list.filter { ($0["ref"] as? NSNumber)?.int64Value != ref }
-            if kept.count != list.count { try outboxSave(kept) }
+
+            if kept.count != list.count {
+                try outboxSave(kept)
+                try? unqueue(UInt64(bitPattern: ref))
+            }
         }
 
         let file = try folder(dir).appendingPathComponent("receipts.box")
@@ -800,7 +860,14 @@ final class ChatVault {
             try exclusive {
                 let list = try outboxList()
                 let kept = list.filter { $0["peer"] as? String != chat }
+
                 if kept.count != list.count { try outboxSave(kept) }
+
+                for entry in list where entry["peer"] as? String == chat {
+                    if let ref = (entry["ref"] as? NSNumber)?.uint64Value {
+                        try? unqueue(ref)
+                    }
+                }
             }
         }
     }
