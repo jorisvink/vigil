@@ -131,6 +131,13 @@ A device with a picture sets a feature bit in its heartbeats. Once a
 tunnel hears its peer, the device sends its picture over it as data,
 and again whenever the picture changes. Peers on gospel never get it.
 
+Heartbeats also carry the hash of the picture the device holds of that
+peer, or zero if it holds none, once the picture has been stored. A device
+does not send a picture to a peer whose heartbeats already name it, so a
+tunnel going down and coming back up costs nothing. A device forgets these
+hashes when it restarts, and is then sent the pictures again. Older peers
+always send zero, and so get the picture on every new tunnel.
+
 The receiver keeps the picture and shows it next to the name of the
 peer. When the heartbeats of a peer no longer have the feature bit, the
 receiver drops the picture it kept for that peer. Like the nickname, the

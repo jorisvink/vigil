@@ -203,6 +203,7 @@ struct vigil_chat_hb {
 	u_int8_t		features;
 	u_int8_t		instance[VIGIL_INSTANCE_MAX];
 	u_int8_t		signature[VIGIL_SIGNATURE_LENGTH];
+	u_int64_t		avatar_have;
 } __attribute__((packed));
 
 /*

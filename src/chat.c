@@ -218,6 +218,7 @@ struct chat_seen {
 	u_int64_t		age;
 	u_int64_t		hash;
 	u_int64_t		token;
+	u_int64_t		avatar;
 	size_t			size;
 };
 
@@ -326,6 +327,7 @@ struct chat_tunnel {
 	struct chat_rxfer	*rxfer;
 
 	struct chat_msg		*avatar;
+	u_int64_t		avatar_have;
 	u_int32_t		avatar_serial;
 };
 
@@ -336,6 +338,7 @@ struct chat_peer {
 	u_int8_t		id;
 	u_int64_t		active;
 	u_int64_t		pushed;
+	u_int64_t		avatar_held;
 	int			member;
 	int			present;
 	int			faceless;
@@ -464,6 +467,8 @@ static void	chat_avatar_drop(struct chat_tunnel *);
 static void	chat_avatar_push(struct chat_tunnel *);
 static void	chat_avatar_check(struct chat_peer *, u_int8_t);
 
+static u_int64_t	chat_avatar_hash(const u_int8_t *, size_t);
+
 static void	chat_token_ack(u_int64_t);
 static int	chat_nick_valid(const char *);
 static void	chat_name_report(struct chat_peer *);
@@ -530,9 +535,8 @@ static void	chat_data_ack(struct chat_tunnel *, u_int64_t,
 static int	chat_data_queue(int, u_int8_t, u_int64_t, int, const char *,
 		    const void *, size_t);
 
-static struct chat_msg	*chat_data_msg(u_int64_t, struct chat_blob *);
-
 static const char	*chat_data_kind_name(int);
+static struct chat_msg	*chat_data_msg(u_int64_t, struct chat_blob *);
 
 static void	chat_xfer_run(struct chat_tunnel *);
 static void	chat_xfer_free(struct chat_tunnel *);
@@ -608,12 +612,13 @@ static char				nick[VIGIL_CHAT_NICK_MAX + 1];
 static int				named = 0;
 
 /* Our avatar as the platform gave it, the serial counts its changes. */
-static u_int8_t				avatar[VIGIL_CHAT_AVATAR_MAX];
 static size_t				avatar_len = 0;
 static u_int32_t			avatar_serial = 0;
+static u_int8_t				avatar[VIGIL_CHAT_AVATAR_MAX];
 
-/* The avatar we send to our peers and the serial it came from. */
+/* The avatar we send to our peers, the serial it came from and its hash. */
 static struct chat_blob			*portrait = NULL;
+static u_int64_t			portrait_hash = 0;
 static u_int32_t			portrait_serial = 0;
 
 /* The commands for the event loop. */
@@ -677,6 +682,7 @@ vigil_chat_init(void)
 
 	portrait = NULL;
 	portrait_serial = 0;
+	portrait_hash = 0;
 
 	chat_lock();
 
@@ -728,6 +734,7 @@ vigil_chat_cleanup(void)
 	if (portrait != NULL) {
 		chat_blob_release(portrait);
 		portrait = NULL;
+		portrait_hash = 0;
 	}
 
 	chat_liturgy_cleanup(&signaling);
@@ -1121,6 +1128,11 @@ vigil_chat_avatar(const void *data, size_t len)
 	PRECOND(len <= VIGIL_CHAT_AVATAR_MAX);
 
 	chat_lock();
+
+	if (len == avatar_len && (len == 0 || !memcmp(avatar, data, len))) {
+		chat_unlock();
+		return;
+	}
 
 	nyfe_mem_zero(avatar, sizeof(avatar));
 
@@ -2700,9 +2712,12 @@ chat_avatar_update(void)
 	}
 
 	blob = NULL;
+	portrait_hash = 0;
 	portrait_serial = avatar_serial;
 
 	if (avatar_len > 0) {
+		portrait_hash = chat_avatar_hash(avatar, avatar_len);
+
 		memset(&head, 0, sizeof(head));
 		head.kind = VIGIL_CHAT_DATA_AVATAR;
 		head.len = strlen(CHAT_AVATAR_NAME);
@@ -2759,6 +2774,9 @@ chat_avatar_push(struct chat_tunnel *tun)
 	if (portrait == NULL)
 		return;
 
+	if (tun->avatar_have == portrait_hash)
+		return;
+
 	msg = chat_data_msg(0, portrait);
 	msg->sent = 1;
 
@@ -2785,6 +2803,21 @@ chat_avatar_drop(struct chat_tunnel *tun)
 }
 
 /*
+ * The hash of an avatar in a heartbeat, 0 means none.
+ */
+static u_int64_t
+chat_avatar_hash(const u_int8_t *data, size_t len)
+{
+	u_int64_t	hash;
+
+	PRECOND(data != NULL);
+
+	hash = chat_frame_hash(data, len);
+
+	return (hash == 0 ? 1 : hash);
+}
+
+/*
  * Tell the platform once that the given peer has no avatar, so it can
  * drop the one it may still hold for it.
  */
@@ -2797,6 +2830,8 @@ chat_avatar_check(struct chat_peer *peer, u_int8_t features)
 		peer->faceless = 0;
 		return;
 	}
+
+	peer->avatar_held = 0;
 
 	if (peer->faceless)
 		return;
@@ -2877,6 +2912,8 @@ chat_frame_send(struct chat_tunnel *tun, struct chat_msg *msg)
 
 		if (portrait != NULL)
 			hb->features |= VIGIL_CHAT_FEATURE_AVATAR;
+
+		hb->avatar_have = htobe64(tun->peer->avatar_held);
 
 		if (tun->group != 0)
 			hb->typing = vigil_atomic_read(&group_typing);
@@ -3023,6 +3060,11 @@ chat_hb_recv(struct chat_tunnel *tun, struct vigil_chat_frame *frame)
 	tun->features = hb->features;
 	tun->typing = hb->typing ? 1 : 0;
 
+	if (tun->avatar_have != be64toh(hb->avatar_have)) {
+		tun->avatar_have = be64toh(hb->avatar_have);
+		tun->avatar_serial = 0;
+	}
+
 	if (tun->remote_uid == hb->uid)
 		return;
 
@@ -3161,6 +3203,7 @@ chat_text_recv(struct chat_tunnel *tun, u_int64_t id,
 	seen->id = id;
 	seen->size = 0;
 	seen->hash = hash;
+	seen->avatar = 0;
 	seen->token = tokens;
 	seen->age = vigil->now;
 
@@ -3453,6 +3496,9 @@ chat_tunnel_ack(struct chat_tunnel *tun, u_int64_t token)
 
 		tun->seen[slot].token = 0;
 		chat_ack_queue(tun, tun->seen[slot].id);
+
+		if (tun->seen[slot].avatar != 0)
+			tun->peer->avatar_held = tun->seen[slot].avatar;
 
 		return (0);
 	}
@@ -5048,6 +5094,7 @@ static int
 chat_data_arrived(struct chat_tunnel *tun, struct chat_rxfer *xfer)
 {
 	u_int8_t			kind;
+	u_int64_t			held;
 	struct chat_seen		*seen;
 	struct vigil_chat_data_head	*head;
 	struct chat_parcel		*parcel;
@@ -5104,6 +5151,13 @@ chat_data_arrived(struct chat_tunnel *tun, struct chat_rxfer *xfer)
 
 	chat_unlock();
 
+	held = 0;
+
+	if (kind == VIGIL_CHAT_DATA_AVATAR) {
+		held = chat_avatar_hash(xfer->data + sizeof(*head),
+		    xfer->size - sizeof(*head));
+	}
+
 	parcel = calloc(1, sizeof(*parcel));
 	if (parcel == NULL)
 		fatal("calloc: failed to allocate data");
@@ -5128,6 +5182,7 @@ chat_data_arrived(struct chat_tunnel *tun, struct chat_rxfer *xfer)
 	seen = &tun->seen[tun->seen_next++ % CHAT_SEEN_MAX];
 
 	seen->hash = 0;
+	seen->avatar = held;
 	seen->id = xfer->id;
 	seen->size = xfer->size;
 	seen->token = parcel->token;
@@ -5158,6 +5213,7 @@ chat_data_discard(struct chat_tunnel *tun, struct chat_rxfer *xfer)
 
 	seen->hash = 0;
 	seen->token = 0;
+	seen->avatar = 0;
 	seen->id = xfer->id;
 	seen->size = xfer->size;
 	seen->age = vigil->now;
