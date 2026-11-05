@@ -1741,8 +1741,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
                                                 ? 'Messages go to the members of '
                                                       '${vigil.name(peer)} that are '
                                                       'around right now.'
-                                                : 'Say something to ${vigil.name(peer)}, '
-                                                      'it is held until they are around.',
+                                                : 'Write your first message to ${vigil.name(peer)}.',
                                             textAlign: TextAlign.center,
                                             style: Styles.body.copyWith(
                                               color: Palette.dim,
