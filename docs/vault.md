@@ -112,14 +112,12 @@ record in the log. This means:
 - Records cannot be moved within a log or swapped between logs.
 - A record from another conversation cannot be inserted.
 
-Next to the conversation key is a summary, protected the same way. It
-holds the number of records, the number of unread messages and a copy of
-the last message, which the chat list shows. The chat list does not need
-the conversation keys. If the log has fewer records than expected, someone
+The number of records is stored together with the conversation key, in
+its protected form. So are the number of unread messages and a copy of
+the last message, which the chat list shows. If the log has fewer records than expected, someone
 removed messages from the end. The app then shows a warning. If a record
 cannot be decrypted, the app shows the messages before it and warns that
-the chat was damaged or tampered with. A summary that is missing or
-cannot be opened gets the same warning as a log that was cut short.
+the chat was damaged or tampered with.
 
 Images and files are stored as separate files next to the log. Each is
 encrypted with the conversation key. The encryption is bound to the
@@ -159,23 +157,13 @@ soon as they are delivered.
 
 While you read a chat, its conversation key is kept in memory, and so
 are the messages of that chat that were already decrypted. Only new
-records are decrypted after that. Other conversation keys are only in
-memory while a record is read or written. The app drops the key and the
-messages when you close the chat and when the vault locks.
+records are decrypted after that. The app drops all keys and messages
+when the vault locks.
 
-On iOS the vault locks when the app goes to the background or when iOS
+On iOS this happens when the app goes to the background or when iOS
 announces that protected data is about to become unavailable. On Android
-it locks when the app goes to the background or the screen turns off. On
-Android the key bytes are also overwritten with zeros.
-
-When the app goes to the background the interface also drops the
-messages, chat list, attachments and pictures it holds, and closes the
-pages that show a message or a picture.
-
-Dropped messages are not overwritten, they stay in memory until the
-memory is reused. When the app goes to the background it makes the Dart
-and Java heaps collect, which removes most of them. The Flutter engine
-can keep a few copies of recent messages. See [erasure.md](erasure.md).
+it happens when the screen turns off. On Android the key bytes are also
+overwritten with zeros.
 
 If the phone is locked when the app tries to read the vault, the
 operation fails with a message asking you to unlock the device.

@@ -294,8 +294,6 @@ object Chats {
     }
 
     fun open(context: Context, id: String, on: Boolean) {
-        vault(context).focus(id, on)
-
         peer(opened)?.let { if (opened != id) Vigil.chatOpen(it, false) }
 
         opened = if (on) id else ""

@@ -485,10 +485,6 @@ class MainActivity : FlutterActivity() {
                     Chats.changed()
                     result.success("")
                 }
-                "forgotten" -> {
-                    Runtime.getRuntime().gc()
-                    result.success("")
-                }
                 "chatOpen" -> {
                     Chats.open(this, chat(call.argument<String>("peer")!!), call.argument<Boolean>("on")!!)
                     result.success("")

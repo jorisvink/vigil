@@ -68,10 +68,6 @@ class _GospelPageState extends State<GospelPage> with WidgetsBindingObserver {
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (state == AppLifecycleState.paused) {
-      setState(() => _chats = null);
-    }
-
     if (state == AppLifecycleState.resumed) {
       _load();
     }
@@ -95,7 +91,7 @@ class _GospelPageState extends State<GospelPage> with WidgetsBindingObserver {
         ),
       );
 
-      if (mounted && !appPaused) {
+      if (mounted) {
         setState(() {
           _chats = chats;
           _error = null;

@@ -6,7 +6,6 @@ import android.util.Log
 import android.webkit.MimeTypeMap
 import java.io.File
 import java.io.FileOutputStream
-import java.io.RandomAccessFile
 import java.security.SecureRandom
 
 object Files {
@@ -59,10 +58,7 @@ object Files {
     @Synchronized
     fun wipe(context: Context) {
         for (file in folder(context).listFiles() ?: emptyArray()) {
-            RandomAccessFile(file, "rw").use {
-                it.write(ByteArray(it.length().toInt()))
-                it.fd.sync()
-            }
+            FileOutputStream(file).use { it.write(ByteArray(file.length().toInt())) }
 
             if (!file.delete()) {
                 Log.e(TAG, "could not remove ${file.name}")
