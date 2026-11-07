@@ -572,6 +572,7 @@ class ChatVault(context: Context) {
             history = null
         }
 
+        wipe(File(dir, "$chat$META"))
         wipe(File(dir, "$chat$KEY"))
         wipe(File(dir, "$chat$LOG"))
 
@@ -908,10 +909,28 @@ class ChatVault(context: Context) {
             return conversation
         }
 
-        val plain = try {
+        var plain = try {
             unwrap(history(), keyAad(chat), file.readBytes())
         } catch (e: UserNotAuthenticatedException) {
             throw Locked()
+        }
+
+        val meta = File(dir, "$chat$META")
+        val merged = plain.size == 32 && meta.exists()
+
+        if (merged) {
+            val tail = try {
+                unwrap(history(), metaAad(chat), meta.readBytes())
+            } catch (e: UserNotAuthenticatedException) {
+                plain.fill(0)
+                throw Locked()
+            }
+
+            val joined = plain + tail
+
+            plain.fill(0)
+            tail.fill(0)
+            plain = joined
         }
 
         val buffer = ByteBuffer.wrap(plain)
@@ -947,6 +966,11 @@ class ChatVault(context: Context) {
             conversation.unread = -1
             conversation.last = null
             save(chat, conversation)
+        }
+
+        if (merged) {
+            save(chat, conversation)
+            wipe(meta)
         }
 
         open[chat] = conversation
@@ -1196,6 +1220,8 @@ class ChatVault(context: Context) {
 
     private fun keyAad(chat: String): ByteArray = KEY_AAD + label(chat)
 
+    private fun metaAad(chat: String): ByteArray = META_AAD + label(chat)
+
     private fun avatarAad(peer: Int): ByteArray = AVATAR_AAD + byteArrayOf(peer.toByte())
 
     private fun nameAad(peer: Int): ByteArray = NAME_AAD + byteArrayOf(peer.toByte())
@@ -1253,6 +1279,7 @@ class ChatVault(context: Context) {
         private const val NONCE = 12
         private const val TAG = 128
         private const val KEY = ".key"
+        private const val META = ".meta"
         private const val LOG = ".log"
         private const val OUTBOX = "outbox.box"
         private const val RECEIPTS = "receipts.box"
@@ -1262,6 +1289,7 @@ class ChatVault(context: Context) {
         private const val SEALED_DEVICE: Byte = 2
 
         private val KEY_AAD = "VIGIL.CHAT.KEY".toByteArray()
+        private val META_AAD = "VIGIL.CHAT.META".toByteArray()
         private val RECORD_AAD = "VIGIL.CHAT.V1".toByteArray()
         private val INBOX_AAD = "VIGIL.CHAT.INBOX".toByteArray()
         private val DATA_AAD = "VIGIL.CHAT.DATA".toByteArray()

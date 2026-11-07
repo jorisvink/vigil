@@ -63,6 +63,7 @@ final class ChatVault {
 
     private static let service = "se.sanctorum.vigil.chat"
     private static let keyAad = Data("VIGIL.CHAT.KEY".utf8)
+    private static let metaAad = Data("VIGIL.CHAT.META".utf8)
     private static let recordAad = Data("VIGIL.CHAT.V1".utf8)
     private static let inboxAad = Data("VIGIL.CHAT.INBOX".utf8)
     private static let outboxAad = Data("VIGIL.CHAT.OUTBOX".utf8)
@@ -848,6 +849,7 @@ final class ChatVault {
             if history?.chat == chat {
                 history = nil
             }
+            try remove("meta.\(chat)")
             try remove("key.\(chat)")
             try wipe(try folder(dir).appendingPathComponent("\(chat).log"))
 
@@ -1004,7 +1006,16 @@ final class ChatVault {
             return conversation
         }
 
-        let plain = [UInt8](try unseal(wrapped, info: Self.keyAad + Self.label(chat)))
+        var plain = [UInt8](try unseal(wrapped, info: Self.keyAad + Self.label(chat)))
+        var merged = false
+
+        if plain.count == 32, let sealed = try item("meta.\(chat)") {
+            let tail = [UInt8](try unseal(sealed, info: Self.metaAad + Self.label(chat)))
+
+            plain.append(contentsOf: tail)
+            merged = true
+        }
+
         guard plain.count >= 56 else { throw Failure(description: "invalid conversation key") }
 
         var conversation = Conversation(
@@ -1038,6 +1049,11 @@ final class ChatVault {
             conversation.unread = -1
             conversation.last = nil
             try save(chat, conversation)
+        }
+
+        if merged {
+            try save(chat, conversation)
+            try remove("meta.\(chat)")
         }
 
         open[chat] = conversation
