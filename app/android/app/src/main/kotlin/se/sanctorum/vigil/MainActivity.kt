@@ -129,6 +129,7 @@ class MainActivity : FlutterActivity() {
                         .putExtra(VigilVpnService.EXTRA_ON, on)
 
                     if (on) {
+                        notifications()
                         withVpn(result) { withMicrophone(intent, result) }
                     } else {
                         startService(intent)
@@ -650,6 +651,18 @@ class MainActivity : FlutterActivity() {
         } finally {
             config.fill(0)
         }
+    }
+
+    private fun notifications() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) {
+            return
+        }
+
+        if (granted(Manifest.permission.POST_NOTIFICATIONS)) {
+            return
+        }
+
+        requestPermissions(arrayOf(Manifest.permission.POST_NOTIFICATIONS), REQUEST_NOTIFY)
     }
 
     private fun connect(id: String, result: MethodChannel.Result) {
