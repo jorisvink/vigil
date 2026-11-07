@@ -755,6 +755,8 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
   final _scroll = ScrollController();
   final _keys = <int, GlobalKey>{};
   ChatMessage? _replying;
+  int _replyKept = 0;
+  double _scrollKept = 0;
   Timer? _blinking;
   int _flash = 0;
   StreamSubscription<Status>? _updates;
@@ -857,6 +859,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
 
     unawaited(vigil.typing(peer, false).catchError((Object _) {}));
     unawaited(vigil.openChat(peer, false).catchError((Object _) {}));
+    vigil.forgetData(peer);
 
     super.dispose();
   }
@@ -867,6 +870,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
       _held = false;
       _locked = false;
       unawaited(_release(cancel: true));
+      _forget();
     }
 
     if (state == AppLifecycleState.resumed) {
@@ -874,6 +878,44 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
       unawaited(_clipboard());
       _load();
     }
+  }
+
+  void _forget() {
+    setState(() {
+      if (_messages.isNotEmpty) {
+        _replyKept = _replying?.ref ?? 0;
+        _scrollKept = _scroll.hasClients ? _scroll.offset : 0;
+      }
+
+      _replying = null;
+      _history = null;
+      _messages = [];
+      _at = {};
+      _epoch = 0;
+      _stamp = 0;
+    });
+  }
+
+  void _restore() {
+    final reply = _at[_replyKept];
+    final offset = _scrollKept;
+
+    _replyKept = 0;
+    _scrollKept = 0;
+
+    if (reply != null) {
+      _replying = _messages[reply];
+    }
+
+    if (offset == 0) {
+      return;
+    }
+
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (_scroll.hasClients) {
+        _scroll.jumpTo(offset.clamp(0.0, _scroll.position.maxScrollExtent));
+      }
+    });
   }
 
   Future<void> _load() async {
@@ -911,11 +953,12 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
         await vigil.read(peer);
       }
 
-      if (mounted) {
+      if (mounted && !appPaused) {
         setState(() {
           _merge(history);
           _history = history;
           _error = null;
+          _restore();
         });
       }
     } on VigilError catch (e) {
@@ -2375,7 +2418,7 @@ class _Favorites extends StatefulWidget {
   State<_Favorites> createState() => _FavoritesState();
 }
 
-class _FavoritesState extends State<_Favorites> {
+class _FavoritesState extends State<_Favorites> with WidgetsBindingObserver {
   StreamSubscription<Status>? _updates;
   List<ChatMessage>? _messages;
   Map<int, ChatMessage> _refs = const {};
@@ -2385,6 +2428,8 @@ class _FavoritesState extends State<_Favorites> {
   @override
   void initState() {
     super.initState();
+
+    WidgetsBinding.instance.addObserver(this);
 
     _updates = Vigil.instance.statuses.listen((status) {
       if (status.chats.version != _version) {
@@ -2397,8 +2442,23 @@ class _FavoritesState extends State<_Favorites> {
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _updates?.cancel();
     super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.paused) {
+      setState(() {
+        _messages = null;
+        _refs = const {};
+      });
+    }
+
+    if (state == AppLifecycleState.resumed) {
+      _load();
+    }
   }
 
   Future<void> _load() async {
@@ -2414,7 +2474,7 @@ class _FavoritesState extends State<_Favorites> {
     try {
       final history = await vigil.chat(widget.peer);
 
-      if (mounted) {
+      if (mounted && !appPaused) {
         setState(() {
           _refs = {for (final m in history.messages) m.ref: m};
           _messages = [
@@ -2538,8 +2598,10 @@ String _delivery(ChatMessage message) {
   return switch (message.state) {
     'delivered' when acked != null => ('✓✓ $acked', Palette.amber),
     'delivered' => ('✓✓', Palette.amber),
-    'sent' when acked != null =>
-      ('✓ $acked/${acked + message.pending}', Palette.fg2),
+    'sent' when acked != null => (
+      '✓ $acked/${acked + message.pending}',
+      Palette.fg2,
+    ),
     'sent' => ('✓', Palette.fg2),
     'failed' => ('✕', Palette.amber2),
     _ => ('◷', Palette.dim),
@@ -2582,10 +2644,7 @@ Future<void> _actions(
           const SizedBox(height: 8),
           Semantics(
             label: _delivery(message),
-            child: Text(
-              tick.$1,
-              style: Styles.detail.copyWith(color: tick.$2),
-            ),
+            child: Text(tick.$1, style: Styles.detail.copyWith(color: tick.$2)),
           ),
         ],
         const SizedBox(height: 20),
@@ -2629,6 +2688,7 @@ Future<void> _actions(
         ],
       ],
     ),
+    name: messageSheet,
   );
 
   if (action == 'reply') {
@@ -2678,6 +2738,7 @@ Future<void> _select(BuildContext context, ChatMessage message) => sheet<void>(
       ),
     ],
   ),
+  name: messageSheet,
 );
 
 String _saveLabel(ChatMessage message) {
@@ -2760,7 +2821,10 @@ class _Photo extends StatelessWidget {
         }
 
         return GestureDetector(
-          onTap: () => push(_PhotoPage(bytes: bytes), opaque: false),
+          onTap: () => push(
+            ClosedWhenPaused(child: _PhotoPage(bytes: bytes)),
+            opaque: false,
+          ),
           child: ConstrainedBox(
             constraints: BoxConstraints(
               maxWidth: width,

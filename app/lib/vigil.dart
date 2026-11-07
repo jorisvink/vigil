@@ -5,6 +5,9 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:flutter/foundation.dart';
+import 'package:flutter/painting.dart';
+import 'package:flutter/scheduler.dart';
 import 'package:flutter/services.dart';
 
 class Summary {
@@ -509,6 +512,8 @@ class Vigil {
   final Map<String, String> _nicks = {};
   final Map<String, String> _signed = {};
   final Map<String, Future<Uint8List?>> _avatars = {};
+  final ValueNotifier<int> avatarEpoch = ValueNotifier(0);
+  final List<String> _opened = [];
   int _avatarsSeen = 0;
   int? _namesSeen;
   bool _namesLoading = false;
@@ -1001,7 +1006,57 @@ class Vigil {
     return saved == 'saved';
   }
 
+  bool get _paused =>
+      SchedulerBinding.instance.lifecycleState == AppLifecycleState.paused;
+
+  void reloadAvatars() {
+    avatarEpoch.value++;
+  }
+
+  void forget() {
+    _data.clear();
+    _avatars.clear();
+    _forgetImages();
+    reloadAvatars();
+
+    Timer(const Duration(seconds: 1), _collect);
+  }
+
+  // Dart has no call to collect, only allocating makes it drop and reuse memory.
+  void _collect() {
+    if (!_paused) {
+      return;
+    }
+
+    var total = 0;
+
+    for (var i = 0; i < 64; i++) {
+      total += List<int>.filled(1 << 18, i).length;
+
+      for (var j = 0; j < 3000; j++) {
+        total += List<int>.filled(64, j).length;
+      }
+    }
+
+    _invoke('forgotten', total).catchError((Object _) => '');
+  }
+
+  void forgetData(String peer) {
+    _data.removeWhere((key, _) => key.startsWith('$peer/'));
+    _forgetImages();
+  }
+
+  void _forgetImages() {
+    PaintingBinding.instance.imageCache
+      ..clear()
+      ..clearLiveImages();
+  }
+
   Future<Uint8List?> chatData(String peer, String data) {
+    if (_paused) {
+      return Future.value(null);
+    }
+
     final key = '$peer/$data';
     final cached = _data.remove(key);
 
@@ -1025,6 +1080,10 @@ class Vigil {
 
   Future<Uint8List?> avatar(String peer) {
     if (peer.length != 2) {
+      return Future.value(null);
+    }
+
+    if (_paused) {
       return Future.value(null);
     }
 
@@ -1063,14 +1122,26 @@ class Vigil {
     await refresh();
   }
 
-  Future<void> openChat(String peer, bool on) =>
-      _invoke('chatOpen', {'peer': peer, 'on': on});
+  Future<void> openChat(String peer, bool on) async {
+    _opened.remove(peer);
+
+    if (on) {
+      _opened.add(peer);
+    }
+
+    await _invoke('chatOpen', {'peer': peer, 'on': on});
+
+    if (!on && _opened.isNotEmpty) {
+      await _invoke('chatOpen', {'peer': _opened.last, 'on': true});
+    }
+  }
 
   Future<void> typing(String peer, bool on) =>
       _invoke('chatTyping', {'peer': peer, 'on': on});
 
   Future<void> deleteChat(String peer) async {
     await _invoke('chatDelete', peer);
+    forgetData(peer);
     await refresh();
   }
 

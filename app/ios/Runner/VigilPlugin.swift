@@ -73,6 +73,11 @@ final class VigilPlugin: NSObject, FlutterPlugin, UIDocumentPickerDelegate,
 
         try? FileManager.default.removeItem(at: openFolder)
         try? ChatVault.shared.prepare()
+        ChatVault.shared.wake()
+
+        NotificationCenter.default.addObserver(
+            forName: UIApplication.willEnterForegroundNotification, object: nil, queue: .main
+        ) { _ in ChatVault.shared.wake() }
 
         TunnelLink.open(create: false)
     }
@@ -362,6 +367,8 @@ final class VigilPlugin: NSObject, FlutterPlugin, UIDocumentPickerDelegate,
             }
 
             result(UserDefaults.standard.bool(forKey: key) ? "true" : "false")
+        case "forgotten":
+            result("")
         case "eraseAll":
             erase(result: result)
         case "remoteWordList":
@@ -1367,6 +1374,7 @@ final class VigilPlugin: NSObject, FlutterPlugin, UIDocumentPickerDelegate,
             }
 
             opened = on ? hex : nil
+            vault.focus(hex, on: on)
 
             if on {
                 defaults.set(hex, forKey: "chatOpen")

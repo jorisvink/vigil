@@ -146,6 +146,8 @@ access group "group.se.sanctorum.vigil":
                      AfterFirstUnlockThisDeviceOnly
     "key.<chat>"     the sealed conversation key, see below
                      WhenUnlockedThisDeviceOnly
+    "meta.<chat>"    the sealed chat summary, see below
+                     WhenUnlockedThisDeviceOnly
 ```
 
 The Secure Enclave handle can only be used by the Secure Enclave of the
@@ -213,15 +215,25 @@ for data on its way out, and is wiped once it is delivered.
 Every chat gets its own key when it starts:
 
 ```
-ck    = 256-bit random       SecureRandom on Android, CryptoKit on iOS
-plain = ck || count || read || flags, each counter 64-bit big endian
+ck = 256-bit random       SecureRandom on Android, CryptoKit on iOS
 
-Android: <chat>.key       = GCM(hk, "VIGIL.CHAT.KEY" || label(chat), plain)
-iOS:     key.<chat> item  = seal(plain, "VIGIL.CHAT.KEY" || label(chat))
+Android: <chat>.key       = GCM(hk, "VIGIL.CHAT.KEY" || label(chat), ck)
+iOS:     key.<chat> item  = seal(ck, "VIGIL.CHAT.KEY" || label(chat))
+```
+
+The summary of a chat is stored next to its key, so the chat list does
+not need the key:
+
+```
+plain = count || read || flags || unread || size || last || ambry
+
+Android: <chat>.meta      = GCM(hk, "VIGIL.CHAT.META" || label(chat), plain)
+iOS:     meta.<chat> item = seal(plain, "VIGIL.CHAT.META" || label(chat))
 ```
 
 `count` is the number of records in the log, `read` how many were seen
-and `flags` marks a log that was cut short.
+and `flags` marks a log that was cut short. See [formats.md](formats.md)
+for the fields and for the lifecycle of every key.
 
 ### Logs and attachments
 
@@ -247,8 +259,8 @@ by someone with access to the files, after which `seq` values are used
 again under the same key. A counter nonce would then repeat, a random
 nonce does not.
 
-The conversation key and the history key take the most encryptions, a
-few per message. That stays far below the 2^32 encryptions NIST allows
+The conversation key takes the most encryptions, and the history key
+with the summary, a few per message. That stays far below the 2^32 encryptions NIST allows
 per key with random 96-bit nonces.
 
 ## Randomness

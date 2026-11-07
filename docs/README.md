@@ -48,7 +48,9 @@ because only the app can use the microphone and camera.
    history encrypted on the phone.
 7. [crypto.md](crypto.md) describes the keys Vigil creates itself and
    how configurations and chats are encrypted on the phone.
-8. [limitations.md](limitations.md) lists what Vigil does not protect
+8. [formats.md](formats.md) lists every file Vigil stores, its format,
+   the key that protects it and the lifecycle of that key.
+9. [limitations.md](limitations.md) lists what Vigil does not protect
    against.
 
 ## Who you trust

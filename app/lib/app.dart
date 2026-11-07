@@ -143,7 +143,16 @@ class _ShellState extends State<Shell> with WidgetsBindingObserver {
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.paused) {
+      Vigil.instance.forget();
+      navigatorKey.currentState?.popUntil(
+        (route) => route.settings.name != messageSheet,
+      );
+      WidgetsBinding.instance.scheduleForcedFrame();
+    }
+
     if (state == AppLifecycleState.resumed) {
+      Vigil.instance.reloadAvatars();
       _handoff();
     }
   }
@@ -345,6 +354,45 @@ class _TabItem extends StatelessWidget {
     );
   }
 }
+
+class ClosedWhenPaused extends StatefulWidget {
+  const ClosedWhenPaused({super.key, required this.child});
+
+  final Widget child;
+
+  @override
+  State<ClosedWhenPaused> createState() => _ClosedWhenPausedState();
+}
+
+class _ClosedWhenPausedState extends State<ClosedWhenPaused>
+    with WidgetsBindingObserver {
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    final route = ModalRoute.of(context);
+
+    if (state == AppLifecycleState.paused && route != null && route.isActive) {
+      Navigator.of(context).removeRoute(route);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) => widget.child;
+}
+
+bool get appPaused =>
+    WidgetsBinding.instance.lifecycleState == AppLifecycleState.paused;
 
 bool _configured(List<Tunnel> tunnels) => tunnels.any((t) => !t.summary.voice);
 
@@ -690,55 +738,63 @@ class Avatar extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    return ValueListenableBuilder<int>(
+      valueListenable: Vigil.instance.avatarEpoch,
+      builder: (context, epoch, _) => FutureBuilder<Uint8List?>(
+        key: ValueKey(epoch),
+        future: Vigil.instance.avatar(peer),
+        builder: _portrait,
+      ),
+    );
+  }
+
+  Widget _portrait(BuildContext context, AsyncSnapshot<Uint8List?> snapshot) {
     final ratio = MediaQuery.devicePixelRatioOf(context);
+    final data = snapshot.data;
 
-    return FutureBuilder<Uint8List?>(
-      future: Vigil.instance.avatar(peer),
-      builder: (context, snapshot) {
-        final data = snapshot.data;
+    if (data == null) {
+      return const SizedBox.shrink();
+    }
 
-        if (data == null) {
-          return const SizedBox.shrink();
-        }
-
-        final portrait = ClipPath(
+    final portrait = ClipPath(
+      clipper: const PortraitClipper(),
+      child: Container(
+        width: size,
+        height: size,
+        padding: const EdgeInsets.all(1),
+        color: Palette.line2,
+        child: ClipPath(
           clipper: const PortraitClipper(),
-          child: Container(
-            width: size,
-            height: size,
-            padding: const EdgeInsets.all(1),
-            color: Palette.line2,
-            child: ClipPath(
-              clipper: const PortraitClipper(),
-              child: Image.memory(
-                data,
-                fit: BoxFit.cover,
-                gaplessPlayback: true,
-                cacheWidth: (size * ratio).round(),
-                errorBuilder: (context, error, stack) =>
-                    const SizedBox.shrink(),
-              ),
+          child: Image.memory(
+            data,
+            fit: BoxFit.cover,
+            gaplessPlayback: true,
+            cacheWidth: (size * ratio).round(),
+            errorBuilder: (context, error, stack) => const SizedBox.shrink(),
+          ),
+        ),
+      ),
+    );
+
+    if (!zoom) {
+      return Padding(padding: margin, child: portrait);
+    }
+
+    return Padding(
+      padding: margin,
+      child: Semantics(
+        button: true,
+        label: 'Show picture',
+        child: GestureDetector(
+          behavior: HitTestBehavior.opaque,
+          onTap: () => push(
+            ClosedWhenPaused(
+              child: _AvatarView(peer: peer, data: data),
             ),
           ),
-        );
-
-        if (!zoom) {
-          return Padding(padding: margin, child: portrait);
-        }
-
-        return Padding(
-          padding: margin,
-          child: Semantics(
-            button: true,
-            label: 'Show picture',
-            child: GestureDetector(
-              behavior: HitTestBehavior.opaque,
-              onTap: () => push(_AvatarView(peer: peer, data: data)),
-              child: portrait,
-            ),
-          ),
-        );
-      },
+          child: portrait,
+        ),
+      ),
     );
   }
 }

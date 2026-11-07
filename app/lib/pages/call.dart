@@ -120,40 +120,44 @@ class _NamePromptState extends State<_NamePrompt> {
   }
 }
 
-Future<T?> sheet<T>(BuildContext context, WidgetBuilder builder) =>
-    showModalBottomSheet<T>(
-      context: context,
-      isScrollControlled: true,
-      backgroundColor: const Color(0x00000000),
-      barrierColor: const Color(0xcc0b0c0e),
-      elevation: 0,
-      builder: (context) => Padding(
-        padding: EdgeInsets.only(
-          bottom: MediaQuery.viewInsetsOf(context).bottom,
+const messageSheet = 'message';
+
+Future<T?> sheet<T>(
+  BuildContext context,
+  WidgetBuilder builder, {
+  String? name,
+}) => showModalBottomSheet<T>(
+  context: context,
+  routeSettings: RouteSettings(name: name),
+  isScrollControlled: true,
+  backgroundColor: const Color(0x00000000),
+  barrierColor: const Color(0xcc0b0c0e),
+  elevation: 0,
+  builder: (context) => Padding(
+    padding: EdgeInsets.only(bottom: MediaQuery.viewInsetsOf(context).bottom),
+    child: CustomPaint(
+      painter: const CutPainter(fill: Palette.bg2, stroke: Palette.line2),
+      child: Padding(
+        padding: EdgeInsets.fromLTRB(
+          Metrics.edge,
+          14,
+          Metrics.edge,
+          MediaQuery.paddingOf(context).bottom + 18,
         ),
-        child: CustomPaint(
-          painter: const CutPainter(fill: Palette.bg2, stroke: Palette.line2),
-          child: Padding(
-            padding: EdgeInsets.fromLTRB(
-              Metrics.edge,
-              14,
-              Metrics.edge,
-              MediaQuery.paddingOf(context).bottom + 18,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Center(
+              child: Container(width: 32, height: 3, color: Palette.amber),
             ),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Center(
-                  child: Container(width: 32, height: 3, color: Palette.amber),
-                ),
-                const SizedBox(height: 20),
-                builder(context),
-              ],
-            ),
-          ),
+            const SizedBox(height: 20),
+            builder(context),
+          ],
         ),
       ),
-    );
+    ),
+  ),
+);
 
 Widget sheetTitle(String title) => Row(
   children: [

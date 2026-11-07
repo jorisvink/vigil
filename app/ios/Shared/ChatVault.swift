@@ -27,7 +27,6 @@ final class ChatVault {
     }
 
     private struct Conversation {
-        var key: SymmetricKey
         var count: UInt64
         var read: UInt64
         var flags: UInt64
@@ -63,6 +62,7 @@ final class ChatVault {
 
     private static let service = "se.sanctorum.vigil.chat"
     private static let keyAad = Data("VIGIL.CHAT.KEY".utf8)
+    private static let metaAad = Data("VIGIL.CHAT.META".utf8)
     private static let recordAad = Data("VIGIL.CHAT.V1".utf8)
     private static let inboxAad = Data("VIGIL.CHAT.INBOX".utf8)
     private static let outboxAad = Data("VIGIL.CHAT.OUTBOX".utf8)
@@ -78,6 +78,10 @@ final class ChatVault {
     private let avatars: URL?
     private let names: URL?
     private var open = [String: Conversation]()
+    private var keys = [String: SymmetricKey]()
+    private var focused: String?
+    private var awake = false
+    private var depth = 0
     private var history: History?
     private var refs: Int64 = 0
     private let mutex = NSRecursiveLock()
@@ -108,7 +112,17 @@ final class ChatVault {
 
     private func locked<T>(_ body: () throws -> T) rethrows -> T {
         mutex.lock()
-        defer { mutex.unlock() }
+        depth += 1
+
+        defer {
+            depth -= 1
+
+            if depth == 0 {
+                settle()
+            }
+
+            mutex.unlock()
+        }
 
         return try body()
     }
@@ -121,9 +135,37 @@ final class ChatVault {
         }
     }
 
+    func wake() {
+        locked {
+            awake = true
+        }
+    }
+
     func lock() {
         locked {
+            awake = false
+            focused = nil
+        }
+    }
+
+    func focus(_ chat: String, on: Bool) {
+        locked {
+            if on && awake {
+                focused = chat
+            } else if focused == chat {
+                focused = nil
+            }
+        }
+    }
+
+    private func settle() {
+        if !awake {
             open.removeAll()
+        }
+
+        keys = keys.filter { $0.key == focused }
+
+        if history?.chat != focused {
             history = nil
         }
     }
@@ -272,8 +314,12 @@ final class ChatVault {
                 if conversation.unread < 0 {
                     let full = History(chat: id, epoch: 0)
 
-                    try load(id, conversation, full)
-                    try summarize(id, &conversation, full)
+                    do {
+                        try load(id, conversation, full)
+                        try summarize(id, &conversation, full)
+                    } catch CryptoKitError.authenticationFailure {
+                        conversation.unread = 0
+                    }
                 }
 
                 var last: Any = NSNull()
@@ -417,6 +463,7 @@ final class ChatVault {
 
         try handle.seek(toOffset: current.offset)
         guard let data = try handle.readToEnd() else { return }
+        guard let key = try key(chat) else { return }
 
         let bytes = [UInt8](data)
         var offset = 0
@@ -428,7 +475,7 @@ final class ChatVault {
 
             let sealed = Data(bytes[(offset + 4)..<(offset + 4 + len)])
 
-            guard let plain = try? openBox(sealed, key: conversation.key,
+            guard let plain = try? openBox(sealed, key: key,
                                            aad: Self.aad(chat, seq: current.seq)) else {
                 current.damaged = true
                 break
@@ -622,12 +669,12 @@ final class ChatVault {
                 throw Failure(description: "There is no data \(file).")
             }
 
-            guard let conversation = try conversation(chat, create: false) else { return nil }
+            guard let key = try key(chat) else { return nil }
 
             let path = try folder(dir).appendingPathComponent(file)
             guard let sealed = try? Data(contentsOf: path) else { return nil }
 
-            return try openBox(sealed, key: conversation.key, aad: Self.dataAad(chat, file))
+            return try openBox(sealed, key: key, aad: Self.dataAad(chat, file))
         }
     }
 
@@ -844,10 +891,12 @@ final class ChatVault {
     func delete(_ chat: String) throws {
         try locked {
             open[chat] = nil
+            keys[chat] = nil
 
             if history?.chat == chat {
                 history = nil
             }
+            try remove("meta.\(chat)")
             try remove("key.\(chat)")
             try wipe(try folder(dir).appendingPathComponent("\(chat).log"))
 
@@ -873,12 +922,12 @@ final class ChatVault {
     }
 
     private func dataWrite(_ chat: String, ref: Int64, _ data: Data) throws -> String {
-        guard let conversation = try conversation(chat, create: true) else {
+        guard try conversation(chat, create: true) != nil, let key = try key(chat) else {
             throw Failure(description: "There is no chat \(chat).")
         }
 
         let file = String(format: "%@-%016llx.dat", chat, UInt64(bitPattern: ref))
-        let sealed = try sealBox(data, key: conversation.key, aad: Self.dataAad(chat, file))
+        let sealed = try sealBox(data, key: key, aad: Self.dataAad(chat, file))
 
         try write(try folder(dir).appendingPathComponent(file), sealed)
 
@@ -929,12 +978,12 @@ final class ChatVault {
     }
 
     private func append(_ chat: String, _ record: [String: Any]) throws {
-        guard var conversation = try conversation(chat, create: true) else {
+        guard var conversation = try conversation(chat, create: true), let key = try key(chat) else {
             throw Failure(description: "no conversation")
         }
 
         let plain = try JSONSerialization.data(withJSONObject: record)
-        let sealed = try sealBox(plain, key: conversation.key,
+        let sealed = try sealBox(plain, key: key,
                                  aad: Self.aad(chat, seq: conversation.count))
 
         var frame = Data()
@@ -992,44 +1041,23 @@ final class ChatVault {
     private func conversation(_ chat: String, create: Bool) throws -> Conversation? {
         if let conversation = open[chat] { return conversation }
 
-        guard let wrapped = try item("key.\(chat)") else {
+        guard try item("key.\(chat)") != nil else {
             guard create else { return nil }
 
-            let conversation = Conversation(key: SymmetricKey(size: .bits256), count: 0, read: 0, flags: 0,
-                                            unread: 0)
+            let key = SymmetricKey(size: .bits256)
+            let conversation = Conversation(count: 0, read: 0, flags: 0, unread: 0)
+
             try wipe(try folder(dir).appendingPathComponent("\(chat).log"))
             try save(chat, conversation)
+            try saveKey(chat, key)
+
+            keys[chat] = key
             open[chat] = conversation
 
             return conversation
         }
 
-        let plain = [UInt8](try unseal(wrapped, info: Self.keyAad + Self.label(chat)))
-        guard plain.count >= 56 else { throw Failure(description: "invalid conversation key") }
-
-        var conversation = Conversation(
-            key: SymmetricKey(data: plain[0..<32]),
-            count: Self.number(plain, 32), read: Self.number(plain, 40), flags: Self.number(plain, 48))
-
-        if plain.count >= 68 {
-            let size = Int(plain[64]) << 24 | Int(plain[65]) << 16 | Int(plain[66]) << 8 | Int(plain[67])
-
-            guard plain.count == 68 + size || plain.count == 72 + size else {
-                throw Failure(description: "invalid conversation key")
-            }
-
-            conversation.unread = Int64(bitPattern: Self.number(plain, 56))
-
-            if size > 0 {
-                conversation.last = Data(plain[68..<(68 + size)])
-            }
-
-            if plain.count == 72 + size {
-                conversation.ambry = UInt32(plain[68 + size]) << 24 | UInt32(plain[69 + size]) << 16 |
-                    UInt32(plain[70 + size]) << 8 | UInt32(plain[71 + size])
-            }
-        }
-
+        var conversation = try stored(chat) ?? unsplit(chat)
         let count = try framed(chat)
 
         if count != conversation.count {
@@ -1045,8 +1073,110 @@ final class ChatVault {
         return conversation
     }
 
+    private func recovered(_ chat: String) throws -> Conversation {
+        let count = try framed(chat)
+        let conversation = Conversation(count: count, read: count, flags: Self.truncated)
+
+        try save(chat, conversation)
+
+        return conversation
+    }
+
+    private func stored(_ chat: String) throws -> Conversation? {
+        guard let wrapped = try item("meta.\(chat)") else { return nil }
+
+        do {
+            var plain = try unseal(wrapped, info: Self.metaAad + Self.label(chat))
+            defer { plain.resetBytes(in: plain.indices) }
+
+            return try Self.parsed(plain)
+        } catch CryptoKitError.authenticationFailure {
+            return try recovered(chat)
+        }
+    }
+
+    private func unsplit(_ chat: String) throws -> Conversation {
+        guard let wrapped = try item("key.\(chat)") else {
+            throw Failure(description: "invalid conversation key")
+        }
+
+        var plain = try unseal(wrapped, info: Self.keyAad + Self.label(chat))
+        defer { plain.resetBytes(in: plain.indices) }
+
+        guard plain.count >= 32 else { throw Failure(description: "invalid conversation key") }
+
+        if plain.count == 32 {
+            return try recovered(chat)
+        }
+
+        let conversation = try Self.parsed(plain.dropFirst(32))
+
+        try save(chat, conversation)
+        try saveKey(chat, SymmetricKey(data: plain.prefix(32)))
+
+        return conversation
+    }
+
+    private static func parsed(_ data: Data) throws -> Conversation {
+        var plain = [UInt8](data)
+        defer { TunnelKeychain.wipe(&plain) }
+
+        guard plain.count >= 24 else { throw Failure(description: "invalid conversation key") }
+
+        var conversation = Conversation(count: number(plain, 0), read: number(plain, 8),
+                                        flags: number(plain, 16))
+
+        if plain.count >= 36 {
+            let size = Int(plain[32]) << 24 | Int(plain[33]) << 16 | Int(plain[34]) << 8 | Int(plain[35])
+
+            guard plain.count == 36 + size || plain.count == 40 + size else {
+                throw Failure(description: "invalid conversation key")
+            }
+
+            conversation.unread = Int64(bitPattern: number(plain, 24))
+
+            if size > 0 {
+                conversation.last = Data(plain[36..<(36 + size)])
+            }
+
+            if plain.count == 40 + size {
+                conversation.ambry = UInt32(plain[36 + size]) << 24 | UInt32(plain[37 + size]) << 16 |
+                    UInt32(plain[38 + size]) << 8 | UInt32(plain[39 + size])
+            }
+        }
+
+        return conversation
+    }
+
+    private func key(_ chat: String) throws -> SymmetricKey? {
+        if let key = keys[chat] { return key }
+
+        guard let wrapped = try item("key.\(chat)") else { return nil }
+
+        var plain = try unseal(wrapped, info: Self.keyAad + Self.label(chat))
+        defer { plain.resetBytes(in: plain.indices) }
+
+        guard plain.count >= 32 else { throw Failure(description: "invalid conversation key") }
+
+        let key = SymmetricKey(data: plain.prefix(32))
+        keys[chat] = key
+
+        return key
+    }
+
+    private func saveKey(_ chat: String, _ key: SymmetricKey) throws {
+        var plain = key.withUnsafeBytes { Data($0) }
+        defer { plain.resetBytes(in: plain.indices) }
+
+        try store("key.\(chat)",
+                  seal(plain, to: agreementPublic(), info: Self.keyAad + Self.label(chat)),
+                  unlocked: true)
+    }
+
     private func save(_ chat: String, _ conversation: Conversation) throws {
-        var plain = conversation.key.withUnsafeBytes { Data($0) }
+        var plain = Data()
+        defer { plain.resetBytes(in: plain.indices) }
+
         plain.append(contentsOf: Self.bytes(conversation.count))
         plain.append(contentsOf: Self.bytes(conversation.read))
         plain.append(contentsOf: Self.bytes(conversation.flags))
@@ -1055,8 +1185,8 @@ final class ChatVault {
         plain.append(conversation.last ?? Data())
         plain.append(contentsOf: Self.bytes(conversation.ambry))
 
-        try store("key.\(chat)",
-                  seal(plain, to: agreementPublic(), info: Self.keyAad + Self.label(chat)),
+        try store("meta.\(chat)",
+                  seal(plain, to: agreementPublic(), info: Self.metaAad + Self.label(chat)),
                   unlocked: true)
     }
 
