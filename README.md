@@ -28,28 +28,11 @@ On top of that Vigil also implements the sanctum confessions
 
 # Disclaimer
 
-I wrote this project with the help of LLMs. The security critical
-and cryptographic bits and pieces are entirely written by me, while
-all other code has been reviewed before being accepted.
+Some parts of Vigil are written with the help of LLMs.
 
-I rewrote a bunch of code the LLM suggested as well as it was not
-up-to-par with what I consider good code.
-
-I knew litte about app development, I am an old unix neckbeard who
-hacks and does security reviews on COMSEC devices from a dark terminal,
-so this was somewhat of a benchmark on how quicky and correctly I could
-get something like this off the ground. The results are staggering and I
-think LLM-assisted development is the way forward for projects like this.
-
-I will continue to refuse LLM written code for security critical pieces
-of software such as Sanctum and libkyrka. I strongly believe that those
-should still be 100% human driven. Even so, LLMs should always be used
-in the hunt for security bugs, as another tool in your toolbox next
-to your fuzzers.
-
-Building a strong foundation first, and designing things from scratch
-by yourself will allow one to make good use of LLM driven development
-once the basic building blocks are in place.
+The security critical and cryptographic bits and pieces are
+entirely written by me, while all other code has been reviewed
+before being accepted.
 
 # Building
 
