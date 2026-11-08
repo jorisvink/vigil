@@ -35,7 +35,7 @@ all other code has been reviewed before being accepted.
 I rewrote a bunch of code the LLM suggested as well as it was not
 up-to-par with what I consider good code.
 
-I knew litte bout app development, I am an old unix neckbeard who
+I knew litte about app development, I am an old unix neckbeard who
 hacks and does security reviews on COMSEC devices from a dark terminal,
 so this was somewhat of a benchmark on how quicky and correctly I could
 get something like this off the ground. The results are staggering and I
