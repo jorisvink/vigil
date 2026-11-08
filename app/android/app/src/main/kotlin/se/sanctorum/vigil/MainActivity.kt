@@ -129,8 +129,7 @@ class MainActivity : FlutterActivity() {
                         .putExtra(VigilVpnService.EXTRA_ON, on)
 
                     if (on) {
-                        notifications()
-                        withVpn(result) { withMicrophone(intent, result) }
+                        withVpn(result) { withMicrophone(intent, result, notify = true) }
                     } else {
                         startService(intent)
                         result.success("")
@@ -790,16 +789,32 @@ class MainActivity : FlutterActivity() {
         locked = false
     }
 
-    private fun withMicrophone(intent: Intent, result: MethodChannel.Result?, camera: Boolean = false) {
+    private fun withMicrophone(
+        intent: Intent,
+        result: MethodChannel.Result?,
+        camera: Boolean = false,
+        notify: Boolean = false
+    ) {
         val wanted = mutableListOf(Manifest.permission.RECORD_AUDIO)
         if (camera) {
             wanted.add(Manifest.permission.CAMERA)
         }
 
         if (wanted.all { granted(it) }) {
+            if (notify) {
+                notifications()
+            }
+
             startService(intent)
             result?.success("")
             return
+        }
+
+        if (notify &&
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            !granted(Manifest.permission.POST_NOTIFICATIONS)
+        ) {
+            wanted.add(Manifest.permission.POST_NOTIFICATIONS)
         }
 
         microphone?.second?.error("cancelled", "Another call was started.", null)
