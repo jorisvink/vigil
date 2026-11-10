@@ -541,6 +541,7 @@ static struct chat_msg	*chat_data_msg(u_int64_t, struct chat_blob *);
 static void	chat_xfer_run(struct chat_tunnel *);
 static void	chat_xfer_free(struct chat_tunnel *);
 static void	chat_xfer_pump(struct chat_tunnel *);
+static void	chat_xfer_restart(struct chat_xfer *);
 static void	chat_xfer_pace(struct chat_xfer *, u_int64_t);
 static void	chat_xfer_new(struct chat_tunnel *, struct chat_msg *);
 static int	chat_xfer_pick(struct chat_xfer *, u_int32_t, u_int32_t *);
@@ -4572,17 +4573,7 @@ chat_xfer_pump(struct chat_tunnel *tun)
 	if ((vigil->now - xfer->last_ack) > CHAT_DATA_STALL) {
 		vigil_log(LOG_NOTICE, "[chat] %02x data stalled, resending",
 		    tun->peer->id);
-
-		memset(xfer->acked, 0, (count + 7) / 8);
-		memset(xfer->sent, 0, count * sizeof(*xfer->sent));
-
-		xfer->base = 0;
-		xfer->next = 0;
-		xfer->credit = 0;
-		xfer->rtt_min = 0;
-		xfer->rtt = CHAT_RTT_START;
-		xfer->rate = CHAT_RATE_START;
-		xfer->last_ack = vigil->now;
+		chat_xfer_restart(xfer);
 	}
 
 	xfer->credit += (vigil->now - xfer->tick) * xfer->rate;
@@ -4603,6 +4594,32 @@ chat_xfer_pump(struct chat_tunnel *tun)
 		chat_chunk_send(tun, idx);
 		xfer->credit -= 1000;
 	}
+}
+
+/*
+ * Start sending the data on the given xfer from the first chunk again.
+ */
+static void
+chat_xfer_restart(struct chat_xfer *xfer)
+{
+	u_int32_t	count;
+
+	PRECOND(xfer != NULL);
+
+	count = xfer->msg->blob->count;
+
+	memset(xfer->acked, 0, (count + 7) / 8);
+	memset(xfer->sent, 0, count * sizeof(*xfer->sent));
+
+	xfer->done = 0;
+	xfer->base = 0;
+	xfer->next = 0;
+	xfer->credit = 0;
+	xfer->rtt_min = 0;
+	xfer->rtt = CHAT_RTT_START;
+	xfer->rate = CHAT_RATE_START;
+	xfer->tick = vigil->now;
+	xfer->last_ack = vigil->now;
 }
 
 /*
@@ -4669,6 +4686,20 @@ chat_xfer_ack(struct chat_tunnel *tun, u_int64_t id, const u_int8_t *data)
 
 	if (base > count)
 		return;
+
+	if (xfer->done) {
+		if (base == count)
+			return;
+
+		if (latest != 0)
+			return;
+
+		vigil_log(LOG_NOTICE, "[chat] %02x lost the data, resending",
+		    tun->peer->id);
+
+		chat_xfer_restart(xfer);
+		transfers++;
+	}
 
 	for (idx = xfer->base; idx < base; idx++)
 		chat_bits_set(xfer->acked, idx);
@@ -4854,6 +4885,7 @@ chat_chunk_recv(struct chat_tunnel *tun, const void *data)
 		}
 
 		seen->id = 0;
+		seen->token = 0;
 	}
 
 	xfer = tun->rxfer;
