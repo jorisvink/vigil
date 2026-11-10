@@ -41,9 +41,6 @@
 /* The milliseconds we wait before we retry resolving a hostname. */
 #define VIGIL_RESOLVE_RETRY	3000
 
-/* The milliseconds an emergency erase waits for the libkyrka owner. */
-#define VIGIL_ERASE_WAIT	2000
-
 static void	vigil_cleanup(void);
 static int	vigil_sleep(u_int64_t);
 static void	vigil_tun_read(void *);
@@ -113,9 +110,6 @@ static pthread_mutex_t		kyrka_lock = PTHREAD_MUTEX_INITIALIZER;
 
 /* Set on the thread that holds kyrka_lock. */
 static __thread int		kyrka_held = 0;
-
-/* Set once an emergency erase wants kyrka_lock, it is never cleared. */
-static volatile int		kyrka_dying = 0;
 
 /*
  * Returns the vigil version string.
@@ -281,7 +275,7 @@ vigil_run(u_int64_t id, int fd, const char *cfg, size_t cfglen,
 
 		if (vigil->gospel != NULL) {
 			vigil_call_init(datadir);
-			vigil_chat_init();
+			vigil_chat_init(datadir);
 		}
 
 		vigil_log(LOG_INFO, "up and running");
@@ -725,16 +719,12 @@ fatal(const char *fmt, ...)
 
 /*
  * Take ownership of libkyrka, only the thread holding kyrka_lock may
- * touch a KYRKA context. An emergency erase from any other thread first
- * waits for us to let go, so we are never in the middle of using one.
+ * touch a KYRKA context.
  */
 void
 vigil_kyrka_enter(void)
 {
 	PRECOND(kyrka_held == 0);
-
-	while (vigil_atomic_read(&kyrka_dying))
-		(void)poll(NULL, 0, 1000);
 
 	if (pthread_mutex_lock(&kyrka_lock) != 0)
 		fatal("failed to take the kyrka lock");
@@ -996,7 +986,7 @@ vigil_gospel_handle(void)
 
 			vigil->gospel = cfg;
 			vigil_call_init(datadir_run);
-			vigil_chat_init();
+			vigil_chat_init(datadir_run);
 
 			vigil_log(LOG_INFO, "[gospel] attached '%s'",
 			    cfg->instance);
@@ -1109,26 +1099,14 @@ vigil_wake_read(void *udata)
 }
 
 /*
- * Erase all libkyrka contexts. If another thread owns them we wait until
- * it lets go and never give the lock back, so it cannot touch them after
- * they were wiped. The owner parks in vigil_kyrka_enter() once it sees
- * kyrka_dying. We do not wait forever, the owner may be blocked on
- * something the caller holds and in that case it never gets to run again.
+ * Erase all libkyrka contexts. We take kyrka_lock and never give it
+ * back, anyone else wanting libkyrka blocks until the process is gone.
  */
 static void
 vigil_kyrka_erase(void)
 {
-	int		ms;
-
 	if (kyrka_held == 0) {
-		vigil_atomic_write(&kyrka_dying, 1);
-
-		for (ms = 0; ms < VIGIL_ERASE_WAIT; ms += 10) {
-			if (pthread_mutex_trylock(&kyrka_lock) == 0)
-				break;
-			(void)poll(NULL, 0, 10);
-		}
-
+		(void)pthread_mutex_lock(&kyrka_lock);
 		kyrka_held = 1;
 	}
 
