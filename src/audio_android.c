@@ -25,10 +25,8 @@
 /* The most times we reopen our streams during a single call. */
 #define AUDIO_RESTARTS_MAX		8
 
-static void				audio_lock(void);
 static int				audio_open(void);
 static void				audio_close(void);
-static void				audio_unlock(void);
 static void				*audio_restart(void *);
 static int				audio_stream(aaudio_direction_t,
 					    AAudioStream **);
@@ -59,7 +57,7 @@ vigil_platform_audio_start(void)
 {
 	int		ret;
 
-	audio_lock();
+	vigil_lock(&lock);
 
 	vigil_atomic_write(&restarts, 0);
 	vigil_atomic_write(&running, 1);
@@ -70,7 +68,7 @@ vigil_platform_audio_start(void)
 		audio_close();
 	}
 
-	audio_unlock();
+	vigil_unlock(&lock);
 
 	return (ret);
 }
@@ -81,12 +79,12 @@ vigil_platform_audio_start(void)
 void
 vigil_platform_audio_stop(void)
 {
-	audio_lock();
+	vigil_lock(&lock);
 
 	vigil_atomic_write(&running, 0);
 	audio_close();
 
-	audio_unlock();
+	vigil_unlock(&lock);
 }
 
 /*
@@ -279,7 +277,7 @@ audio_restart(void *arg)
 {
 	PRECOND(arg == NULL);
 
-	audio_lock();
+	vigil_lock(&lock);
 
 	if (vigil_atomic_read(&running)) {
 		vigil_log(LOG_INFO, "[audio] reopening our streams");
@@ -289,27 +287,7 @@ audio_restart(void *arg)
 	}
 
 	vigil_atomic_write(&restarting, 0);
-	audio_unlock();
+	vigil_unlock(&lock);
 
 	return (NULL);
-}
-
-/*
- * Take the lock that protects our streams.
- */
-static void
-audio_lock(void)
-{
-	if (pthread_mutex_lock(&lock) != 0)
-		fatal("failed to take the audio lock");
-}
-
-/*
- * Release the lock that protects our streams.
- */
-static void
-audio_unlock(void)
-{
-	if (pthread_mutex_unlock(&lock) != 0)
-		fatal("failed to release the audio lock");
 }

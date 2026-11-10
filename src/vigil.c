@@ -275,7 +275,7 @@ vigil_run(u_int64_t id, int fd, const char *cfg, size_t cfglen,
 
 		if (vigil->gospel != NULL) {
 			vigil_call_init(datadir);
-			vigil_chat_init(datadir);
+			vigil_chat_init();
 		}
 
 		vigil_log(LOG_INFO, "up and running");
@@ -726,8 +726,7 @@ vigil_kyrka_enter(void)
 {
 	PRECOND(kyrka_held == 0);
 
-	if (pthread_mutex_lock(&kyrka_lock) != 0)
-		fatal("failed to take the kyrka lock");
+	vigil_lock(&kyrka_lock);
 
 	kyrka_held = 1;
 }
@@ -742,8 +741,35 @@ vigil_kyrka_leave(void)
 
 	kyrka_held = 0;
 
-	if (pthread_mutex_unlock(&kyrka_lock) != 0)
-		fatal("failed to release the kyrka lock");
+	vigil_unlock(&kyrka_lock);
+}
+
+/*
+ * Take the given lock, we cannot continue if this fails.
+ */
+void
+vigil_lock(pthread_mutex_t *lock)
+{
+	int		ret;
+
+	PRECOND(lock != NULL);
+
+	if ((ret = pthread_mutex_lock(lock)) != 0)
+		fatal("pthread_mutex_lock: %s", strerror(ret));
+}
+
+/*
+ * Release the given lock, we cannot continue if this fails.
+ */
+void
+vigil_unlock(pthread_mutex_t *lock)
+{
+	int		ret;
+
+	PRECOND(lock != NULL);
+
+	if ((ret = pthread_mutex_unlock(lock)) != 0)
+		fatal("pthread_mutex_unlock: %s", strerror(ret));
 }
 
 /*
@@ -986,7 +1012,7 @@ vigil_gospel_handle(void)
 
 			vigil->gospel = cfg;
 			vigil_call_init(datadir_run);
-			vigil_chat_init(datadir_run);
+			vigil_chat_init();
 
 			vigil_log(LOG_INFO, "[gospel] attached '%s'",
 			    cfg->instance);

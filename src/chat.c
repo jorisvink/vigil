@@ -559,9 +559,6 @@ static void	chat_chunk_recv(struct chat_tunnel *, const void *);
 static void	chat_bits_set(u_int8_t *, u_int32_t);
 static int	chat_bits_test(const u_int8_t *, u_int32_t);
 
-static void	chat_lock(void);
-static void	chat_unlock(void);
-
 static int	chat_mention_char(char);
 static void	chat_mention_check(struct chat_event *);
 static int	chat_mention_name(const char *, const char *);
@@ -602,7 +599,7 @@ static volatile u_int8_t		typing[KYRKA_PEERS_PER_FLOCK];
 /* If we are currently typing in a group. */
 static volatile int			group_typing = 0;
 
-/* Mutex to protect against concurrent access for our commands and events. */
+/* Protects our commands, events, parcels and blobs. */
 static pthread_mutex_t			lock = PTHREAD_MUTEX_INITIALIZER;
 
 /* Our nickname, empty if we have none. */
@@ -684,7 +681,7 @@ vigil_chat_init(void)
 	portrait_serial = 0;
 	portrait_hash = 0;
 
-	chat_lock();
+	vigil_lock(&lock);
 
 	transfers = 0;
 	blob_bytes = 0;
@@ -697,7 +694,7 @@ vigil_chat_init(void)
 	TAILQ_INIT(&parcels);
 	TAILQ_INIT(&commands);
 
-	chat_unlock();
+	vigil_unlock(&lock);
 
 	if (chat_liturgy_init(&signaling, VIGIL_CHAT_SIGNAL_GROUP) == -1) {
 		vigil_log(LOG_NOTICE, "chats are not available");
@@ -987,7 +984,7 @@ vigil_chat_data_take(u_int64_t token, void *buf, size_t len)
 
 	PRECOND(buf != NULL);
 
-	chat_lock();
+	vigil_lock(&lock);
 
 	TAILQ_FOREACH(parcel, &parcels, list) {
 		if (parcel->token == token)
@@ -995,25 +992,25 @@ vigil_chat_data_take(u_int64_t token, void *buf, size_t len)
 	}
 
 	if (parcel == NULL) {
-		chat_unlock();
+		vigil_unlock(&lock);
 		return (-1);
 	}
 
 	if (parcel->size < sizeof(struct vigil_chat_data_head)) {
-		chat_unlock();
+		vigil_unlock(&lock);
 		return (-1);
 	}
 
 	left = parcel->size - sizeof(struct vigil_chat_data_head);
 
 	if (left > len) {
-		chat_unlock();
+		vigil_unlock(&lock);
 		return (-1);
 	}
 
 	TAILQ_REMOVE(&parcels, parcel, list);
 	parcel_bytes -= parcel->size;
-	chat_unlock();
+	vigil_unlock(&lock);
 
 	memcpy(buf, parcel->data + sizeof(struct vigil_chat_data_head), left);
 	chat_parcel_free(parcel);
@@ -1104,10 +1101,10 @@ vigil_chat_nick(const char *name)
 	if (name[0] != '\0' && chat_nick_valid(name) == -1)
 		return (-1);
 
-	chat_lock();
+	vigil_lock(&lock);
 	memset(nick, 0, sizeof(nick));
 	len = snprintf(nick, sizeof(nick), "%s", name);
-	chat_unlock();
+	vigil_unlock(&lock);
 
 	if (len < 0)
 		return (-1);
@@ -1127,10 +1124,10 @@ vigil_chat_avatar(const void *data, size_t len)
 	PRECOND(data != NULL || len == 0);
 	PRECOND(len <= VIGIL_CHAT_AVATAR_MAX);
 
-	chat_lock();
+	vigil_lock(&lock);
 
 	if (len == avatar_len && (len == 0 || !memcmp(avatar, data, len))) {
-		chat_unlock();
+		vigil_unlock(&lock);
 		return;
 	}
 
@@ -1142,7 +1139,7 @@ vigil_chat_avatar(const void *data, size_t len)
 	avatar_len = len;
 	avatar_serial++;
 
-	chat_unlock();
+	vigil_unlock(&lock);
 
 	vigil_wake_signal();
 }
@@ -1215,9 +1212,9 @@ vigil_chat_status(struct vigil_buf *buf)
 	    session, signaling.last != 0 ? "true" : "false",
 	    vigil->gospel->spi & 0xff);
 
-	chat_lock();
+	vigil_lock(&lock);
 	memcpy(name, nick, sizeof(name));
-	chat_unlock();
+	vigil_unlock(&lock);
 
 	vigil_buf_appendf(buf, ",\"nick\":");
 	vigil_buf_quote(buf, name);
@@ -2704,10 +2701,10 @@ chat_avatar_update(void)
 	struct vigil_chat_data_head	head;
 	struct chat_blob		*blob;
 
-	chat_lock();
+	vigil_lock(&lock);
 
 	if (avatar_serial == portrait_serial) {
-		chat_unlock();
+		vigil_unlock(&lock);
 		return;
 	}
 
@@ -2740,7 +2737,7 @@ chat_avatar_update(void)
 		memcpy(blob->data + sizeof(head), avatar, avatar_len);
 	}
 
-	chat_unlock();
+	vigil_unlock(&lock);
 
 	if (portrait != NULL)
 		chat_blob_release(portrait);
@@ -2920,9 +2917,9 @@ chat_frame_send(struct chat_tunnel *tun, struct chat_msg *msg)
 		else
 			hb->typing = vigil_atomic_read(&typing[tun->peer->id]);
 
-		chat_lock();
+		vigil_lock(&lock);
 		memcpy(hb->name, nick, sizeof(hb->name));
-		chat_unlock();
+		vigil_unlock(&lock);
 
 		tun->greeted = 1;
 		tun->typed = hb->typing;
@@ -3577,9 +3574,9 @@ chat_data_queue(int type, u_int8_t peer, u_int64_t value, int kind,
 
 	size = sizeof(head) + len;
 
-	chat_lock();
+	vigil_lock(&lock);
 	ret = chat_blob_room(peer, value, size);
-	chat_unlock();
+	vigil_unlock(&lock);
 
 	if (ret == 1)
 		return (0);
@@ -3634,11 +3631,11 @@ chat_command_insert(struct chat_command *cmd)
 
 	PRECOND(cmd != NULL);
 
-	chat_lock();
+	vigil_lock(&lock);
 
 	if (!vigil_atomic_read(&accepting) ||
 	    command_count >= CHAT_COMMANDS_MAX) {
-		chat_unlock();
+		vigil_unlock(&lock);
 		chat_command_free(cmd);
 		return (-1);
 	}
@@ -3648,7 +3645,7 @@ chat_command_insert(struct chat_command *cmd)
 		    cmd->blob->ref, cmd->blob->size);
 
 		if (ret != 0) {
-			chat_unlock();
+			vigil_unlock(&lock);
 			chat_command_free(cmd);
 			if (ret == 1)
 				return (0);
@@ -3663,7 +3660,7 @@ chat_command_insert(struct chat_command *cmd)
 	command_count++;
 	TAILQ_INSERT_TAIL(&commands, cmd, list);
 
-	chat_unlock();
+	vigil_unlock(&lock);
 
 	vigil_wake_signal();
 
@@ -3885,10 +3882,10 @@ chat_event_insert(struct chat_event *evt)
 {
 	PRECOND(evt != NULL);
 
-	chat_lock();
+	vigil_lock(&lock);
 
 	if (event_count >= CHAT_EVENTS_MAX) {
-		chat_unlock();
+		vigil_unlock(&lock);
 		vigil_log(LOG_NOTICE, "[chat] too many events queued");
 		nyfe_mem_zero(evt, sizeof(*evt));
 		free(evt);
@@ -3898,7 +3895,7 @@ chat_event_insert(struct chat_event *evt)
 	event_count++;
 	TAILQ_INSERT_TAIL(&events, evt, list);
 
-	chat_unlock();
+	vigil_unlock(&lock);
 
 	return (0);
 }
@@ -3913,7 +3910,7 @@ chat_events_take(struct chat_event_list *list, size_t max)
 
 	PRECOND(list != NULL);
 
-	chat_lock();
+	vigil_lock(&lock);
 
 	while ((evt = TAILQ_FIRST(&events)) != NULL) {
 		if (max == 0)
@@ -3926,7 +3923,7 @@ chat_events_take(struct chat_event_list *list, size_t max)
 		max--;
 	}
 
-	chat_unlock();
+	vigil_unlock(&lock);
 }
 
 /*
@@ -4024,7 +4021,7 @@ chat_events_free(void)
 {
 	struct chat_event	*evt;
 
-	chat_lock();
+	vigil_lock(&lock);
 
 	while ((evt = TAILQ_FIRST(&events)) != NULL) {
 		TAILQ_REMOVE(&events, evt, list);
@@ -4034,7 +4031,7 @@ chat_events_free(void)
 
 	event_count = 0;
 
-	chat_unlock();
+	vigil_unlock(&lock);
 }
 
 /*
@@ -4052,9 +4049,9 @@ chat_mention_check(struct chat_event *evt)
 	if (evt->group == 0)
 		return;
 
-	chat_lock();
+	vigil_lock(&lock);
 	memcpy(name, nick, sizeof(name));
-	chat_unlock();
+	vigil_unlock(&lock);
 
 	(void)snprintf(id, sizeof(id), "%02x", vigil->gospel->spi & 0xff);
 
@@ -4230,7 +4227,7 @@ chat_command_next(struct chat_command **cmd)
 {
 	PRECOND(cmd != NULL);
 
-	chat_lock();
+	vigil_lock(&lock);
 
 	*cmd = TAILQ_FIRST(&commands);
 
@@ -4239,7 +4236,7 @@ chat_command_next(struct chat_command **cmd)
 		command_count--;
 	}
 
-	chat_unlock();
+	vigil_unlock(&lock);
 }
 
 /*
@@ -4288,10 +4285,10 @@ chat_blob_release(struct chat_blob *blob)
 		return;
 
 	if (blob->held) {
-		chat_lock();
+		vigil_lock(&lock);
 		blob_bytes -= blob->size;
 		TAILQ_REMOVE(&blobs, blob, list);
-		chat_unlock();
+		vigil_unlock(&lock);
 	}
 
 	nyfe_mem_zero(blob->data, blob->size);
@@ -5140,16 +5137,16 @@ chat_data_arrived(struct chat_tunnel *tun, struct chat_rxfer *xfer)
 		}
 	}
 
-	chat_lock();
+	vigil_lock(&lock);
 
 	if ((parcel_bytes + xfer->size) > CHAT_PARCELS_MAX) {
-		chat_unlock();
+		vigil_unlock(&lock);
 		vigil_log(LOG_NOTICE, "[chat] %02x data has to wait",
 		    tun->peer->id);
 		return (-1);
 	}
 
-	chat_unlock();
+	vigil_unlock(&lock);
 
 	held = 0;
 
@@ -5174,10 +5171,10 @@ chat_data_arrived(struct chat_tunnel *tun, struct chat_rxfer *xfer)
 		return (-1);
 	}
 
-	chat_lock();
+	vigil_lock(&lock);
 	parcel_bytes += parcel->size;
 	TAILQ_INSERT_TAIL(&parcels, parcel, list);
-	chat_unlock();
+	vigil_unlock(&lock);
 
 	seen = &tun->seen[tun->seen_next++ % CHAT_SEEN_MAX];
 
@@ -5351,7 +5348,7 @@ chat_parcels_expire(void)
 {
 	struct chat_parcel	*parcel, *next;
 
-	chat_lock();
+	vigil_lock(&lock);
 
 	for (parcel = TAILQ_FIRST(&parcels); parcel != NULL; parcel = next) {
 		next = TAILQ_NEXT(parcel, list);
@@ -5364,7 +5361,7 @@ chat_parcels_expire(void)
 		chat_parcel_free(parcel);
 	}
 
-	chat_unlock();
+	vigil_unlock(&lock);
 }
 
 /*
@@ -5375,7 +5372,7 @@ chat_parcels_free(void)
 {
 	struct chat_parcel	*parcel;
 
-	chat_lock();
+	vigil_lock(&lock);
 
 	while ((parcel = TAILQ_FIRST(&parcels)) != NULL) {
 		TAILQ_REMOVE(&parcels, parcel, list);
@@ -5383,7 +5380,7 @@ chat_parcels_free(void)
 	}
 
 	parcel_bytes = 0;
-	chat_unlock();
+	vigil_unlock(&lock);
 }
 
 /*
@@ -5406,24 +5403,4 @@ chat_bits_set(u_int8_t *bits, u_int32_t idx)
 	PRECOND(bits != NULL);
 
 	bits[idx / 8] |= 1 << (idx % 8);
-}
-
-/*
- * Take the lock that protects our commands, events, parcels and blobs.
- */
-static void
-chat_lock(void)
-{
-	if (pthread_mutex_lock(&lock) != 0)
-		fatal("failed to take the chat lock");
-}
-
-/*
- * Release the lock that protects our commands, events, parcels and blobs.
- */
-static void
-chat_unlock(void)
-{
-	if (pthread_mutex_unlock(&lock) != 0)
-		fatal("failed to release the chat lock");
 }

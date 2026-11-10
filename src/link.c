@@ -42,9 +42,6 @@ struct link {
 	size_t		got;
 };
 
-static void	link_lock(void);
-static void	link_unlock(void);
-
 static void	link_event(KYRKA *, union kyrka_event *, void *);
 static void	link_plaintext(struct kyrka_packet *, u_int64_t, void *);
 static void	link_ciphertext(struct kyrka_packet *, u_int64_t, void *);
@@ -66,7 +63,7 @@ vigil_link_open(const u_int8_t *secret, size_t len)
 
 	vigil_link_close();
 
-	link_lock();
+	vigil_lock(&lock);
 	vigil_kyrka_enter();
 
 	if ((link.ctx = kyrka_ctx_alloc(link_event, NULL)) == NULL)
@@ -82,7 +79,7 @@ vigil_link_open(const u_int8_t *secret, size_t len)
 		fatal("kyrka_secret_load: %d", kyrka_last_error(link.ctx));
 
 	vigil_kyrka_leave();
-	link_unlock();
+	vigil_unlock(&lock);
 
 	return (0);
 }
@@ -93,7 +90,7 @@ vigil_link_open(const u_int8_t *secret, size_t len)
 void
 vigil_link_close(void)
 {
-	link_lock();
+	vigil_lock(&lock);
 
 	if (link.ctx != NULL) {
 		vigil_kyrka_enter();
@@ -103,7 +100,7 @@ vigil_link_close(void)
 
 	nyfe_mem_zero(&link, sizeof(link));
 
-	link_unlock();
+	vigil_unlock(&lock);
 }
 
 /*
@@ -114,9 +111,9 @@ vigil_link_ready(void)
 {
 	int		ready;
 
-	link_lock();
+	vigil_lock(&lock);
 	ready = link.ready;
-	link_unlock();
+	vigil_unlock(&lock);
 
 	return (ready);
 }
@@ -137,10 +134,10 @@ vigil_link_input(const u_int8_t *in, size_t inlen, u_int8_t *msg, size_t msglen)
 	PRECOND(in != NULL || inlen == 0);
 	PRECOND(msg != NULL);
 
-	link_lock();
+	vigil_lock(&lock);
 
 	if (link.ctx == NULL) {
-		link_unlock();
+		vigil_unlock(&lock);
 		return (-1);
 	}
 
@@ -188,7 +185,7 @@ vigil_link_input(const u_int8_t *in, size_t inlen, u_int8_t *msg, size_t msglen)
 	link.msglen = 0;
 
 	nyfe_mem_zero(&pkt, sizeof(pkt));
-	link_unlock();
+	vigil_unlock(&lock);
 
 	return (ret);
 }
@@ -213,15 +210,15 @@ vigil_link_output(const u_int8_t *msg, size_t msglen, u_int8_t *out,
 	if (msglen > VIGIL_LINK_MESSAGE_MAX)
 		return (-1);
 
-	link_lock();
+	vigil_lock(&lock);
 
 	if (link.ctx == NULL) {
-		link_unlock();
+		vigil_unlock(&lock);
 		return (-1);
 	}
 
 	if (msglen > 0 && link.ready == 0) {
-		link_unlock();
+		vigil_unlock(&lock);
 		return (-1);
 	}
 
@@ -277,7 +274,7 @@ vigil_link_output(const u_int8_t *msg, size_t msglen, u_int8_t *out,
 	link.outlen = 0;
 
 	nyfe_mem_zero(&pkt, sizeof(pkt));
-	link_unlock();
+	vigil_unlock(&lock);
 
 	return (ret);
 }
@@ -389,24 +386,4 @@ link_ciphertext(struct kyrka_packet *pkt, u_int64_t seq, void *udata)
 	memcpy(&link.out[link.outoff + sizeof(plen)], ptr, len);
 
 	link.outoff += len + sizeof(plen);
-}
-
-/*
- * Take the lock that protects the link.
- */
-static void
-link_lock(void)
-{
-	if (pthread_mutex_lock(&lock) != 0)
-		fatal("failed to take the link lock");
-}
-
-/*
- * Release the lock that protects the link.
- */
-static void
-link_unlock(void)
-{
-	if (pthread_mutex_unlock(&lock) != 0)
-		fatal("failed to release the link lock");
 }

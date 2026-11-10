@@ -118,11 +118,9 @@ struct remote {
 	char				config[VIGIL_CONFIG_MAX];
 };
 
-static void	remote_lock(void);
 static void	remote_free(void);
 static void	remote_read(void);
 static int	remote_state(void);
-static void	remote_unlock(void);
 static void	remote_heartbeat(void);
 static int	remote_route_apply(void);
 static int	remote_route_check(void);
@@ -181,7 +179,7 @@ vigil_remote_words(const char *words, char *out, size_t outlen)
 
 	ret = -1;
 
-	remote_lock();
+	vigil_lock(&remote_mutex);
 	remote_free();
 
 	if ((remote = calloc(1, sizeof(*remote))) == NULL)
@@ -230,7 +228,7 @@ cleanup:
 	if (ret == -1)
 		remote_free();
 
-	remote_unlock();
+	vigil_unlock(&remote_mutex);
 
 	return (ret);
 }
@@ -248,36 +246,36 @@ vigil_remote_start(const char *id, const char *secret)
 	PRECOND(id != NULL);
 	PRECOND(secret != NULL);
 
-	remote_lock();
+	vigil_lock(&remote_mutex);
 
 	if (remote == NULL) {
-		remote_unlock();
+		vigil_unlock(&remote_mutex);
 		return (-1);
 	}
 
 	if (remote->kyrka != NULL) {
-		remote_unlock();
+		vigil_unlock(&remote_mutex);
 		return (-1);
 	}
 
 	if (remote_identity(id) == -1) {
-		remote_unlock();
+		vigil_unlock(&remote_mutex);
 		return (-1);
 	}
 
 	if (strlen(secret) != sizeof(remote->cs) * 2) {
-		remote_unlock();
+		vigil_unlock(&remote_mutex);
 		return (-1);
 	}
 
 	if (sodium_hex2bin(remote->cs, sizeof(remote->cs), secret,
 	    strlen(secret), NULL, &len, NULL) != 0) {
-		remote_unlock();
+		vigil_unlock(&remote_mutex);
 		return (-1);
 	}
 
 	if (len != sizeof(remote->cs)) {
-		remote_unlock();
+		vigil_unlock(&remote_mutex);
 		return (-1);
 	}
 
@@ -339,7 +337,7 @@ vigil_remote_start(const char *id, const char *secret)
 	if ((remote->fd = socket(AF_INET, SOCK_DGRAM, 0)) == -1) {
 		vigil_log(LOG_NOTICE, "[remote] socket: %s", errno_s);
 		remote_free();
-		remote_unlock();
+		vigil_unlock(&remote_mutex);
 		return (-1);
 	}
 
@@ -349,7 +347,7 @@ vigil_remote_start(const char *id, const char *secret)
 	memcpy(&remote->peer, &remote->cathedral, sizeof(remote->peer));
 	remote->state = VIGIL_REMOTE_WAITING;
 
-	remote_unlock();
+	vigil_unlock(&remote_mutex);
 
 	return (0);
 }
@@ -367,15 +365,15 @@ vigil_remote_run(void)
 	u_int64_t		now;
 	int			nfd, ret;
 
-	remote_lock();
+	vigil_lock(&remote_mutex);
 
 	if (remote == NULL) {
-		remote_unlock();
+		vigil_unlock(&remote_mutex);
 		return (-1);
 	}
 
 	if (remote->kyrka == NULL) {
-		remote_unlock();
+		vigil_unlock(&remote_mutex);
 		return (-1);
 	}
 
@@ -383,7 +381,7 @@ vigil_remote_run(void)
 	pfd.events = POLLIN;
 
 	ret = remote_state();
-	remote_unlock();
+	vigil_unlock(&remote_mutex);
 
 	if ((nfd = poll(&pfd, 1, 1000)) == -1) {
 		if (errno == EINTR)
@@ -392,15 +390,15 @@ vigil_remote_run(void)
 		return (-1);
 	}
 
-	remote_lock();
+	vigil_lock(&remote_mutex);
 
 	if (remote == NULL) {
-		remote_unlock();
+		vigil_unlock(&remote_mutex);
 		return (-1);
 	}
 
 	if (remote->kyrka == NULL) {
-		remote_unlock();
+		vigil_unlock(&remote_mutex);
 		return (-1);
 	}
 
@@ -436,7 +434,7 @@ vigil_remote_run(void)
 	vigil_kyrka_leave();
 
 	ret = remote_state();
-	remote_unlock();
+	vigil_unlock(&remote_mutex);
 
 	return (ret);
 }
@@ -453,27 +451,27 @@ vigil_remote_config(char *out, size_t outlen)
 	PRECOND(out != NULL);
 	PRECOND(outlen > 0);
 
-	remote_lock();
+	vigil_lock(&remote_mutex);
 
 	if (remote == NULL) {
-		remote_unlock();
+		vigil_unlock(&remote_mutex);
 		return (-1);
 	}
 
 	if (remote->state != VIGIL_REMOTE_DONE) {
-		remote_unlock();
+		vigil_unlock(&remote_mutex);
 		return (-1);
 	}
 
 	len = strlen(remote->config);
 
 	if (len >= outlen) {
-		remote_unlock();
+		vigil_unlock(&remote_mutex);
 		return (-1);
 	}
 
 	memcpy(out, remote->config, len + 1);
-	remote_unlock();
+	vigil_unlock(&remote_mutex);
 
 	return (0);
 }
@@ -484,30 +482,12 @@ vigil_remote_config(char *out, size_t outlen)
 void
 vigil_remote_stop(void)
 {
-	remote_lock();
+	vigil_lock(&remote_mutex);
 	remote_free();
-	remote_unlock();
+	vigil_unlock(&remote_mutex);
 }
 
-/*
- * Take the remote lock.
- */
-static void
-remote_lock(void)
-{
-	if (pthread_mutex_lock(&remote_mutex) != 0)
-		fatal("failed to take the remote lock");
-}
 
-/*
- * Release the remote lock.
- */
-static void
-remote_unlock(void)
-{
-	if (pthread_mutex_unlock(&remote_mutex) != 0)
-		fatal("failed to release the remote lock");
-}
 
 /*
  * Free the remote state, the caller holds the remote lock.

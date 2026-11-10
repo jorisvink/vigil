@@ -23,6 +23,7 @@
 #include <netinet/in.h>
 
 #include <errno.h>
+#include <pthread.h>
 #include <stdarg.h>
 #include <string.h>
 #include <stdlib.h>
@@ -535,6 +536,8 @@ extern const char	*vigil_build_date;
 /* src/vigil.c */
 int	vigil_socket_udp(void);
 void	vigil_socket_close(int);
+void	vigil_lock(pthread_mutex_t *);
+void	vigil_unlock(pthread_mutex_t *);
 void	vigil_kyrka_enter(void);
 void	vigil_kyrka_leave(void);
 void	vigil_wake_signal(void);

@@ -36,10 +36,8 @@
 #define AUDIO_FRAMES_MAX	4096
 
 static int	audio_open(void);
-static void	audio_lock(void);
 static int	audio_setup(void);
 static void	audio_close(void);
-static void	audio_unlock(void);
 
 static OSStatus	audio_capture(void *, AudioUnitRenderActionFlags *,
 		    const AudioTimeStamp *, UInt32, UInt32, AudioBufferList *);
@@ -66,7 +64,7 @@ vigil_platform_audio_start(void)
 {
 	int		ret;
 
-	audio_lock();
+	vigil_lock(&lock);
 	vigil_atomic_write(&running, 1);
 
 	ret = audio_open();
@@ -75,7 +73,7 @@ vigil_platform_audio_start(void)
 		audio_close();
 	}
 
-	audio_unlock();
+	vigil_unlock(&lock);
 
 	return (ret);
 }
@@ -86,12 +84,12 @@ vigil_platform_audio_start(void)
 void
 vigil_platform_audio_stop(void)
 {
-	audio_lock();
+	vigil_lock(&lock);
 
 	vigil_atomic_write(&running, 0);
 	audio_close();
 
-	audio_unlock();
+	vigil_unlock(&lock);
 }
 
 /*
@@ -102,7 +100,7 @@ vigil_platform_audio_stop(void)
 void
 vigil_ios_audio_restart(void)
 {
-	audio_lock();
+	vigil_lock(&lock);
 
 	if (vigil_atomic_read(&running)) {
 		vigil_log(LOG_INFO, "[audio] reopening our unit");
@@ -111,7 +109,7 @@ vigil_ios_audio_restart(void)
 			audio_close();
 	}
 
-	audio_unlock();
+	vigil_unlock(&lock);
 }
 
 /*
@@ -304,24 +302,4 @@ audio_playback(void *udata, AudioUnitRenderActionFlags *flags,
 	}
 
 	return (noErr);
-}
-
-/*
- * Take the lock that protects our audio unit.
- */
-static void
-audio_lock(void)
-{
-	if (pthread_mutex_lock(&lock) != 0)
-		fatal("failed to take the audio lock");
-}
-
-/*
- * Release the lock that protects our audio unit.
- */
-static void
-audio_unlock(void)
-{
-	if (pthread_mutex_unlock(&lock) != 0)
-		fatal("failed to release the audio lock");
 }
