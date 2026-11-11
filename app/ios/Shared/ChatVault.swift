@@ -73,6 +73,7 @@ final class ChatVault {
     private static let outboxAad = Data("VIGIL.CHAT.OUTBOX".utf8)
     private static let queuedAad = Data("VIGIL.CHAT.QUEUED".utf8)
     private static let receiptsAad = Data("VIGIL.CHAT.RECEIPTS".utf8)
+    private static let groupsAad = Data("VIGIL.CHAT.GROUPS".utf8)
     private static let dataAad = Data("VIGIL.CHAT.DATA".utf8)
     private static let avatarAad = Data("VIGIL.CHAT.AVATAR".utf8)
     private static let nameAad = Data("VIGIL.CHAT.NAME".utf8)
@@ -123,6 +124,20 @@ final class ChatVault {
             _ = try agreementPublic()
             _ = try outboxKey()
             try exclusive { try settleQueued() }
+            try dropOldGroups()
+        }
+    }
+
+    private func dropOldGroups() throws {
+        let names = (try? FileManager.default.contentsOfDirectory(atPath: try folder(dir).path)) ?? []
+
+        for name in names where name.range(of: "^g[0-9a-f]{4}(\\.log|-[0-9a-f]{16}\\.dat)$",
+                                           options: .regularExpression) != nil {
+            let chat = String(name.prefix(5))
+
+            try remove("meta.\(chat)")
+            try remove("key.\(chat)")
+            try wipe(try folder(dir).appendingPathComponent(name))
         }
     }
 
@@ -209,7 +224,7 @@ final class ChatVault {
                 }
 
                 if kind == "topic" {
-                    if let topic = message["tp"] as? String, Self.group(chat) == nil {
+                    if let topic = message["tp"] as? String {
                         try topicSet(chat, ref: ref(), direction: "in", topic: topic, name: text,
                                      color: (message["color"] as? NSNumber)?.intValue ?? 0,
                                      time: (message["time"] as? NSNumber)?.int64Value ?? 0)
@@ -261,10 +276,13 @@ final class ChatVault {
                           let ref = (receipt["ref"] as? NSNumber)?.int64Value,
                           try item("key.\(chat)") != nil else { continue }
 
-                    try append(chat, [
-                        "t": kind, "ref": ref,
-                        "acked": receipt["acked"] ?? 0, "pending": receipt["pending"] ?? 0,
-                    ])
+                    var record: [String: Any] = ["t": kind, "ref": ref]
+
+                    if let member = receipt["member"] as? String {
+                        record["member"] = member
+                    }
+
+                    try append(chat, record)
                 }
 
                 try wipe(receipts)
@@ -313,7 +331,15 @@ final class ChatVault {
                     topics = list
                 }
 
-                out.append(["peer": id, "unread": conversation.unread, "last": last, "topics": topics])
+                var entry: [String: Any] = [
+                    "peer": id, "unread": conversation.unread, "last": last, "topics": topics,
+                ]
+
+                if Self.group(id) != nil {
+                    entry["group"] = try groupInfo(id) ?? NSNull()
+                }
+
+                out.append(entry)
             }
 
             return out
@@ -359,6 +385,10 @@ final class ChatVault {
                 return entry
             }
 
+            if Self.group(chat) != nil {
+                out["group"] = try groupInfo(chat) ?? NSNull()
+            }
+
             if current.damaged {
                 out["warning"] = "Part of this chat could not be read, it was damaged or tampered with."
             } else if conversation.flags & Self.truncated != 0 {
@@ -369,7 +399,8 @@ final class ChatVault {
         }
     }
 
-    func send(_ chat: String, text: String, quote: Quote? = nil, topic: String = "") throws -> Int64 {
+    func send(_ chat: String, text: String, quote: Quote? = nil, topic: String = "",
+              local: String = "") throws -> Int64 {
         return try locked {
             let ref = ref()
             var record: [String: Any] = [
@@ -390,18 +421,173 @@ final class ChatVault {
                 entry["tp"] = topic
             }
 
+            try enqueue(chat, record, entry, local)
+
+            return ref
+        }
+    }
+
+    private func enqueue(_ chat: String, _ record: [String: Any], _ entry: [String: Any],
+                         _ local: String) throws {
+        guard Self.group(chat) != nil else {
             try append(chat, record)
-
-            guard Self.group(chat) == nil else { return ref }
-
             try exclusive {
                 var list = try outboxList()
                 list.append(entry)
                 try outboxSave(list)
             }
-
-            return ref
+            return
         }
+
+        guard let info = try groupInfo(chat) else {
+            throw Failure(description: "There is no group \(chat).")
+        }
+
+        guard info["state"] as? String == "open" else {
+            throw Failure(description: "This group is closed.")
+        }
+
+        let to = Self.members(info).filter { $0 != local }
+        var stored = record
+
+        stored["to"] = to
+        try append(chat, stored)
+
+        try exclusive {
+            var list = try outboxList()
+
+            for member in to {
+                var copy = entry
+                copy["peer"] = member
+                copy["chat"] = chat
+                copy["gs"] = info["serial"] ?? 0
+                list.append(copy)
+            }
+
+            try outboxSave(list)
+        }
+    }
+
+    func groups() throws -> [String: Any] {
+        return try locked {
+            let file = try folder(dir).appendingPathComponent("groups.box")
+            guard FileManager.default.fileExists(atPath: file.path) else { return [:] }
+
+            let plain = try openBox(Data(contentsOf: file), key: outboxKey(), aad: Self.groupsAad)
+            return try JSONSerialization.jsonObject(with: plain) as? [String: Any] ?? [:]
+        }
+    }
+
+    func groupInfo(_ chat: String) throws -> [String: Any]? {
+        return try groups()[chat] as? [String: Any]
+    }
+
+    func groupSave(_ chat: String, _ info: [String: Any]?) throws {
+        try locked {
+            try exclusive {
+                var all = try groups()
+
+                all[chat] = info
+                try write(try folder(dir).appendingPathComponent("groups.box"),
+                          sealBox(JSONSerialization.data(withJSONObject: all),
+                                  key: outboxKey(), aad: Self.groupsAad))
+            }
+        }
+    }
+
+    enum Admit {
+        case store
+        case drop
+        case hold
+    }
+
+    func groupCheck(_ chat: String, peer: String, serial: UInt32) throws -> Admit {
+        return try locked {
+            guard let info = try groupInfo(chat) else { return .hold }
+            guard info["state"] as? String == "open" else { return .drop }
+            guard serial <= (info["serial"] as? NSNumber)?.uint32Value ?? 0 else { return .hold }
+
+            if peer == info["owner"] as? String || Self.members(info).contains(peer) {
+                return .store
+            }
+
+            return .drop
+        }
+    }
+
+    func groupDrop(_ chat: String, _ peers: [String]) throws {
+        try locked {
+            try exclusive {
+                let list = try outboxList()
+                let kept = list.filter {
+                    !($0["chat"] as? String == chat && peers.contains($0["peer"] as? String ?? ""))
+                }
+
+                guard kept.count != list.count else { return }
+
+                try outboxSave(kept)
+                try unqueueUnused(kept, list)
+            }
+        }
+    }
+
+    func rosterQueue(_ chat: String, _ info: [String: Any], local: String,
+                     also: [String] = []) throws {
+        try locked {
+            let targets = Set(Self.members(info) + also).subtracting([local])
+
+            try exclusive {
+                var list = try outboxList().filter {
+                    !($0["chat"] as? String == chat && $0["op"] as? String == "roster" &&
+                      targets.contains($0["peer"] as? String ?? ""))
+                }
+
+                for peer in targets.sorted() {
+                    list.append([
+                        "peer": peer, "chat": chat, "ref": ref(), "op": "roster",
+                        "serial": info["serial"] ?? 0, "members": info["members"] ?? [String](),
+                        "name": info["name"] ?? "", "ended": info["state"] as? String == "ended",
+                    ])
+                }
+
+                try outboxSave(list)
+            }
+        }
+    }
+
+    func leaveQueue(_ chat: String, owner: String) throws {
+        try locked {
+            try exclusive {
+                var list = try outboxList()
+                list.append(["peer": owner, "chat": chat, "ref": ref(), "op": "leave"])
+                try outboxSave(list)
+            }
+        }
+    }
+
+    private func unqueueUnused(_ kept: [[String: Any]], _ list: [[String: Any]]) throws {
+        let used = Set(kept.compactMap { ($0["ref"] as? NSNumber)?.uint64Value })
+
+        for entry in list where entry["data"] != nil {
+            if let ref = (entry["ref"] as? NSNumber)?.uint64Value, !used.contains(ref) {
+                try? unqueue(ref)
+            }
+        }
+    }
+
+    static func members(_ info: [String: Any]) -> [String] {
+        info["members"] as? [String] ?? []
+    }
+
+    static func roster(_ members: [String]) -> [UInt8] {
+        var bits = [UInt8](repeating: 0, count: Int(VIGIL_CHAT_GROUP_ROSTER))
+
+        for member in members {
+            guard let peer = UInt8(member, radix: 16) else { continue }
+            bits[Int(peer) / 8] |= 1 << (peer % 8)
+        }
+
+        return bits
     }
 
     func quoted(_ chat: String, ref: Int64) throws -> Quote {
@@ -601,6 +787,10 @@ final class ChatVault {
         case "member":
             current.messages.append(Self.message(record))
             current.stamps.append(current.stamp)
+
+            if record["kind"] as? String == "left" {
+                Self.gone(current, record["peer"] as? String ?? "")
+            }
         case "sent":
             change(current, ref) {
                 if $0["state"] as? String == "queued" {
@@ -608,20 +798,26 @@ final class ChatVault {
                 }
             }
         case "delivered":
-            change(current, ref) { $0["state"] = "delivered" }
+            change(current, ref) {
+                guard let member = record["member"] as? String else {
+                    $0["state"] = "delivered"
+                    return
+                }
+
+                var got = $0["got"] as? [String] ?? []
+
+                if !got.contains(member) {
+                    got.append(member)
+                }
+
+                $0["got"] = got
+                Self.tally(&$0)
+            }
         case "failed":
             change(current, ref) {
                 if $0["state"] as? String == "queued" {
                     $0["state"] = "failed"
                 }
-            }
-        case "acks":
-            let pending = (record["pending"] as? NSNumber)?.intValue ?? 0
-
-            change(current, ref) {
-                $0["acked"] = (record["acked"] as? NSNumber)?.intValue ?? 0
-                $0["pending"] = pending
-                $0["state"] = pending == 0 ? "delivered" : "sent"
             }
         case "fav":
             change(current, ref) { $0["fav"] = record["on"] as? Bool ?? false }
@@ -640,6 +836,35 @@ final class ChatVault {
             }
         default:
             break
+        }
+    }
+
+    private static func gone(_ current: History, _ member: String) {
+        for at in current.messages.indices {
+            guard var to = current.messages[at]["to"] as? [String] else { continue }
+
+            let got = current.messages[at]["got"] as? [String] ?? []
+
+            guard !got.contains(member), to.contains(member) else { continue }
+
+            to.removeAll { $0 == member }
+            current.messages[at]["to"] = to
+            Self.tally(&current.messages[at])
+            current.stamps[at] = current.stamp
+        }
+    }
+
+    private static func tally(_ message: inout [String: Any]) {
+        let to = (message["to"] as? [String])?.count ?? 0
+        let acked = (message["got"] as? [String])?.count ?? 0
+
+        message["acked"] = acked
+        message["pending"] = max(to - acked, 0)
+
+        if acked > 0, to - acked <= 0 {
+            message["state"] = "delivered"
+        } else if acked > 0 {
+            message["state"] = "sent"
         }
     }
 
@@ -685,6 +910,11 @@ final class ChatVault {
 
         if let topic = record["tp"] as? String {
             message["tp"] = topic
+        }
+
+        if let to = record["to"] as? [String] {
+            message["to"] = to
+            Self.tally(&message)
         }
 
         return message
@@ -736,7 +966,7 @@ final class ChatVault {
     }
 
     func sendData(_ chat: String, media: String, name: String, data: Data,
-                  topic: String = "") throws -> (Int64, String) {
+                  topic: String = "", local: String = "") throws -> (Int64, String) {
         try locked {
             let ref = ref()
             let file = try dataWrite(chat, ref: ref, data)
@@ -752,36 +982,54 @@ final class ChatVault {
             }
 
             try queue(UInt64(bitPattern: ref), data)
-            try append(chat, record)
-
-            guard Self.group(chat) == nil else { return (ref, file) }
-
-            try exclusive {
-                var list = try outboxList()
-                list.append(entry)
-                try outboxSave(list)
-            }
+            try enqueue(chat, record, entry, local)
 
             return (ref, file)
         }
     }
 
-    func topic(_ chat: String, topic: String, name: String, color: Int) throws -> Int64 {
+    func topic(_ chat: String, topic: String, name: String, color: Int, local: String = "") throws -> Int64 {
         try locked {
-            guard Self.group(chat) == nil else {
-                throw Failure(description: "Groups have no topics.")
-            }
-
             let ref = ref()
+            let entry: [String: Any] = [
+                "peer": chat, "ref": ref, "op": "topic", "tp": topic, "name": name, "color": color,
+            ]
+            var info: [String: Any]?
+
+            if Self.group(chat) != nil {
+                info = try groupInfo(chat)
+
+                guard let info else {
+                    throw Failure(description: "There is no group \(chat).")
+                }
+
+                guard info["owner"] as? String == local else {
+                    throw Failure(description: "Only the owner can change the topics of a group.")
+                }
+
+                guard info["state"] as? String == "open" else {
+                    throw Failure(description: "This group is closed.")
+                }
+            }
 
             try topicSet(chat, ref: ref, direction: "out", topic: topic, name: name, color: color,
                          time: Int64(Date().timeIntervalSince1970 * 1000))
 
             try exclusive {
                 var list = try outboxList()
-                list.append([
-                    "peer": chat, "ref": ref, "op": "topic", "tp": topic, "name": name, "color": color,
-                ])
+
+                if let info {
+                    for member in Self.members(info) where member != local {
+                        var copy = entry
+                        copy["peer"] = member
+                        copy["chat"] = chat
+                        copy["gs"] = info["serial"] ?? 0
+                        list.append(copy)
+                    }
+                } else {
+                    list.append(entry)
+                }
+
                 try outboxSave(list)
             }
 
@@ -856,7 +1104,8 @@ final class ChatVault {
         var refs = Set<UInt64>()
 
         for entry in try outboxList() {
-            guard let chat = entry["peer"] as? String, let file = entry["data"] as? String,
+            guard let chat = entry["chat"] as? String ?? entry["peer"] as? String,
+                  let file = entry["data"] as? String,
                   let ref = (entry["ref"] as? NSNumber)?.uint64Value else { continue }
 
             refs.insert(ref)
@@ -976,21 +1225,25 @@ final class ChatVault {
         }
     }
 
-    func receipt(_ chat: String, ref: Int64, kind: String, acked: Int = 0, pending: Int = 0) throws {
+    func receipt(_ peer: String, ref: Int64, kind: String) throws {
         try locked {
-            try exclusive { try addReceipt(chat, ref: ref, kind: kind, acked: acked, pending: pending) }
+            try exclusive { try addReceipt(peer, ref: ref, kind: kind) }
         }
     }
 
-    private func addReceipt(_ chat: String, ref: Int64, kind: String, acked: Int,
-                            pending: Int) throws {
-        if kind == "delivered" {
-            let list = try outboxList()
-            let kept = list.filter { ($0["ref"] as? NSNumber)?.int64Value != ref }
+    private func addReceipt(_ peer: String, ref: Int64, kind: String) throws {
+        let outbox = try outboxList()
+        let match = { (entry: [String: Any]) -> Bool in
+            entry["peer"] as? String == peer && (entry["ref"] as? NSNumber)?.int64Value == ref
+        }
+        let chat = outbox.first(where: match).flatMap { $0["chat"] as? String } ?? peer
 
-            if kept.count != list.count {
+        if kind == "delivered" {
+            let kept = outbox.filter { !match($0) }
+
+            if kept.count != outbox.count {
                 try outboxSave(kept)
-                try? unqueue(UInt64(bitPattern: ref))
+                try unqueueUnused(kept, outbox)
             }
         }
 
@@ -1003,7 +1256,13 @@ final class ChatVault {
                 as? [[String: Any]] ?? []
         }
 
-        list.append(["peer": chat, "ref": ref, "t": kind, "acked": acked, "pending": pending])
+        var receipt: [String: Any] = ["peer": chat, "ref": ref, "t": kind]
+
+        if chat != peer {
+            receipt["member"] = peer
+        }
+
+        list.append(receipt)
         try write(file, sealBox(JSONSerialization.data(withJSONObject: list),
                                 key: outboxKey(), aad: Self.receiptsAad))
     }
@@ -1076,15 +1335,15 @@ final class ChatVault {
 
             try exclusive {
                 let list = try outboxList()
-                let kept = list.filter { $0["peer"] as? String != chat }
+                let kept = list.filter { $0["peer"] as? String != chat && $0["chat"] as? String != chat }
 
                 if kept.count != list.count { try outboxSave(kept) }
 
-                for entry in list where entry["peer"] as? String == chat {
-                    if let ref = (entry["ref"] as? NSNumber)?.uint64Value {
-                        try? unqueue(ref)
-                    }
-                }
+                try unqueueUnused(kept, list)
+            }
+
+            if Self.group(chat) != nil {
+                try groupSave(chat, nil)
             }
         }
     }
@@ -1516,18 +1775,23 @@ final class ChatVault {
         return id
     }
 
-    static func group(_ chat: String) -> UInt16? {
-        guard chat.count == 5, chat.hasPrefix("g"), chat == chat.lowercased() else { return nil }
-        return UInt16(chat.dropFirst(), radix: 16)
+    static func group(_ chat: String) -> (owner: UInt8, id: UInt64)? {
+        guard chat.count == 19, chat.hasPrefix("g"), chat == chat.lowercased(),
+              let owner = UInt8(chat.dropFirst().prefix(2), radix: 16),
+              let id = UInt64(chat.dropFirst(3), radix: 16) else { return nil }
+        return (owner, id)
     }
 
-    static func groupChat(_ group: UInt16) -> String { String(format: "g%04x", group) }
+    static func groupChat(_ owner: String, _ group: String) -> String { "g\(owner)\(group)" }
 
     static func name(_ peer: UInt8) -> String { names()[hex(peer)] ?? "Peer \(hex(peer))" }
 
     static func name(chat: String) -> String {
-        guard let group = group(chat) else { return names()[chat] ?? "Peer \(chat)" }
-        return names()[chat] ?? String(format: "Group %04x", group)
+        guard group(chat) != nil else { return names()[chat] ?? "Peer \(chat)" }
+
+        let name = (try? shared.groupInfo(chat))?["name"] as? String ?? ""
+
+        return name.isEmpty ? "Group" : name
     }
 
     static func names() -> [String: String] {
@@ -1539,8 +1803,7 @@ final class ChatVault {
         var clean = [String: String]()
 
         for (key, value) in names {
-            guard group(key) != nil || (key.count == 2 && UInt8(key, radix: 16) != nil &&
-                                        key == key.lowercased()),
+            guard key.count == 2, UInt8(key, radix: 16) != nil, key == key.lowercased(),
                   let value = value as? String else { continue }
 
             let name = String(value.trimmingCharacters(in: .whitespacesAndNewlines).prefix(32))

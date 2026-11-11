@@ -33,6 +33,8 @@ import javax.crypto.spec.SecretKeySpec
 class ChatVault(context: Context) {
     class Locked : Exception("Unlock your device to read your chats.")
 
+    class Group(val owner: Int, val id: Long)
+
     class Quote(val author: String, val hash: String) {
         val peer: Int
             get() = author.toInt(16)
@@ -85,6 +87,8 @@ class ChatVault(context: Context) {
         history()
         outbox()
         agreement()
+
+        dir.listFiles { f -> f.name.matches(Regex(OLD_GROUP)) }?.forEach { wipe(it) }
     }
 
     @Synchronized
@@ -235,14 +239,15 @@ class ChatVault(context: Context) {
             val chat = receipt.getString("peer")
 
             if (File(dir, "$chat$KEY").exists()) {
-                append(
-                    chat,
-                    JSONObject()
-                        .put("t", receipt.getString("t"))
-                        .put("ref", receipt.getLong("ref"))
-                        .put("acked", receipt.optInt("acked"))
-                        .put("pending", receipt.optInt("pending"))
-                )
+                val record = JSONObject()
+                    .put("t", receipt.getString("t"))
+                    .put("ref", receipt.getLong("ref"))
+
+                if (receipt.has("member")) {
+                    record.put("member", receipt.getString("member"))
+                }
+
+                append(chat, record)
             }
         }
 
@@ -265,13 +270,17 @@ class ChatVault(context: Context) {
                 summarize(id, conversation, full)
             }
 
-            out.put(
-                JSONObject()
-                    .put("peer", id)
-                    .put("unread", conversation.unread)
-                    .put("last", conversation.last?.let { JSONObject(it) } ?: JSONObject.NULL)
-                    .put("topics", JSONArray(conversation.topics ?: "[]"))
-            )
+            val entry = JSONObject()
+                .put("peer", id)
+                .put("unread", conversation.unread)
+                .put("last", conversation.last?.let { JSONObject(it) } ?: JSONObject.NULL)
+                .put("topics", JSONArray(conversation.topics ?: "[]"))
+
+            if (group(id) != null) {
+                entry.put("group", groupInfo(id) ?: JSONObject.NULL)
+            }
+
+            out.put(entry)
         }
 
         return out
@@ -322,6 +331,10 @@ class ChatVault(context: Context) {
         out.put("messages", list)
         out.put("topics", topics)
 
+        if (group(chat) != null) {
+            out.put("group", groupInfo(chat) ?: JSONObject.NULL)
+        }
+
         if (current.damaged) {
             out.put("warning", "Part of this chat could not be read, it was damaged or tampered with.")
         } else if (conversation.flags and FLAG_TRUNCATED != 0L) {
@@ -332,7 +345,9 @@ class ChatVault(context: Context) {
     }
 
     @Synchronized
-    fun send(chat: String, text: String, ref: Long = ref(), quote: Quote? = null, topic: String = ""): Long {
+    fun send(
+        chat: String, text: String, ref: Long = ref(), quote: Quote? = null, topic: String = "", self: String = ""
+    ): JSONArray {
         val time = System.currentTimeMillis()
         val record = JSONObject()
             .put("t", "msg")
@@ -352,17 +367,7 @@ class ChatVault(context: Context) {
             entry.put("tp", topic)
         }
 
-        append(chat, record)
-
-        if (group(chat) != null) {
-            return ref
-        }
-
-        val list = outboxList()
-        list.put(entry)
-        outboxSave(list)
-
-        return ref
+        return queue(chat, record, entry, self)
     }
 
     @Synchronized
@@ -384,8 +389,9 @@ class ChatVault(context: Context) {
 
     @Synchronized
     fun sendData(
-        chat: String, media: String, name: String, data: ByteArray, ref: Long = ref(), topic: String = ""
-    ): Long {
+        chat: String, media: String, name: String, data: ByteArray, ref: Long = ref(), topic: String = "",
+        self: String = ""
+    ): JSONArray {
         val file = dataWrite(chat, ref, data)
         val record = JSONObject()
             .put("t", "msg")
@@ -404,33 +410,215 @@ class ChatVault(context: Context) {
             entry.put("tp", topic)
         }
 
-        append(chat, record)
+        return queue(chat, record, entry, self)
+    }
 
-        if (group(chat) != null) {
-            return ref
+    private fun queue(chat: String, record: JSONObject, entry: JSONObject, self: String): JSONArray {
+        val list = outboxList()
+        val queued = JSONArray()
+
+        if (group(chat) == null) {
+            append(chat, record)
+            list.put(entry)
+            queued.put(entry)
+            outboxSave(list)
+            return queued
         }
 
-        val list = outboxList()
-        list.put(entry)
+        val info = groupInfo(chat) ?: throw IllegalArgumentException("There is no group $chat.")
+
+        require(info.getString("state") == "open") { "This group is closed." }
+
+        val to = JSONArray()
+        val members = info.getJSONArray("members")
+
+        for (i in 0 until members.length()) {
+            val member = members.getString(i)
+
+            if (member == self) {
+                continue
+            }
+
+            val copy = JSONObject(entry.toString()).put("peer", member).put("chat", chat)
+                .put("gs", info.getInt("serial"))
+
+            to.put(member)
+            list.put(copy)
+            queued.put(copy)
+        }
+
+        append(chat, record.put("to", to))
         outboxSave(list)
 
-        return ref
+        return queued
     }
 
     @Synchronized
-    fun topic(chat: String, topic: String, name: String, color: Int, ref: Long = ref()): Long {
-        require(group(chat) == null) { "Groups have no topics." }
+    fun topic(
+        chat: String, topic: String, name: String, color: Int, ref: Long = ref(), self: String = ""
+    ): JSONArray {
+        val entry = JSONObject().put("peer", chat).put("ref", ref).put("op", "topic")
+            .put("tp", topic).put("name", name).put("color", color)
+        val list = outboxList()
+        val queued = JSONArray()
+
+        if (group(chat) == null) {
+            topicSet(chat, ref, "out", topic, name, color, System.currentTimeMillis())
+            list.put(entry)
+            queued.put(entry)
+            outboxSave(list)
+            return queued
+        }
+
+        val info = groupInfo(chat) ?: throw IllegalArgumentException("There is no group $chat.")
+
+        require(info.getString("owner") == self) { "Only the owner can change the topics of a group." }
+        require(info.getString("state") == "open") { "This group is closed." }
 
         topicSet(chat, ref, "out", topic, name, color, System.currentTimeMillis())
 
-        val list = outboxList()
-        list.put(
-            JSONObject().put("peer", chat).put("ref", ref).put("op", "topic")
-                .put("tp", topic).put("name", name).put("color", color)
-        )
+        for (member in members(info)) {
+            if (member == self) {
+                continue
+            }
+
+            val copy = JSONObject(entry.toString()).put("peer", member).put("chat", chat)
+                .put("gs", info.getInt("serial"))
+
+            list.put(copy)
+            queued.put(copy)
+        }
+
         outboxSave(list)
 
-        return ref
+        return queued
+    }
+
+    @Synchronized
+    fun groups(): JSONObject {
+        val file = File(dir, GROUPS)
+        if (!file.exists()) {
+            return JSONObject()
+        }
+
+        val plain = unwrap(outbox(), GROUPS_AAD, file.readBytes())
+
+        try {
+            return JSONObject(String(plain))
+        } finally {
+            plain.fill(0)
+        }
+    }
+
+    @Synchronized
+    fun groupInfo(chat: String): JSONObject? = groups().optJSONObject(chat)
+
+    @Synchronized
+    fun groupSave(chat: String, info: JSONObject?) {
+        val all = groups()
+
+        if (info == null) {
+            all.remove(chat)
+        } else {
+            all.put(chat, info)
+        }
+
+        val plain = all.toString().toByteArray()
+
+        try {
+            write(File(dir, GROUPS), wrap(outbox(), GROUPS_AAD, plain))
+        } finally {
+            plain.fill(0)
+        }
+    }
+
+    @Synchronized
+    fun groupCheck(chat: String, peer: String, serial: Int): Int {
+        val info = groupInfo(chat) ?: return GROUP_HOLD
+
+        if (info.getString("state") != "open") {
+            return GROUP_DROP
+        }
+
+        if (Integer.compareUnsigned(serial, info.getInt("serial")) > 0) {
+            return GROUP_HOLD
+        }
+
+        if (peer == info.getString("owner") || members(info).contains(peer)) {
+            return GROUP_STORE
+        }
+
+        return GROUP_DROP
+    }
+
+    @Synchronized
+    fun groupDrop(chat: String, peers: Collection<String>, keep: Long = 0L) {
+        val list = outboxList()
+        val kept = JSONArray()
+
+        for (i in 0 until list.length()) {
+            val entry = list.getJSONObject(i)
+
+            if (entry.optString("chat") == chat && entry.getString("peer") in peers && entry.getLong("ref") != keep) {
+                continue
+            }
+
+            kept.put(entry)
+        }
+
+        if (kept.length() != list.length()) {
+            outboxSave(kept)
+        }
+    }
+
+    @Synchronized
+    fun rosterQueue(chat: String, info: JSONObject, self: String, also: Collection<String> = emptyList()): JSONArray {
+        val list = outboxList()
+        val kept = JSONArray()
+        val queued = JSONArray()
+        val targets = (members(info) + also).filter { it != self }.toSet()
+
+        for (i in 0 until list.length()) {
+            val entry = list.getJSONObject(i)
+
+            if (entry.optString("chat") == chat && entry.optString("op") == "roster" &&
+                entry.getString("peer") in targets
+            ) {
+                continue
+            }
+
+            kept.put(entry)
+        }
+
+        for (peer in targets) {
+            val entry = JSONObject()
+                .put("peer", peer)
+                .put("chat", chat)
+                .put("ref", ref())
+                .put("op", "roster")
+                .put("serial", info.getInt("serial"))
+                .put("members", info.getJSONArray("members"))
+                .put("name", info.getString("name"))
+                .put("ended", info.getString("state") == "ended")
+
+            kept.put(entry)
+            queued.put(entry)
+        }
+
+        outboxSave(kept)
+
+        return queued
+    }
+
+    @Synchronized
+    fun leaveQueue(chat: String, owner: String): JSONObject {
+        val entry = JSONObject().put("peer", owner).put("chat", chat).put("ref", ref()).put("op", "leave")
+        val list = outboxList()
+
+        list.put(entry)
+        outboxSave(list)
+
+        return entry
     }
 
     @Synchronized
@@ -569,20 +757,28 @@ class ChatVault(context: Context) {
     }
 
     @Synchronized
-    fun receipt(chat: String, ref: Long, kind: String, acked: Int = 0, pending: Int = 0) {
-        if (kind == "delivered") {
-            val list = outboxList()
-            val kept = JSONArray()
+    fun receipt(peer: String, ref: Long, kind: String) {
+        val outbox = outboxList()
+        val kept = JSONArray()
+        var chat = peer
 
-            for (i in 0 until list.length()) {
-                if (list.getJSONObject(i).getLong("ref") != ref) {
-                    kept.put(list.getJSONObject(i))
-                }
+        for (i in 0 until outbox.length()) {
+            val entry = outbox.getJSONObject(i)
+
+            if (entry.getString("peer") != peer || entry.getLong("ref") != ref) {
+                kept.put(entry)
+                continue
             }
 
-            if (kept.length() != list.length()) {
-                outboxSave(kept)
+            chat = entry.optString("chat", peer)
+
+            if (kind != "delivered") {
+                kept.put(entry)
             }
+        }
+
+        if (kept.length() != outbox.length()) {
+            outboxSave(kept)
         }
 
         val file = File(dir, RECEIPTS)
@@ -591,11 +787,13 @@ class ChatVault(context: Context) {
         } else {
             JSONArray()
         }
+        val receipt = JSONObject().put("peer", chat).put("ref", ref).put("t", kind)
 
-        list.put(
-            JSONObject().put("peer", chat).put("ref", ref).put("t", kind)
-                .put("acked", acked).put("pending", pending)
-        )
+        if (chat != peer) {
+            receipt.put("member", peer)
+        }
+
+        list.put(receipt)
         write(file, wrap(outbox(), RECEIPTS_AAD, list.toString().toByteArray()))
     }
 
@@ -664,13 +862,19 @@ class ChatVault(context: Context) {
         val kept = JSONArray()
 
         for (i in 0 until list.length()) {
-            if (list.getJSONObject(i).getString("peer") != chat) {
-                kept.put(list.getJSONObject(i))
+            val entry = list.getJSONObject(i)
+
+            if (entry.getString("peer") != chat && entry.optString("chat") != chat) {
+                kept.put(entry)
             }
         }
 
         if (kept.length() != list.length()) {
             outboxSave(kept)
+        }
+
+        if (group(chat) != null) {
+            groupSave(chat, null)
         }
     }
 
@@ -893,20 +1097,32 @@ class ChatVault(context: Context) {
             "member" -> {
                 current.messages.add(message(record))
                 current.stamps.add(current.stamp)
+
+                if (record.optString("kind") == "left") {
+                    gone(current, record.optString("peer"))
+                }
             }
             "sent" -> change(current, ref) {
                 if (it.getString("state") == "queued") {
                     it.put("state", "sent")
                 }
             }
-            "delivered" -> change(current, ref) { it.put("state", "delivered") }
-            "acks" -> change(current, ref) {
-                val pending = record.optInt("pending")
+            "delivered" -> change(current, ref) {
+                if (!record.has("member")) {
+                    it.put("state", "delivered")
+                    return@change
+                }
 
-                it.put("acked", record.optInt("acked"))
-                it.put("pending", pending)
-                it.put("state", if (pending == 0) "delivered" else "sent")
+                val got = it.optJSONArray("got") ?: JSONArray().also { list -> it.put("got", list) }
+                val member = record.getString("member")
+
+                if ((0 until got.length()).none { i -> got.getString(i) == member }) {
+                    got.put(member)
+                }
+
+                tally(it)
             }
+
             "fav" -> change(current, ref) { it.put("fav", record.optBoolean("on")) }
             "topic" -> {
                 val topic = record.getString("tp")
@@ -935,6 +1151,46 @@ class ChatVault(context: Context) {
                     change(current, current.pinned) { it.put("pinned", true) }
                 }
             }
+        }
+    }
+
+    private fun gone(current: History, member: String) {
+        for (at in current.messages.indices) {
+            val message = current.messages[at]
+            val to = message.optJSONArray("to") ?: continue
+            val got = message.optJSONArray("got") ?: JSONArray()
+
+            if ((0 until got.length()).any { got.getString(it) == member }) {
+                continue
+            }
+
+            val kept = JSONArray()
+
+            for (i in 0 until to.length()) {
+                if (to.getString(i) != member) {
+                    kept.put(to.getString(i))
+                }
+            }
+
+            if (kept.length() != to.length()) {
+                message.put("to", kept)
+                tally(message)
+                current.stamps[at] = current.stamp
+            }
+        }
+    }
+
+    private fun tally(message: JSONObject) {
+        val to = message.optJSONArray("to")?.length() ?: 0
+        val acked = message.optJSONArray("got")?.length() ?: 0
+
+        message.put("acked", acked)
+        message.put("pending", maxOf(to - acked, 0))
+
+        if (acked > 0 && to - acked <= 0) {
+            message.put("state", "delivered")
+        } else if (acked > 0) {
+            message.put("state", "sent")
         }
     }
 
@@ -978,6 +1234,11 @@ class ChatVault(context: Context) {
 
         if (record.has("tp")) {
             message.put("tp", record.getString("tp"))
+        }
+
+        if (record.has("to")) {
+            message.put("to", JSONArray(record.getJSONArray("to").toString()))
+            tally(message)
         }
 
         return message
@@ -1479,10 +1740,32 @@ class ChatVault(context: Context) {
     }
 
     companion object {
-        fun group(chat: String): Int? =
-            if (chat.length == 5 && chat[0] == 'g') chat.substring(1).toIntOrNull(16) else null
+        fun group(chat: String): Group? {
+            if (!chat.matches(Regex(GROUP_CHAT))) {
+                return null
+            }
 
-        fun groupChat(group: Int): String = "g%04x".format(group)
+            return Group(chat.substring(1, 3).toInt(16), java.lang.Long.parseUnsignedLong(chat.substring(3), 16))
+        }
+
+        fun groupChat(owner: String, group: String): String = "g$owner$group"
+
+        fun members(info: JSONObject): List<String> {
+            val list = info.optJSONArray("members") ?: return emptyList()
+
+            return (0 until list.length()).map { list.getString(it) }
+        }
+
+        fun roster(members: Collection<String>): ByteArray {
+            val bits = ByteArray(ROSTER)
+
+            for (member in members) {
+                val peer = member.toInt(16)
+                bits[peer / 8] = (bits[peer / 8].toInt() or (1 shl (peer % 8))).toByte()
+            }
+
+            return bits
+        }
 
         fun quote(author: String, hash: String): Quote? {
             if (hash.isEmpty()) {
@@ -1513,8 +1796,14 @@ class ChatVault(context: Context) {
 
         const val SELF = "00"
 
-        private const val CHAT = "[0-9a-f]{2}|g[0-9a-f]{4}"
-        private const val DATA = "(?:[0-9a-f]{2}|g[0-9a-f]{4})-[0-9a-f]{16}\\.dat"
+        const val GROUP_STORE = 0
+        const val GROUP_DROP = 1
+        const val GROUP_HOLD = 2
+
+        private const val GROUP_CHAT = "g[0-9a-f]{18}"
+        private const val CHAT = "[0-9a-f]{2}|$GROUP_CHAT"
+        private const val DATA = "(?:[0-9a-f]{2}|$GROUP_CHAT)-[0-9a-f]{16}\\.dat"
+        private const val OLD_GROUP = "g[0-9a-f]{4}(?:\\.key|\\.meta|\\.log|-[0-9a-f]{16}\\.dat)"
         private const val KEYSTORE = "AndroidKeyStore"
         private const val HISTORY = "se.sanctorum.vigil.chat.history"
         private const val OUTBOX_KEY = "se.sanctorum.vigil.chat.outbox"
@@ -1527,6 +1816,8 @@ class ChatVault(context: Context) {
         private const val LOG = ".log"
         private const val OUTBOX = "outbox.box"
         private const val RECEIPTS = "receipts.box"
+        private const val GROUPS = "groups.box"
+        private const val ROSTER = 32
         private const val AVATAR = "avatar.box"
         private const val FLAG_TRUNCATED = 1L
         private const val SEALED_HARDWARE: Byte = 1
@@ -1539,6 +1830,7 @@ class ChatVault(context: Context) {
         private val DATA_AAD = "VIGIL.CHAT.DATA".toByteArray()
         private val OUTBOX_AAD = "VIGIL.CHAT.OUTBOX".toByteArray()
         private val RECEIPTS_AAD = "VIGIL.CHAT.RECEIPTS".toByteArray()
+        private val GROUPS_AAD = "VIGIL.CHAT.GROUPS".toByteArray()
         private val AVATAR_AAD = "VIGIL.CHAT.AVATAR".toByteArray()
         private val NAME_AAD = "VIGIL.CHAT.NAME".toByteArray()
     }

@@ -144,15 +144,25 @@ its picture, sealed to the inbox public key and bound to its id.
 
 ## The outbox and receipts
 
-Messages you send are first added to your own conversation log. One-to-one
-messages are also put in the outbox, so the network side can send them
-when the peer comes online.
+Messages you send are first added to your own conversation log. They are
+also put in the outbox, so the network side can send them when the peer
+comes online.
 
 Delivery receipts work the other way. The network side writes them into
 a receipts file. The app adds them to the conversation logs at the next
 merge.
 
-Both the outbox and the receipts file are encrypted with the outbox key.
+A message in a group goes in the outbox once for every other member. Its
+record in the log lists who it went to, each receipt names the member it
+came from, and the tally shows how many of them got the message. A
+member that leaves the group no longer counts as pending.
+
+The name, owner and members of every group are kept in a groups file, so
+the network side can check who may write in a group and the owner's phone
+can hand a new list of members around while it is locked.
+
+The outbox, the receipts file and the groups file are encrypted with the
+outbox key.
 They must be readable while the phone is locked, otherwise queued
 messages could not be sent. Messages that wait in the outbox are
 therefore protected less well than the history. They leave the outbox as

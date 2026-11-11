@@ -68,26 +68,35 @@ static jboolean		android_remote_start(JNIEnv *, jclass, jstring,
 
 static jbyteArray	android_chat_events(JNIEnv *, jclass);
 static jbyteArray	android_chat_data_take(JNIEnv *, jclass, jlong, jint);
-static jboolean		android_chat_group(JNIEnv *, jclass, jint);
 static jboolean		android_chat_forget(JNIEnv *, jclass, jint);
 static jboolean		android_chat_stored(JNIEnv *, jclass, jlong);
 static jboolean		android_chat_nick(JNIEnv *, jclass, jstring);
 static jboolean		android_chat_avatar(JNIEnv *, jclass, jbyteArray);
 static void		android_chat_open(JNIEnv *, jclass, jint, jboolean);
-static void		android_chat_typing(JNIEnv *, jclass, jint, jboolean);
-static void		android_chat_group_typing(JNIEnv *, jclass, jboolean);
+static void		android_chat_typing(JNIEnv *, jclass, jint, jlong,
+			    jboolean);
+static void		android_chat_group_typing(JNIEnv *, jclass, jint,
+			    jlong, jlong);
+static jboolean		android_chat_group_leave(JNIEnv *, jclass, jint, jlong,
+			    jlong);
 static jboolean		android_chat_send(JNIEnv *, jclass, jint, jlong,
 			    jbyteArray, jint, jlong, jlong);
 static jboolean		android_chat_topic(JNIEnv *, jclass, jint, jlong,
 			    jlong, jint, jbyteArray);
-static jboolean		android_chat_group_send(JNIEnv *, jclass, jlong,
-			    jbyteArray, jint, jlong);
+static jboolean		android_chat_group_send(JNIEnv *, jclass, jint, jlong,
+			    jint, jlong, jint, jlong, jbyteArray, jint, jlong);
+static jboolean		android_chat_group_topic(JNIEnv *, jclass, jint, jlong,
+			    jlong, jint, jlong, jint, jbyteArray);
+static jboolean		android_chat_group_roster(JNIEnv *, jclass, jint,
+			    jlong, jlong, jint, jboolean, jbyteArray,
+			    jbyteArray);
 static jboolean		android_chat_data_send(JNIEnv *, jclass, jint, jlong,
 			    jint, jbyteArray, jbyteArray, jlong);
-static jboolean		android_chat_group_data_send(JNIEnv *, jclass, jlong,
-			    jint, jbyteArray, jbyteArray);
+static jboolean		android_chat_group_data_send(JNIEnv *, jclass, jint,
+			    jlong, jint, jlong, jint, jlong, jint, jbyteArray,
+			    jbyteArray);
 static jboolean		android_chat_data_queue(JNIEnv *, jint, jlong, jint,
-			    jbyteArray, jbyteArray, jlong);
+			    jlong, jint, jint, jbyteArray, jbyteArray, jlong);
 
 /* The native methods we register with the Vigil class. */
 static JNINativeMethod	methods[] = {
@@ -115,15 +124,18 @@ static JNINativeMethod	methods[] = {
 	{ "chatForget", "(I)Z", (void *)android_chat_forget },
 	{ "chatStored", "(J)Z", (void *)android_chat_stored },
 	{ "chatOpen", "(IZ)V", (void *)android_chat_open },
-	{ "chatTyping", "(IZ)V", (void *)android_chat_typing },
+	{ "chatTyping", "(IJZ)V", (void *)android_chat_typing },
 	{ "chatNick", "(Ljava/lang/String;)Z", (void *)android_chat_nick },
 	{ "chatAvatar", "([B)Z", (void *)android_chat_avatar },
-	{ "chatGroup", "(I)Z", (void *)android_chat_group },
-	{ "chatGroupTyping", "(Z)V", (void *)android_chat_group_typing },
-	{ "chatGroupSend", "(J[BIJ)Z", (void *)android_chat_group_send },
+	{ "chatGroupTyping", "(IJJ)V", (void *)android_chat_group_typing },
+	{ "chatGroupSend", "(IJIJIJ[BIJ)Z", (void *)android_chat_group_send },
+	{ "chatGroupTopic", "(IJJIJI[B)Z", (void *)android_chat_group_topic },
+	{ "chatGroupRoster", "(IJJIZ[B[B)Z",
+	    (void *)android_chat_group_roster },
+	{ "chatGroupLeave", "(IJJ)Z", (void *)android_chat_group_leave },
 	{ "chatEvents", "()[B", (void *)android_chat_events },
 	{ "chatDataSend", "(IJI[B[BJ)Z", (void *)android_chat_data_send },
-	{ "chatGroupDataSend", "(JI[B[B)Z",
+	{ "chatGroupDataSend", "(IJIJIJI[B[B)Z",
 	    (void *)android_chat_group_data_send },
 	{ "chatDataTake", "(JI)[B", (void *)android_chat_data_take },
 	{ "gospel", "([B)Z", (void *)android_gospel },
@@ -719,13 +731,15 @@ android_chat_open(JNIEnv *env, jclass cls, jint peer, jboolean on)
 }
 
 /*
- * Vigil.chatTyping(), tells the given peer if we are typing.
+ * Vigil.chatTyping(), tells the given peer if we are typing, in the given
+ * topic if it is not 0.
  */
 static void
-android_chat_typing(JNIEnv *env, jclass cls, jint peer, jboolean on)
+android_chat_typing(JNIEnv *env, jclass cls, jint peer, jlong topic,
+    jboolean on)
 {
 	if (peer > 0 && peer < KYRKA_PEERS_PER_FLOCK)
-		vigil_chat_typing(peer, on == JNI_TRUE);
+		vigil_chat_typing(peer, topic, on == JNI_TRUE);
 }
 
 /*
@@ -779,36 +793,31 @@ android_chat_avatar(JNIEnv *env, jclass cls, jbyteArray data)
 }
 
 /*
- * Vigil.chatGroup(), joins the given group chat, 0 leaves ours.
- */
-static jboolean
-android_chat_group(JNIEnv *env, jclass cls, jint group)
-{
-	if (group < 0)
-		return (JNI_FALSE);
-
-	if (group > USHRT_MAX)
-		return (JNI_FALSE);
-
-	return (vigil_chat_group(group) == 0);
-}
-
-/*
- * Vigil.chatGroupTyping(), tells our group if we are typing.
+ * Vigil.chatGroupTyping(), tells our peers we type in the given group and
+ * topic, a group of 0 means we do not.
  */
 static void
-android_chat_group_typing(JNIEnv *env, jclass cls, jboolean on)
+android_chat_group_typing(JNIEnv *env, jclass cls, jint owner, jlong group,
+    jlong topic)
 {
-	vigil_chat_group_typing(on == JNI_TRUE);
+	if (group == 0) {
+		vigil_chat_group_typing(0, 0, 0);
+		return;
+	}
+
+	if (owner > 0 && owner < KYRKA_PEERS_PER_FLOCK)
+		vigil_chat_group_typing(owner, group, topic);
 }
 
 /*
- * Vigil.chatGroupSend(), queues a message for our group. The text is
- * utf-8 in a byte array as JNI strings are not quite utf-8. A hash that
- * is not 0 makes it a reply, see android_chat_send().
+ * Vigil.chatGroupSend(), queues a message in the given group for the given
+ * peer, in the given topic if it is not 0, serial is that of the roster we
+ * know. The text is utf-8 in a byte array as JNI strings are not quite
+ * utf-8. A hash that is not 0 makes it a reply, see android_chat_send().
  */
 static jboolean
-android_chat_group_send(JNIEnv *env, jclass cls, jlong ref, jbyteArray text,
+android_chat_group_send(JNIEnv *env, jclass cls, jint peer, jlong ref,
+    jint owner, jlong group, jint serial, jlong topic, jbyteArray text,
     jint author, jlong hash)
 {
 	int		ret;
@@ -816,16 +825,27 @@ android_chat_group_send(JNIEnv *env, jclass cls, jlong ref, jbyteArray text,
 	size_t		max;
 	char		*buf;
 
+	if (peer <= 0 || peer >= KYRKA_PEERS_PER_FLOCK)
+		return (JNI_FALSE);
+
+	if (owner <= 0 || owner >= KYRKA_PEERS_PER_FLOCK)
+		return (JNI_FALSE);
+
 	if (author < 0 || author >= KYRKA_PEERS_PER_FLOCK)
+		return (JNI_FALSE);
+
+	if (group == 0)
 		return (JNI_FALSE);
 
 	if (text == NULL)
 		return (JNI_FALSE);
 
-	if (hash != 0)
-		max = VIGIL_CHAT_REPLY_MAX;
+	if (topic != 0)
+		max = VIGIL_CHAT_GROUP_TOPIC_MAX;
+	else if (hash != 0)
+		max = VIGIL_CHAT_GROUP_REPLY_MAX;
 	else
-		max = VIGIL_CHAT_MESSAGE_MAX;
+		max = VIGIL_CHAT_GROUP_MAX;
 
 	buf = android_bytes_copy(env, text, VIGIL_CONFIG_MAX, &len);
 	if (buf == NULL)
@@ -836,15 +856,133 @@ android_chat_group_send(JNIEnv *env, jclass cls, jlong ref, jbyteArray text,
 		return (JNI_FALSE);
 	}
 
-	if (hash != 0) {
-		ret = vigil_chat_group_reply((u_int64_t)ref, author,
-		    (u_int64_t)hash, buf, len);
-	} else {
-		ret = vigil_chat_group_send((u_int64_t)ref, buf, len);
-	}
+	ret = vigil_chat_group_send(peer, ref, owner, group, serial, topic,
+	    author, hash, buf, len);
 
 	android_bytes_free(buf, len);
 
+	if (ret == -1)
+		return (JNI_FALSE);
+
+	return (JNI_TRUE);
+}
+
+/*
+ * Vigil.chatGroupTopic(), queues the given topic of the given group we own
+ * for the given peer, serial is that of our roster. The name is utf-8 in a
+ * byte array, an empty name removes the topic.
+ */
+static jboolean
+android_chat_group_topic(JNIEnv *env, jclass cls, jint peer, jlong ref,
+    jlong group, jint serial, jlong topic, jint color, jbyteArray name)
+{
+	int		ret;
+	size_t		len;
+	char		*buf;
+
+	if (peer <= 0 || peer >= KYRKA_PEERS_PER_FLOCK)
+		return (JNI_FALSE);
+
+	if (group == 0)
+		return (JNI_FALSE);
+
+	if (topic == 0)
+		return (JNI_FALSE);
+
+	if (name == NULL)
+		return (JNI_FALSE);
+
+	buf = android_bytes_copy(env, name, VIGIL_CHAT_TOPIC_NAME_MAX, &len);
+	if (buf == NULL)
+		return (JNI_FALSE);
+
+	ret = vigil_chat_group_topic(peer, ref, group, serial, topic, color,
+	    buf, len);
+
+	android_bytes_free(buf, len);
+
+	if (ret == -1)
+		return (JNI_FALSE);
+
+	return (JNI_TRUE);
+}
+
+/*
+ * Vigil.chatGroupRoster(), queues the roster of the given group we own for
+ * the given peer, members holds a bit for every member and the name is
+ * utf-8 in a byte array.
+ */
+static jboolean
+android_chat_group_roster(JNIEnv *env, jclass cls, jint peer, jlong ref,
+    jlong group, jint serial, jboolean ended, jbyteArray members,
+    jbyteArray name)
+{
+	int		ret;
+	int		state;
+	size_t		len, mlen;
+	char		*buf, *mbuf;
+
+	if (peer <= 0 || peer >= KYRKA_PEERS_PER_FLOCK)
+		return (JNI_FALSE);
+
+	if (group == 0)
+		return (JNI_FALSE);
+
+	if (members == NULL)
+		return (JNI_FALSE);
+
+	if (name == NULL)
+		return (JNI_FALSE);
+
+	mbuf = android_bytes_copy(env, members, VIGIL_CHAT_GROUP_ROSTER, &mlen);
+	if (mbuf == NULL)
+		return (JNI_FALSE);
+
+	if (mlen != VIGIL_CHAT_GROUP_ROSTER) {
+		android_bytes_free(mbuf, mlen);
+		return (JNI_FALSE);
+	}
+
+	buf = android_bytes_copy(env, name, VIGIL_CHAT_GROUP_NAME_MAX, &len);
+	if (buf == NULL) {
+		android_bytes_free(mbuf, mlen);
+		return (JNI_FALSE);
+	}
+
+	if (ended == JNI_TRUE)
+		state = VIGIL_CHAT_GROUP_ENDED;
+	else
+		state = VIGIL_CHAT_GROUP_OPEN;
+
+	ret = vigil_chat_group_roster(peer, ref, group, serial, state,
+	    (const u_int8_t *)mbuf, buf, len);
+
+	android_bytes_free(buf, len);
+	android_bytes_free(mbuf, mlen);
+
+	if (ret == -1)
+		return (JNI_FALSE);
+
+	return (JNI_TRUE);
+}
+
+/*
+ * Vigil.chatGroupLeave(), queues a leave for the given group that the
+ * given peer owns.
+ */
+static jboolean
+android_chat_group_leave(JNIEnv *env, jclass cls, jint owner, jlong ref,
+    jlong group)
+{
+	int		ret;
+
+	if (owner <= 0 || owner >= KYRKA_PEERS_PER_FLOCK)
+		return (JNI_FALSE);
+
+	if (group == 0)
+		return (JNI_FALSE);
+
+	ret = vigil_chat_group_leave(owner, ref, group);
 	if (ret == -1)
 		return (JNI_FALSE);
 
@@ -865,29 +1003,48 @@ android_chat_data_send(JNIEnv *env, jclass cls, jint peer, jlong ref,
 	if (peer <= 0 || peer >= KYRKA_PEERS_PER_FLOCK)
 		return (JNI_FALSE);
 
-	ret = android_chat_data_queue(env, peer, ref, kind, name, data, topic);
+	ret = android_chat_data_queue(env, peer, ref, 0, 0, 0, kind,
+	    name, data, topic);
 
 	return (ret);
 }
 
 /*
  * Vigil.chatGroupDataSend(), queues data of the given kind under the
- * given name for our group. The name is utf-8 in a byte array.
+ * given name for the given peer in the given group, in the given topic if
+ * it is not 0. Serial is that of the roster we know and the name is utf-8
+ * in a byte array.
  */
 static jboolean
-android_chat_group_data_send(JNIEnv *env, jclass cls, jlong ref, jint kind,
+android_chat_group_data_send(JNIEnv *env, jclass cls, jint peer, jlong ref,
+    jint owner, jlong group, jint serial, jlong topic, jint kind,
     jbyteArray name, jbyteArray data)
 {
-	return (android_chat_data_queue(env, 0, ref, kind, name, data, 0));
+	jboolean	ret;
+
+	if (peer <= 0 || peer >= KYRKA_PEERS_PER_FLOCK)
+		return (JNI_FALSE);
+
+	if (owner <= 0 || owner >= KYRKA_PEERS_PER_FLOCK)
+		return (JNI_FALSE);
+
+	if (group == 0)
+		return (JNI_FALSE);
+
+	ret = android_chat_data_queue(env, peer, ref, owner, group, serial,
+	    kind, name, data, topic);
+
+	return (ret);
 }
 
 /*
- * Hand the given data to the core for the given peer, or for our group
- * if the peer is 0. Data for a peer goes in the given topic if it is not 0.
+ * Hand the given data to the core for the given peer, in the given group
+ * and the given topic for those that are not 0.
  */
 static jboolean
-android_chat_data_queue(JNIEnv *env, jint peer, jlong ref, jint kind,
-    jbyteArray name, jbyteArray data, jlong topic)
+android_chat_data_queue(JNIEnv *env, jint peer, jlong ref, jint owner,
+    jlong group, jint serial, jint kind, jbyteArray name, jbyteArray data,
+    jlong topic)
 {
 	int		ret;
 	size_t		len, nlen;
@@ -911,9 +1068,9 @@ android_chat_data_queue(JNIEnv *env, jint peer, jlong ref, jint kind,
 
 	if (len == 0) {
 		ret = -1;
-	} else if (peer == 0) {
-		ret = vigil_chat_group_data_send((u_int64_t)ref, kind, nbuf,
-		    buf, len);
+	} else if (group != 0) {
+		ret = vigil_chat_group_data_send(peer, ref, owner, group,
+		    serial, topic, kind, nbuf, buf, len);
 	} else if (topic != 0) {
 		ret = vigil_chat_topic_data_send(peer, (u_int64_t)ref,
 		    (u_int64_t)topic, kind, nbuf, buf, len);

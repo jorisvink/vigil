@@ -35,23 +35,19 @@
 #define CHAT_COMMAND_SEND		1
 #define CHAT_COMMAND_FORGET		2
 #define CHAT_COMMAND_STORED		3
-#define CHAT_COMMAND_GROUP		4
-#define CHAT_COMMAND_GROUP_SEND		5
-#define CHAT_COMMAND_DATA		6
-#define CHAT_COMMAND_GROUP_DATA		7
+#define CHAT_COMMAND_DATA		4
 
 /* The events we have for the platform. */
 #define CHAT_EVENT_MESSAGE		1
 #define CHAT_EVENT_SENT			2
 #define CHAT_EVENT_DELIVERED		3
-#define CHAT_EVENT_ACKS			4
-#define CHAT_EVENT_JOINED		5
-#define CHAT_EVENT_LEFT			6
-#define CHAT_EVENT_DATA			7
-#define CHAT_EVENT_AVATAR		8
-#define CHAT_EVENT_NAME			9
-#define CHAT_EVENT_AMBRY		10
-#define CHAT_EVENT_TOPIC		11
+#define CHAT_EVENT_DATA			4
+#define CHAT_EVENT_AVATAR		5
+#define CHAT_EVENT_NAME			6
+#define CHAT_EVENT_AMBRY		7
+#define CHAT_EVENT_TOPIC		8
+#define CHAT_EVENT_ROSTER		9
+#define CHAT_EVENT_LEAVE		10
 
 /* Time between heartbeats we send to our peers. */
 #define CHAT_HEARTBEAT			(12 * 1000)
@@ -94,10 +90,18 @@
 /* Max size for a JSON event. */
 #define CHAT_EVENT_JSON_MAX		(4 * 1024)
 
+/* The bits on the kind of data that are not its kind. */
+#define CHAT_DATA_FLAGS			\
+    (VIGIL_CHAT_DATA_TOPIC | VIGIL_CHAT_DATA_GROUP)
+
+/* The size of the owner, id and serial of a group in front of data. */
+#define CHAT_DATA_GROUP			\
+    (sizeof(u_int8_t) + sizeof(u_int64_t) + sizeof(u_int32_t))
+
 /* Max size of a packet we put on the wire. */
 #define CHAT_WIRE_MAX			\
     (VIGIL_CHAT_DATA_MAX + sizeof(struct vigil_chat_data_head) + \
-    sizeof(u_int64_t))
+    CHAT_DATA_GROUP + sizeof(u_int64_t))
 
 /* Max size for a single chunk of data. */
 #define CHAT_CHUNKS_MAX			\
@@ -180,11 +184,22 @@ struct chat_topic {
 };
 
 /*
+ * The group a message is in, an id of 0 means none. The type is the type
+ * of frame it goes in, a roster carries the name of the group as its text.
+ */
+struct chat_group {
+	u_int8_t		type;
+	u_int8_t		owner;
+	u_int8_t		state;
+	u_int64_t		id;
+	u_int32_t		serial;
+	u_int8_t		members[VIGIL_CHAT_GROUP_ROSTER];
+};
+
+/*
  * A message we can send to the peer. These wait in the outbox of our peer
  * until they are ack'd and potentially on the sendq of the active tunnel
  * for said peer.
- *
- * Group messages just sit on the waitq, and ack's are added to the tally.
  */
 struct chat_msg {
 	u_int64_t		id;
@@ -196,7 +211,7 @@ struct chat_msg {
 	struct chat_blob	*blob;
 	struct chat_quote	quote;
 	struct chat_topic	topic;
-	struct chat_tally	*tally;
+	struct chat_group	group;
 
 	struct vigil_chat_frame	frame;
 
@@ -205,23 +220,6 @@ struct chat_msg {
 };
 
 TAILQ_HEAD(chat_msg_list, chat_msg);
-
-/*
- * Keeps track of how many members of our group acked a message we sent and
- * how many we are still waiting for. Members that leave before acking are
- * no longer pending.
- */
-struct chat_tally {
-	u_int64_t		ref;
-	u_int16_t		group;
-	u_int32_t		acked;
-	u_int32_t		pending;
-	int			report;
-
-	TAILQ_ENTRY(chat_tally)	list;
-};
-
-TAILQ_HEAD(chat_tally_list, chat_tally);
 
 /*
  * A message we received and handed to the platform.
@@ -282,9 +280,11 @@ struct chat_rxfer {
  * it to the platform code.
  */
 struct chat_parcel {
+	size_t			off;
 	u_int64_t		age;
 	u_int64_t		token;
 	u_int64_t		topic;
+	struct chat_group	group;
 
 	size_t			size;
 	u_int8_t		*data;
@@ -295,13 +295,12 @@ struct chat_parcel {
 TAILQ_HEAD(chat_parcel_list, chat_parcel);
 
 /*
- * A tunnel to a peer (one-to-one or a peer in a group).
+ * A tunnel to a peer.
  */
 struct chat_tunnel {
 	struct vigil_io		io;
 
 	KYRKA			*ctx;
-	u_int16_t		group;
 	struct chat_peer	*peer;
 
 	struct sockaddr_in	addr;
@@ -316,6 +315,12 @@ struct chat_tunnel {
 	int			greeted;
 
 	u_int8_t		features;
+	u_int8_t		typed_owner;
+	u_int8_t		typing_owner;
+	u_int64_t		typed_group;
+	u_int64_t		typed_topic;
+	u_int64_t		typing_group;
+	u_int64_t		typing_topic;
 
 	u_int64_t		msgid;
 	u_int64_t		online;
@@ -335,7 +340,6 @@ struct chat_tunnel {
 	struct chat_seen	seen[CHAT_SEEN_MAX];
 
 	struct chat_msg_list	sendq;
-	struct chat_msg_list	waitq;
 
 	struct chat_xfer	*xfer;
 	struct chat_rxfer	*rxfer;
@@ -353,13 +357,11 @@ struct chat_peer {
 	u_int64_t		active;
 	u_int64_t		pushed;
 	u_int64_t		avatar_held;
-	int			member;
 	int			present;
 	int			faceless;
 	int			reported;
 
 	struct chat_msg_list	outbox;
-	struct chat_tunnel	*group;
 	struct chat_tunnel	*tunnel;
 
 	char			nick[VIGIL_CHAT_NICK_MAX + 1];
@@ -370,7 +372,7 @@ struct chat_peer {
 };
 
 /*
- * A liturgy, either the signaling one or the one for our group.
+ * The signaling liturgy.
  */
 struct chat_liturgy {
 	struct vigil_io		io;
@@ -383,8 +385,6 @@ struct chat_liturgy {
 
 	u_int64_t		rx;
 	u_int64_t		tx;
-
-	u_int32_t		ambry;
 
 	struct vigil_cathedral	cathedral;
 };
@@ -401,6 +401,7 @@ struct chat_command {
 	struct chat_blob		*blob;
 	struct chat_quote		quote;
 	struct chat_topic		topic;
+	struct chat_group		group;
 	u_int8_t			data[VIGIL_CHAT_MESSAGE_MAX];
 
 	TAILQ_ENTRY(chat_command)	list;
@@ -416,14 +417,12 @@ struct chat_event {
 	size_t				size;
 	u_int8_t			kind;
 	u_int8_t			peer;
-	u_int16_t			group;
 	u_int64_t			value;
-	u_int32_t			acked;
-	u_int32_t			pending;
 	int				mention;
 
 	struct chat_quote		quote;
 	struct chat_topic		topic;
+	struct chat_group		group;
 	char				name[VIGIL_INSTANCE_MAX];
 	char				nick[VIGIL_CHAT_NICK_MAX + 1];
 	char				text[VIGIL_CHAT_MESSAGE_MAX + 1];
@@ -442,18 +441,12 @@ static void	chat_liturgy_cathedral_check(struct chat_liturgy *);
 static void	chat_liturgy_event(KYRKA *, union kyrka_event *, void *);
 static void	chat_liturgy_send(struct kyrka_packet *, u_int64_t, void *);
 
-static void	chat_group_leave(void);
-static void	chat_group_update(void);
-static void	chat_group_join(u_int16_t);
-static void	chat_group_data(u_int64_t, struct chat_blob *);
-static void	chat_group_send(u_int64_t, const struct chat_quote *,
-		    const u_int8_t *, size_t);
-
-static void	chat_tallies_free(void);
-static void	chat_tallies_report(void);
-
-static int	chat_tally_report(struct chat_tally *);
-static void	chat_tally_update(struct chat_tally *, int);
+static void	chat_group_frame(struct vigil_chat_frame *,
+		    const struct chat_msg *);
+static void	chat_group_recv(struct chat_tunnel *, u_int64_t,
+		    u_int8_t *, u_int16_t);
+static void	chat_group_roster(struct chat_tunnel *, u_int64_t,
+		    struct chat_group *, u_int8_t *, u_int16_t);
 
 static void	chat_tunnel_read(void *);
 static void	chat_tunnel_free(struct chat_tunnel *);
@@ -461,14 +454,14 @@ static void	chat_tunnel_poke(struct chat_tunnel *);
 static void	chat_tunnel_manage(struct chat_tunnel *);
 static void	chat_tunnel_rebind(struct chat_tunnel *);
 static int	chat_tunnel_ack(struct chat_tunnel *, u_int64_t);
+static void	chat_tunnel_check(struct chat_peer *);
 static int	chat_tunnel_online(struct chat_tunnel *);
-static void	chat_tunnel_check(struct chat_peer *, u_int16_t);
 static void	chat_tunnel_event(KYRKA *, union kyrka_event *, void *);
 static void	chat_tunnel_state(struct chat_tunnel *,
 		    const char **, int *, int *);
 
 static struct chat_tunnel	*chat_tunnel_new(struct chat_peer *,
-				    struct vigil_cathedral *, u_int16_t);
+				    struct vigil_cathedral *);
 
 static void	chat_cathedral_alive(struct chat_tunnel *);
 static void	chat_cathedral_check(struct chat_tunnel *);
@@ -491,17 +484,19 @@ static void	chat_name_report(struct chat_peer *);
 static int	chat_signal_check(struct chat_peer *);
 static void	chat_utf8_normalize(u_int8_t *, size_t);
 static void	chat_ambry_report(struct chat_tunnel *, u_int32_t);
-static void	chat_member_report(struct chat_peer *, u_int16_t, int);
+static void	chat_typing_state(u_int8_t *, u_int64_t *, u_int64_t *);
 static void	chat_heaven_input(struct kyrka_packet *, u_int64_t, void *);
 static void	chat_hb_recv(struct chat_tunnel *, struct vigil_chat_frame *);
 static void	chat_purgatory_input(struct kyrka_packet *, u_int64_t, void *);
 static void	chat_hb_name(struct chat_peer *, const struct vigil_chat_hb *);
 static void	chat_text_recv(struct chat_tunnel *, u_int64_t,
 		    const struct chat_quote *, const struct chat_topic *,
-		    u_int8_t *, u_int16_t);
+		    const struct chat_group *, u_int8_t *, u_int16_t);
+static int	chat_text_empty(const struct chat_topic *,
+		    const struct chat_group *);
 static int	chat_text_report(struct chat_tunnel *, u_int64_t,
 		    const struct chat_quote *, const struct chat_topic *,
-		    const u_int8_t *, size_t);
+		    const struct chat_group *, const u_int8_t *, size_t);
 
 static void	chat_ack_recv(struct chat_tunnel *, u_int64_t);
 static void	chat_ack_queue(struct chat_tunnel *, u_int64_t);
@@ -518,9 +513,7 @@ static int	chat_msg_waits(struct chat_tunnel *, struct chat_msg *);
 static void	chat_outbox_free(struct chat_peer *);
 static void	chat_outbox_add(struct chat_peer *, u_int64_t,
 		    const struct chat_quote *, const struct chat_topic *,
-		    const u_int8_t *, size_t);
-static void	chat_outbox_lookup(struct chat_tunnel *,
-		    struct chat_msg_list **);
+		    const struct chat_group *, const u_int8_t *, size_t);
 static void	chat_outbox_data(struct chat_peer *, u_int64_t,
 		    struct chat_blob *);
 
@@ -531,19 +524,19 @@ static void	chat_command_next(struct chat_command **);
 static int	chat_command_insert(struct chat_command *);
 static int	chat_command_queue(int, u_int8_t, u_int64_t,
 		    const struct chat_quote *, const struct chat_topic *,
-		    const void *, size_t);
+		    const struct chat_group *, const void *, size_t);
 
 static void	chat_reply_frame(struct vigil_chat_frame *,
 		    const struct chat_msg *);
 static void	chat_reply_recv(struct chat_tunnel *, u_int64_t,
-		    u_int8_t *, u_int16_t);
+		    const struct chat_group *, u_int8_t *, u_int16_t);
 
 static void	chat_topic_frame(struct chat_tunnel *,
 		    struct vigil_chat_frame *, const struct chat_msg *);
 static void	chat_topic_recv(struct chat_tunnel *, u_int64_t,
-		    u_int8_t *, u_int16_t);
+		    const struct chat_group *, u_int8_t *, u_int16_t);
 static void	chat_topic_text_recv(struct chat_tunnel *, u_int64_t,
-		    u_int8_t *, u_int16_t);
+		    const struct chat_group *, u_int8_t *, u_int16_t);
 
 static void	chat_blob_release(struct chat_blob *);
 static int	chat_blob_room(u_int8_t, u_int64_t, size_t);
@@ -560,10 +553,10 @@ static void	chat_data_discard(struct chat_tunnel *, struct chat_rxfer *);
 static int	chat_data_report(struct chat_tunnel *, struct chat_parcel *);
 static void	chat_data_ack(struct chat_tunnel *, u_int64_t,
 		    struct chat_rxfer *, u_int32_t);
-static int	chat_data_queue(int, u_int8_t, u_int64_t, u_int64_t, int,
-		    const char *, const void *, size_t);
-static int	chat_data_topic(struct chat_tunnel *, struct chat_rxfer *,
-		    u_int8_t, u_int64_t *);
+static int	chat_data_queue(u_int8_t, u_int64_t, const struct chat_group *,
+		    u_int64_t, int, const char *, const void *, size_t);
+static int	chat_data_tags(struct chat_rxfer *, u_int8_t, size_t *,
+		    struct chat_group *, u_int64_t *);
 
 static const char	*chat_data_kind_name(int);
 static struct chat_msg	*chat_data_msg(u_int64_t, struct chat_blob *);
@@ -598,7 +591,7 @@ static void	chat_events_free(void);
 static int	chat_event_insert(struct chat_event *);
 static void	chat_events_take(struct chat_event_list *, size_t);
 static void	chat_event_render(struct vigil_buf *, struct chat_event *, int);
-static int	chat_event_queue(int, struct chat_peer *, u_int16_t, u_int64_t,
+static int	chat_event_queue(int, struct chat_peer *, u_int64_t,
 		    const u_int8_t *, size_t);
 
 /* Are we alive? */
@@ -613,9 +606,8 @@ static volatile int			accepting = 0;
 /* Incremental token id for the messages we receive. */
 static u_int64_t			tokens = 0;
 
-/* The liturgies for the chat. */
+/* The signaling liturgy for the chat. */
 static struct chat_liturgy		signaling;
-static struct chat_liturgy		discovery;
 
 /* What we last told the cathedral in the signaling liturgy. */
 static u_int8_t				sent[KYRKA_PEERS_PER_FLOCK];
@@ -627,14 +619,16 @@ static struct chat_peer			peers[KYRKA_PEERS_PER_FLOCK];
 static volatile u_int8_t		opened[KYRKA_PEERS_PER_FLOCK];
 static volatile u_int8_t		typing[KYRKA_PEERS_PER_FLOCK];
 
-/* If we are currently typing in a group. */
-static volatile int			group_typing = 0;
-
 /* Protects our commands, events, parcels and blobs. */
 static pthread_mutex_t			lock = PTHREAD_MUTEX_INITIALIZER;
 
 /* Our nickname, empty if we have none. */
 static char				nick[VIGIL_CHAT_NICK_MAX + 1];
+
+/* The group and topic we are typing in, an id of 0 means none. */
+static u_int8_t				typing_owner = 0;
+static u_int64_t			typing_group = 0;
+static u_int64_t			typing_topic = 0;
 
 /* Set when our flock signed our instance, we then send it to peers. */
 static int				named = 0;
@@ -652,9 +646,6 @@ static u_int32_t			portrait_serial = 0;
 /* The commands for the event loop. */
 static struct chat_command_list		commands;
 static size_t				command_count = 0;
-
-/* The tallies for our group messages. */
-static struct chat_tally_list		tallies;
 
 /* The events for the platform. */
 static struct chat_event_list		events;
@@ -686,7 +677,6 @@ vigil_chat_init(void)
 
 	memset(sent, 0, sizeof(sent));
 	memset(&signaling, 0, sizeof(signaling));
-	memset(&discovery, 0, sizeof(discovery));
 
 	for (idx = 0; idx < KYRKA_PEERS_PER_FLOCK; idx++) {
 		memset(&peers[idx], 0, sizeof(peers[idx]));
@@ -721,7 +711,6 @@ vigil_chat_init(void)
 
 	TAILQ_INIT(&blobs);
 	TAILQ_INIT(&events);
-	TAILQ_INIT(&tallies);
 	TAILQ_INIT(&parcels);
 	TAILQ_INIT(&commands);
 
@@ -751,7 +740,6 @@ vigil_chat_cleanup(void)
 		return;
 
 	vigil_atomic_write(&accepting, 0);
-	chat_group_leave();
 
 	for (idx = 0; idx < KYRKA_PEERS_PER_FLOCK; idx++) {
 		if (peers[idx].tunnel != NULL)
@@ -769,7 +757,6 @@ vigil_chat_cleanup(void)
 	chat_commands_free();
 	chat_parcels_free();
 	chat_events_free();
-	chat_tallies_free();
 
 	running = 0;
 }
@@ -793,7 +780,6 @@ vigil_chat_update(void)
 	local = vigil->gospel->spi & 0xff;
 
 	chat_liturgy_cathedral_check(&signaling);
-	chat_liturgy_cathedral_check(&discovery);
 
 	for (idx = 1; idx < KYRKA_PEERS_PER_FLOCK; idx++) {
 		if (idx == local)
@@ -806,15 +792,10 @@ vigil_chat_update(void)
 			peers[idx].present = 0;
 		}
 
-		chat_tunnel_check(&peers[idx], VIGIL_CHAT_SIGNAL_GROUP);
-
-		if (discovery.group != 0)
-			chat_tunnel_check(&peers[idx], discovery.group);
+		chat_tunnel_check(&peers[idx]);
 	}
 
 	chat_liturgy_signal();
-	chat_group_update();
-	chat_tallies_report();
 }
 
 /*
@@ -829,13 +810,10 @@ vigil_chat_rebind(void)
 		return;
 
 	chat_liturgy_rebind(&signaling);
-	chat_liturgy_rebind(&discovery);
 
 	for (idx = 0; idx < KYRKA_PEERS_PER_FLOCK; idx++) {
 		if (peers[idx].tunnel != NULL)
 			chat_tunnel_rebind(peers[idx].tunnel);
-		if (peers[idx].group != NULL)
-			chat_tunnel_rebind(peers[idx].group);
 	}
 }
 
@@ -851,13 +829,10 @@ vigil_chat_poke(void)
 		return;
 
 	signaling.notify = 0;
-	discovery.notify = 0;
 
 	for (idx = 0; idx < KYRKA_PEERS_PER_FLOCK; idx++) {
 		if (peers[idx].tunnel != NULL)
 			chat_tunnel_poke(peers[idx].tunnel);
-		if (peers[idx].group != NULL)
-			chat_tunnel_poke(peers[idx].group);
 	}
 }
 
@@ -874,7 +849,7 @@ vigil_chat_send(u_int8_t peer, u_int64_t ref, const char *text, size_t len)
 	PRECOND(len > 0 && len <= VIGIL_CHAT_MESSAGE_MAX);
 
 	ret = chat_command_queue(CHAT_COMMAND_SEND,
-	    peer, ref, NULL, NULL, text, len);
+	    peer, ref, NULL, NULL, NULL, text, len);
 
 	return (ret);
 }
@@ -899,7 +874,7 @@ vigil_chat_reply(u_int8_t peer, u_int64_t ref, u_int8_t author,
 	quote.author = author;
 
 	ret = chat_command_queue(CHAT_COMMAND_SEND,
-	    peer, ref, &quote, NULL, text, len);
+	    peer, ref, &quote, NULL, NULL, text, len);
 
 	return (ret);
 }
@@ -926,7 +901,7 @@ vigil_chat_topic(u_int8_t peer, u_int64_t ref, u_int64_t id, u_int32_t color,
 	topic.color = color & 0xffffff;
 
 	ret = chat_command_queue(CHAT_COMMAND_SEND,
-	    peer, ref, NULL, &topic, name, len);
+	    peer, ref, NULL, &topic, NULL, name, len);
 
 	return (ret);
 }
@@ -956,75 +931,179 @@ vigil_chat_topic_send(u_int8_t peer, u_int64_t ref, u_int64_t id,
 	quote.author = author;
 
 	ret = chat_command_queue(CHAT_COMMAND_SEND,
-	    peer, ref, &quote, &topic, text, len);
+	    peer, ref, &quote, &topic, NULL, text, len);
 
 	return (ret);
 }
 
 /*
- * Join a group and leave current group (if any).
+ * Queue the roster of our group with the given id for the given peer, a bit
+ * in members for every member. A peer that is not in it is no longer.
  */
 int
-vigil_chat_group(u_int16_t id)
-{
-	int		ret;
-
-	ret = chat_command_queue(CHAT_COMMAND_GROUP,
-	    0, id, NULL, NULL, NULL, 0);
-
-	return (ret);
-}
-
-/*
- * Tell group members we're busy typing bullshit.
- */
-void
-vigil_chat_group_typing(int on)
-{
-	PRECOND(on == 0 || on == 1);
-
-	vigil_atomic_write(&group_typing, on);
-	vigil_wake_signal();
-}
-
-/*
- * Queue a message for our group, sent to every online member.
- */
-int
-vigil_chat_group_send(u_int64_t ref, const char *text, size_t len)
-{
-	int		ret;
-
-	PRECOND(text != NULL);
-	PRECOND(len > 0 && len <= VIGIL_CHAT_MESSAGE_MAX);
-
-	ret = chat_command_queue(CHAT_COMMAND_GROUP_SEND,
-	    0, ref, NULL, NULL, text, len);
-
-	return (ret);
-}
-
-/*
- * Queue a reply for our group, see vigil_chat_reply().
- */
-int
-vigil_chat_group_reply(u_int64_t ref, u_int8_t author, u_int64_t hash,
-    const char *text, size_t len)
+vigil_chat_group_roster(u_int8_t peer, u_int64_t ref, u_int64_t id,
+    u_int32_t serial, int state, const u_int8_t *members, const char *name,
+    size_t len)
 {
 	int			ret;
-	struct chat_quote	quote;
+	struct chat_group	group;
 
-	PRECOND(hash != 0);
+	PRECOND(peer > 0 && peer < KYRKA_PEERS_PER_FLOCK);
+	PRECOND(id != 0);
+	PRECOND(state == VIGIL_CHAT_GROUP_OPEN ||
+	    state == VIGIL_CHAT_GROUP_ENDED);
+	PRECOND(members != NULL);
+	PRECOND(name != NULL || len == 0);
+	PRECOND(len <= VIGIL_CHAT_GROUP_NAME_MAX);
+
+	memset(&group, 0, sizeof(group));
+
+	group.id = id;
+	group.state = state;
+	group.serial = serial;
+	group.owner = vigil->gospel->spi & 0xff;
+	group.type = VIGIL_CHAT_TYPE_ROSTER;
+	memcpy(group.members, members, sizeof(group.members));
+
+	ret = chat_command_queue(CHAT_COMMAND_SEND,
+	    peer, ref, NULL, NULL, &group, name, len);
+
+	return (ret);
+}
+
+/*
+ * Queue a leave for the group with the given id that the given peer owns.
+ */
+int
+vigil_chat_group_leave(u_int8_t owner, u_int64_t ref, u_int64_t id)
+{
+	int			ret;
+	struct chat_group	group;
+
+	PRECOND(owner > 0 && owner < KYRKA_PEERS_PER_FLOCK);
+	PRECOND(id != 0);
+
+	memset(&group, 0, sizeof(group));
+
+	group.id = id;
+	group.owner = owner;
+	group.type = VIGIL_CHAT_TYPE_LEAVE;
+
+	ret = chat_command_queue(CHAT_COMMAND_SEND,
+	    owner, ref, NULL, NULL, &group, NULL, 0);
+
+	return (ret);
+}
+
+/*
+ * Queue a message in the given group for the given peer, in the given topic
+ * if it is not 0, serial is that of the roster we know. Author and hash are
+ * as in vigil_chat_reply() and a hash of 0 means it replies to nothing.
+ */
+int
+vigil_chat_group_send(u_int8_t peer, u_int64_t ref, u_int8_t owner,
+    u_int64_t id, u_int32_t serial, u_int64_t tid, u_int8_t author,
+    u_int64_t hash, const char *text, size_t len)
+{
+	int			ret;
+	size_t			max;
+	struct chat_quote	quote;
+	struct chat_group	group;
+	struct chat_topic	topic;
+
+	PRECOND(peer > 0 && peer < KYRKA_PEERS_PER_FLOCK);
+	PRECOND(owner > 0 && owner < KYRKA_PEERS_PER_FLOCK);
+	PRECOND(id != 0);
 	PRECOND(text != NULL);
-	PRECOND(len > 0 && len <= VIGIL_CHAT_REPLY_MAX);
+
+	if (tid != 0)
+		max = VIGIL_CHAT_GROUP_TOPIC_MAX;
+	else if (hash != 0)
+		max = VIGIL_CHAT_GROUP_REPLY_MAX;
+	else
+		max = VIGIL_CHAT_GROUP_MAX;
+
+	PRECOND(len > 0 && len <= max);
+
+	memset(&quote, 0, sizeof(quote));
+	memset(&group, 0, sizeof(group));
+	memset(&topic, 0, sizeof(topic));
+
+	topic.id = tid;
+
+	group.id = id;
+	group.owner = owner;
+	group.serial = serial;
+	group.type = VIGIL_CHAT_TYPE_TEXT;
 
 	quote.hash = hash;
 	quote.author = author;
 
-	ret = chat_command_queue(CHAT_COMMAND_GROUP_SEND,
-	    0, ref, &quote, NULL, text, len);
+	ret = chat_command_queue(CHAT_COMMAND_SEND,
+	    peer, ref, &quote, &topic, &group, text, len);
 
 	return (ret);
+}
+
+/*
+ * Queue the given topic in the group with the given id that we own for
+ * the given peer, no name removes the topic. Serial is that of our roster.
+ */
+int
+vigil_chat_group_topic(u_int8_t peer, u_int64_t ref, u_int64_t id,
+    u_int32_t serial, u_int64_t tid, u_int32_t color, const char *name,
+    size_t len)
+{
+	int			ret;
+	struct chat_group	group;
+	struct chat_topic	topic;
+
+	PRECOND(peer > 0 && peer < KYRKA_PEERS_PER_FLOCK);
+	PRECOND(id != 0);
+	PRECOND(tid != 0);
+	PRECOND(name != NULL || len == 0);
+	PRECOND(len <= VIGIL_CHAT_TOPIC_NAME_MAX);
+
+	memset(&group, 0, sizeof(group));
+	memset(&topic, 0, sizeof(topic));
+
+	group.id = id;
+	group.serial = serial;
+	group.type = VIGIL_CHAT_TYPE_TEXT;
+	group.owner = vigil->gospel->spi & 0xff;
+
+	topic.id = tid;
+	topic.set = 1;
+	topic.color = color & 0xffffff;
+
+	ret = chat_command_queue(CHAT_COMMAND_SEND,
+	    peer, ref, NULL, &topic, &group, name, len);
+
+	return (ret);
+}
+
+/*
+ * Tell our peers we are typing in the given group and topic, an id of 0
+ * means we are not typing in any group and a topic of 0 in none of its
+ * topics.
+ */
+void
+vigil_chat_group_typing(u_int8_t owner, u_int64_t id, u_int64_t topic)
+{
+	PRECOND(id == 0 || (owner > 0 && owner < KYRKA_PEERS_PER_FLOCK));
+
+	if (id == 0) {
+		owner = 0;
+		topic = 0;
+	}
+
+	vigil_lock(&lock);
+	typing_owner = owner;
+	typing_group = id;
+	typing_topic = topic;
+	vigil_unlock(&lock);
+
+	vigil_wake_signal();
 }
 
 /*
@@ -1041,27 +1120,37 @@ vigil_chat_data_send(u_int8_t peer, u_int64_t ref, int kind, const char *name,
 	PRECOND(data != NULL);
 	PRECOND(len > 0 && len <= VIGIL_CHAT_DATA_MAX);
 
-	ret = chat_data_queue(CHAT_COMMAND_DATA,
-	    peer, ref, 0, kind, name, data, len);
+	ret = chat_data_queue(peer, ref, NULL, 0, kind, name, data, len);
 
 	return (ret);
 }
 
 /*
- * Send data to all peers in our group.
+ * Send data to our peer in the given group, in the given topic if it is
+ * not 0, serial is that of the roster we know.
  */
 int
-vigil_chat_group_data_send(u_int64_t ref, int kind, const char *name,
-    const void *data, size_t len)
+vigil_chat_group_data_send(u_int8_t peer, u_int64_t ref, u_int8_t owner,
+    u_int64_t id, u_int32_t serial, u_int64_t topic, int kind,
+    const char *name, const void *data, size_t len)
 {
-	int		ret;
+	int			ret;
+	struct chat_group	group;
 
+	PRECOND(peer > 0 && peer < KYRKA_PEERS_PER_FLOCK);
+	PRECOND(owner > 0 && owner < KYRKA_PEERS_PER_FLOCK);
+	PRECOND(id != 0);
 	PRECOND(name != NULL);
 	PRECOND(data != NULL);
 	PRECOND(len > 0 && len <= VIGIL_CHAT_DATA_MAX);
 
-	ret = chat_data_queue(CHAT_COMMAND_GROUP_DATA,
-	    0, ref, 0, kind, name, data, len);
+	memset(&group, 0, sizeof(group));
+
+	group.id = id;
+	group.owner = owner;
+	group.serial = serial;
+
+	ret = chat_data_queue(peer, ref, &group, topic, kind, name, data, len);
 
 	return (ret);
 }
@@ -1081,8 +1170,7 @@ vigil_chat_topic_data_send(u_int8_t peer, u_int64_t ref, u_int64_t id,
 	PRECOND(data != NULL);
 	PRECOND(len > 0 && len <= VIGIL_CHAT_DATA_MAX);
 
-	ret = chat_data_queue(CHAT_COMMAND_DATA,
-	    peer, ref, id, kind, name, data, len);
+	ret = chat_data_queue(peer, ref, NULL, id, kind, name, data, len);
 
 	return (ret);
 }
@@ -1111,10 +1199,7 @@ vigil_chat_data_take(u_int64_t token, void *buf, size_t len)
 		return (-1);
 	}
 
-	off = sizeof(struct vigil_chat_data_head);
-
-	if (parcel->topic != 0)
-		off += sizeof(parcel->topic);
+	off = parcel->off;
 
 	if (parcel->size < off) {
 		vigil_unlock(&lock);
@@ -1164,7 +1249,7 @@ vigil_chat_forget(u_int8_t peer)
 		return (0);
 
 	ret = chat_command_queue(CHAT_COMMAND_FORGET,
-	    peer, 0, NULL, NULL, NULL, 0);
+	    peer, 0, NULL, NULL, NULL, NULL, 0);
 
 	return (ret);
 }
@@ -1178,7 +1263,7 @@ vigil_chat_stored(u_int64_t token)
 	int		ret;
 
 	ret = chat_command_queue(CHAT_COMMAND_STORED,
-	    0, token, NULL, NULL, NULL, 0);
+	    0, token, NULL, NULL, NULL, NULL, 0);
 
 	return (ret);
 }
@@ -1198,13 +1283,20 @@ vigil_chat_open(u_int8_t peer, int on)
 }
 
 /*
- * Tell the given peer if we are typing.
+ * Tell the given peer if we are typing, in the given topic if it is not 0.
  */
 void
-vigil_chat_typing(u_int8_t peer, int on)
+vigil_chat_typing(u_int8_t peer, u_int64_t topic, int on)
 {
 	PRECOND(peer > 0 && peer < KYRKA_PEERS_PER_FLOCK);
 	PRECOND(on == 0 || on == 1);
+
+	if (on == 0)
+		topic = 0;
+
+	vigil_lock(&lock);
+	typing_topic = topic;
+	vigil_unlock(&lock);
 
 	vigil_atomic_write(&typing[peer], on);
 	vigil_wake_signal();
@@ -1309,8 +1401,8 @@ vigil_chat_events(char *buf, size_t len)
 }
 
 /*
- * Append the state of our chats to the status, this includes our peers, our
- * tunnels and our group with its members.
+ * Append the state of our chats to the status, this includes our peers and
+ * our tunnels.
  */
 void
 vigil_chat_status(struct vigil_buf *buf)
@@ -1347,12 +1439,6 @@ vigil_chat_status(struct vigil_buf *buf)
 	vigil_status_liturgy(buf, "chat", signaling.group,
 	    &signaling.cathedral, signaling.rx, signaling.tx);
 
-	if (discovery.group != 0) {
-		vigil_buf_appendf(buf, ",");
-		vigil_status_liturgy(buf, "group", discovery.group,
-		    &discovery.cathedral, discovery.rx, discovery.tx);
-	}
-
 	first = 1;
 	vigil_buf_appendf(buf, "],\"peers\":[");
 
@@ -1382,46 +1468,25 @@ vigil_chat_status(struct vigil_buf *buf)
 		vigil_buf_quote(buf, peer->nick);
 		vigil_buf_appendf(buf, ",\"signed\":");
 		vigil_buf_quote(buf, peer->name);
+
+		if (online && tun->typing_group != 0) {
+			vigil_buf_appendf(buf, ",\"typing_owner\":\"%02x\""
+			    ",\"typing_group\":\"%016" PRIx64 "\"",
+			    tun->typing_owner, tun->typing_group);
+		}
+
+		if (online && tun->typing_topic != 0) {
+			vigil_buf_appendf(buf,
+			    ",\"typing_topic\":\"%016" PRIx64 "\"",
+			    tun->typing_topic);
+		}
+
 		vigil_buf_appendf(buf, "}");
 
 		first = 0;
 	}
 
-	vigil_buf_appendf(buf, "]");
-
-	if (discovery.group == 0) {
-		vigil_buf_appendf(buf, ",\"group\":null}");
-		return;
-	}
-
-	vigil_buf_appendf(buf,
-	    ",\"group\":{\"id\":\"%04x\",\"alive\":%s,\"members\":[",
-	    discovery.group, discovery.last != 0 ? "true" : "false");
-
-	first = 1;
-
-	for (idx = 1; idx < KYRKA_PEERS_PER_FLOCK; idx++) {
-		peer = &peers[idx];
-
-		if (peer->member == 0 && peer->group == NULL)
-			continue;
-
-		chat_tunnel_state(peer->group, &link, &online, &p2p);
-		vigil_buf_appendf(buf,
-		    "%s{\"id\":\"%02x\",\"online\":%s,\"link\":\"%s\""
-		    ",\"typing\":%s,\"nick\":", first ? "" : ",", idx,
-		    online ? "true" : "false", link,
-		    online && peer->group->typing ? "true" : "false");
-
-		vigil_buf_quote(buf, peer->nick);
-		vigil_buf_appendf(buf, ",\"signed\":");
-		vigil_buf_quote(buf, peer->name);
-		vigil_buf_appendf(buf, "}");
-
-		first = 0;
-	}
-
-	vigil_buf_appendf(buf, "]}}");
+	vigil_buf_appendf(buf, "]}");
 }
 
 /*
@@ -1686,15 +1751,14 @@ static void
 chat_liturgy_event(KYRKA *ctx, union kyrka_event *evt, void *udata)
 {
 	struct chat_liturgy	*lit;
-	int			idx, first;
-	u_int8_t		local, state;
+	int			idx;
+	u_int8_t		local;
 
 	PRECOND(ctx != NULL);
 	PRECOND(evt != NULL);
 	PRECOND(udata != NULL);
 
 	lit = udata;
-	first = 0;
 	local = vigil->gospel->spi & 0xff;
 
 	if (evt->type == KYRKA_EVENT_LITURGY_RECEIVED ||
@@ -1702,7 +1766,6 @@ chat_liturgy_event(KYRKA *ctx, union kyrka_event *evt, void *udata)
 		if (lit->last == 0) {
 			vigil_log(LOG_INFO, "[chat] liturgy %04x is alive",
 			    lit->group);
-			first = 1;
 		}
 
 		lit->last = vigil->now;
@@ -1717,34 +1780,20 @@ chat_liturgy_event(KYRKA *ctx, union kyrka_event *evt, void *udata)
 			if (idx == local)
 				continue;
 
-			state = evt->liturgy.peers[idx] ? 1 : 0;
-
 			/*
 			 * The cathedral pushes us each peer that signals us
 			 * on its own, peers expire in vigil_chat_update().
 			 */
-			if (lit == &signaling) {
-				if (state == 0)
-					continue;
-				if (peers[idx].present == 0) {
-					vigil_log(LOG_INFO,
-					    "[chat] %02x is around", idx);
-				}
-				peers[idx].present = 1;
-				peers[idx].pushed = vigil->now;
-			} else {
-				if (state != peers[idx].member) {
-					vigil_log(LOG_INFO, "[group] %02x %s",
-					    idx, state ? "joined" : "left");
+			if (evt->liturgy.peers[idx] == 0)
+				continue;
 
-					if (first == 0) {
-						chat_member_report(&peers[idx],
-						    lit->group, state);
-					}
-				}
-
-				peers[idx].member = state;
+			if (peers[idx].present == 0) {
+				vigil_log(LOG_INFO,
+				    "[chat] %02x is around", idx);
 			}
+
+			peers[idx].present = 1;
+			peers[idx].pushed = vigil->now;
 		}
 		break;
 	case KYRKA_EVENT_LOGMSG:
@@ -1792,193 +1841,15 @@ chat_liturgy_send(struct kyrka_packet *pkt, u_int64_t magic, void *udata)
 }
 
 /*
- * Join the given group, leaving the one we are in first.
- */
-static void
-chat_group_join(u_int16_t id)
-{
-	if (id == discovery.group)
-		return;
-
-	chat_group_leave();
-
-	if (id == VIGIL_CHAT_SIGNAL_GROUP)
-		return;
-
-	if (chat_liturgy_init(&discovery, id) == -1)
-		return;
-
-	vigil_log(LOG_INFO, "[group] joined %04x", id);
-}
-
-/*
- * Leave our group, dropping all messages pending.
- */
-static void
-chat_group_leave(void)
-{
-	int		idx;
-
-	if (discovery.group == 0)
-		return;
-
-	vigil_log(LOG_INFO, "[group] left %04x", discovery.group);
-
-	for (idx = 0; idx < KYRKA_PEERS_PER_FLOCK; idx++) {
-		if (peers[idx].group != NULL)
-			chat_tunnel_free(peers[idx].group);
-		peers[idx].member = 0;
-	}
-
-	chat_liturgy_cleanup(&discovery);
-}
-
-/*
- * Update the cathedral about our group liturgy.
- */
-static void
-chat_group_update(void)
-{
-	if (discovery.ctx == NULL)
-		return;
-
-	if (discovery.cathedral.addr.sin_port == 0)
-		return;
-
-	if (discovery.notify != 0 && vigil->now < discovery.notify)
-		return;
-
-	discovery.notify = vigil->now + VIGIL_CALL_NOTIFY;
-
-	if (kyrka_cathedral_liturgy(discovery.ctx, NULL, 0) == -1) {
-		vigil_log(LOG_NOTICE, "[group] kyrka_cathedral_liturgy: %d",
-		    kyrka_last_error(discovery.ctx));
-	}
-}
-
-/*
- * Queue a copy of the given message for every member of our group, each
- * member is pending in the tally of the message until it acks.
- */
-static void
-chat_group_send(u_int64_t ref, const struct chat_quote *quote,
-    const u_int8_t *data, size_t len)
-{
-	int			idx;
-	struct chat_tunnel	*tun;
-	struct chat_msg		*msg;
-	struct chat_tally	*tally;
-
-	PRECOND(data != NULL);
-	PRECOND(len > 0 && len <= VIGIL_CHAT_MESSAGE_MAX);
-
-	tally = NULL;
-
-	for (idx = 0; idx < KYRKA_PEERS_PER_FLOCK; idx++) {
-		tun = peers[idx].group;
-		if (tun == NULL)
-			continue;
-
-		if (tally == NULL) {
-			tally = calloc(1, sizeof(*tally));
-			if (tally == NULL)
-				fatal("calloc: failed to allocate tally");
-
-			tally->ref = ref;
-			tally->report = 1;
-			tally->group = discovery.group;
-
-			TAILQ_INSERT_TAIL(&tallies, tally, list);
-		}
-
-		msg = calloc(1, sizeof(*msg));
-		if (msg == NULL)
-			fatal("calloc: failed to allocate group message");
-
-		msg->ref = ref;
-		msg->tally = tally;
-		msg->frame.len = htobe16(len);
-		msg->frame.type = VIGIL_CHAT_TYPE_TEXT;
-
-		memcpy(msg->frame.data, data, len);
-		memcpy(&msg->quote, quote, sizeof(*quote));
-
-		TAILQ_INSERT_TAIL(&tun->waitq, msg, wlist);
-		chat_msg_queue(tun, msg);
-
-		tally->pending++;
-	}
-}
-
-/*
- * Tell the platform about the tallies that changed, those that have
- * nothing pending anymore are done once the platform heard about it.
- */
-static void
-chat_tallies_report(void)
-{
-	struct chat_tally	*tally, *next;
-
-	for (tally = TAILQ_FIRST(&tallies); tally != NULL; tally = next) {
-		next = TAILQ_NEXT(tally, list);
-
-		if (tally->report && chat_tally_report(tally) != -1)
-			tally->report = 0;
-
-		if (tally->report == 0 && tally->pending == 0) {
-			TAILQ_REMOVE(&tallies, tally, list);
-			free(tally);
-		}
-	}
-}
-
-/*
- * A member acked its copy of a group message or never will, it is no longer
- * pending.
- */
-static void
-chat_tally_update(struct chat_tally *tally, int acked)
-{
-	PRECOND(tally != NULL);
-	PRECOND(tally->pending > 0);
-	PRECOND(acked == 0 || acked == 1);
-
-	tally->pending--;
-	tally->report = 1;
-
-	if (acked)
-		tally->acked++;
-}
-
-/*
- * Drop all tallies, the platform keeps the last counts it heard.
- */
-static void
-chat_tallies_free(void)
-{
-	struct chat_tally	*tally;
-
-	while ((tally = TAILQ_FIRST(&tallies)) != NULL) {
-		TAILQ_REMOVE(&tallies, tally, list);
-		free(tally);
-	}
-}
-
-/*
- * Set up or tear down the tunnel with the given peer in the given group.
+ * Set up or tear down the tunnel with the given peer.
  *
- * We want a tunnel for as long as the peer shows up in the liturgy for it,
- * each tunnel uses a cathedral picked at random from the ones we know.
- *
- * In the signaling group the peer only shows up while it signals us, so
- * we keep a tunnel that is online for as long as we want the peer too.
- *
- * When the liturgy of our group times out we keep the members we last
- * heard of, a cathedral going away does not mean they left. Until it
- * answers again we only keep the tunnels with them that are online.
+ * We want a tunnel while the peer shows up in the signaling liturgy, it only
+ * does while it signals us, so we keep a tunnel that is online for as long
+ * as we want the peer too. Each tunnel uses a cathedral picked at random
+ * from the ones we know.
  */
 static void
-chat_tunnel_check(struct chat_peer *peer, u_int16_t id)
+chat_tunnel_check(struct chat_peer *peer)
 {
 	struct vigil_cathedral	cat;
 	struct chat_tunnel	*tun;
@@ -1986,17 +1857,11 @@ chat_tunnel_check(struct chat_peer *peer, u_int16_t id)
 
 	PRECOND(peer != NULL);
 
-	if (id == VIGIL_CHAT_SIGNAL_GROUP) {
-		tun = peer->tunnel;
-		want = peer->present;
-		if (chat_tunnel_online(tun) && chat_signal_check(peer))
-			want = 1;
-	} else {
-		tun = peer->group;
-		want = peer->member;
-		if (discovery.last == 0 && !chat_tunnel_online(tun))
-			want = 0;
-	}
+	tun = peer->tunnel;
+	want = peer->present;
+
+	if (chat_tunnel_online(tun) && chat_signal_check(peer))
+		want = 1;
 
 	if (want == 0) {
 		if (tun != NULL)
@@ -2010,7 +1875,7 @@ chat_tunnel_check(struct chat_peer *peer, u_int16_t id)
 		if (vigil_call_cathedral_pick(&cat) == -1)
 			return;
 
-		tun = chat_tunnel_new(peer, &cat, id);
+		tun = chat_tunnel_new(peer, &cat);
 	}
 
 	if (tun != NULL)
@@ -2018,13 +1883,11 @@ chat_tunnel_check(struct chat_peer *peer, u_int16_t id)
 }
 
 /*
- * Set up a tunnel with the given peer via the given cathedral, in the
- * litany domain or in the group domain if it is for our group. Any messages
+ * Set up a tunnel with the given peer via the given cathedral, any messages
  * we hold for the peer are queued right away.
  */
 static struct chat_tunnel *
-chat_tunnel_new(struct chat_peer *peer, struct vigil_cathedral *cathedral,
-    u_int16_t id)
+chat_tunnel_new(struct chat_peer *peer, struct vigil_cathedral *cathedral)
 {
 	struct kyrka_cathedral_cfg	cfg;
 	struct chat_msg			*msg;
@@ -2034,9 +1897,7 @@ chat_tunnel_new(struct chat_peer *peer, struct vigil_cathedral *cathedral,
 
 	PRECOND(peer != NULL);
 	PRECOND(cathedral != NULL);
-	PRECOND(id == VIGIL_CHAT_SIGNAL_GROUP || id == discovery.group);
-	PRECOND(id != VIGIL_CHAT_SIGNAL_GROUP || peer->tunnel == NULL);
-	PRECOND(id == VIGIL_CHAT_SIGNAL_GROUP || peer->group == NULL);
+	PRECOND(peer->tunnel == NULL);
 
 	gospel = vigil->gospel;
 	local = gospel->spi & 0xff;
@@ -2052,9 +1913,7 @@ chat_tunnel_new(struct chat_peer *peer, struct vigil_cathedral *cathedral,
 	}
 
 	TAILQ_INIT(&tun->sendq);
-	TAILQ_INIT(&tun->waitq);
 
-	tun->group = id;
 	tun->msgid = 1;
 	tun->peer = peer;
 	tun->io.handle = chat_tunnel_read;
@@ -2074,13 +1933,7 @@ chat_tunnel_new(struct chat_peer *peer, struct vigil_cathedral *cathedral,
 	cfg.send = chat_cathedral_send;
 	cfg.tunnel = (local << 8) | peer->id;
 	cfg.identity = gospel->cathedral_id;
-	cfg.flock_src = gospel->cathedral_flock;
-
-	if (id == VIGIL_CHAT_SIGNAL_GROUP)
-		cfg.flock_src |= VIGIL_CHAT_FLOCK_DOMAIN;
-	else
-		cfg.flock_src |= VIGIL_CHAT_GROUP_DOMAIN;
-
+	cfg.flock_src = gospel->cathedral_flock | VIGIL_CHAT_FLOCK_DOMAIN;
 	cfg.flock_dst = cfg.flock_src;
 
 	if (gospel->flags & VIGIL_CONFIG_FLAG_COMMIXTION)
@@ -2127,13 +1980,6 @@ chat_tunnel_new(struct chat_peer *peer, struct vigil_cathedral *cathedral,
 		fatal("failed to set purgatory interface");
 
 	vigil_io_schedule(&tun->io);
-
-	if (id != VIGIL_CHAT_SIGNAL_GROUP) {
-		peer->group = tun;
-		vigil_log(LOG_INFO, "[group] %02x tunnel via %s",
-		    peer->id, vigil_address(&cathedral->addr));
-		return (tun);
-	}
 
 	peer->tunnel = tun;
 
@@ -2205,7 +2051,7 @@ chat_cathedral_check(struct chat_tunnel *tun)
 
 /*
  * Tear down the given tunnel. Messages that were not acked stay on the
- * outbox of the peer for the next tunnel, group messages are dropped.
+ * outbox of the peer for the next tunnel.
  */
 static void
 chat_tunnel_free(struct chat_tunnel *tun)
@@ -2229,17 +2075,9 @@ chat_tunnel_free(struct chat_tunnel *tun)
 	chat_rxfer_free(tun);
 	chat_avatar_drop(tun);
 
-	while ((msg = TAILQ_FIRST(&tun->waitq)) != NULL) {
-		TAILQ_REMOVE(&tun->waitq, msg, wlist);
-		chat_tally_update(msg->tally, 0);
-		chat_msg_free(msg);
-	}
-
-	if (tun == peer->tunnel) {
-		TAILQ_FOREACH(msg, &peer->outbox, wlist) {
-			msg->id = 0;
-			msg->pending = 0;
-		}
+	TAILQ_FOREACH(msg, &peer->outbox, wlist) {
+		msg->id = 0;
+		msg->pending = 0;
 	}
 
 	vigil_io_unschedule(&tun->io);
@@ -2247,13 +2085,8 @@ chat_tunnel_free(struct chat_tunnel *tun)
 
 	kyrka_ctx_free(tun->ctx);
 
-	if (tun == peer->group) {
-		vigil_log(LOG_INFO, "[group] %02x tunnel closed", peer->id);
-		peer->group = NULL;
-	} else {
-		vigil_log(LOG_INFO, "[chat] %02x tunnel closed", peer->id);
-		peer->tunnel = NULL;
-	}
+	vigil_log(LOG_INFO, "[chat] %02x tunnel closed", peer->id);
+	peer->tunnel = NULL;
 
 	nyfe_mem_zero(tun, sizeof(*tun));
 	free(tun);
@@ -2317,6 +2150,9 @@ chat_tunnel_manage(struct chat_tunnel *tun)
 {
 	struct chat_msg		*msg;
 	int			typed;
+	u_int8_t		owner;
+	u_int64_t		group;
+	u_int64_t		topic;
 
 	PRECOND(tun != NULL);
 	PRECOND(tun->ctx != NULL);
@@ -2362,13 +2198,12 @@ chat_tunnel_manage(struct chat_tunnel *tun)
 	chat_xfer_run(tun);
 	chat_rxfer_check(tun);
 
-	if (tun->group != 0)
-		typed = vigil_atomic_read(&group_typing);
-	else
-		typed = vigil_atomic_read(&typing[tun->peer->id]);
+	typed = vigil_atomic_read(&typing[tun->peer->id]);
+	chat_typing_state(&owner, &group, &topic);
 
 	if (!tun->greeted || typed != tun->typed ||
-	    vigil->now >= tun->next_heartbeat)
+	    owner != tun->typed_owner || group != tun->typed_group ||
+	    topic != tun->typed_topic || vigil->now >= tun->next_heartbeat)
 		chat_frame_send(tun, NULL);
 
 	while ((msg = TAILQ_FIRST(&tun->sendq)) != NULL)
@@ -2629,16 +2464,19 @@ chat_heaven_input(struct kyrka_packet *pkt, u_int64_t seq, void *udata)
 
 	switch (frame->type) {
 	case VIGIL_CHAT_TYPE_TEXT:
-		chat_text_recv(tun, id, NULL, NULL, frame->data, len);
+		chat_text_recv(tun, id, NULL, NULL, NULL, frame->data, len);
 		break;
 	case VIGIL_CHAT_TYPE_REPLY:
-		chat_reply_recv(tun, id, frame->data, len);
+		chat_reply_recv(tun, id, NULL, frame->data, len);
 		break;
 	case VIGIL_CHAT_TYPE_TOPIC:
-		chat_topic_recv(tun, id, frame->data, len);
+		chat_topic_recv(tun, id, NULL, frame->data, len);
 		break;
 	case VIGIL_CHAT_TYPE_TOPIC_TEXT:
-		chat_topic_text_recv(tun, id, frame->data, len);
+		chat_topic_text_recv(tun, id, NULL, frame->data, len);
+		break;
+	case VIGIL_CHAT_TYPE_GROUP:
+		chat_group_recv(tun, id, frame->data, len);
 		break;
 	case VIGIL_CHAT_TYPE_ACK:
 		chat_ack_recv(tun, id);
@@ -2961,7 +2799,7 @@ chat_avatar_check(struct chat_peer *peer, u_int8_t features)
 	if (peer->faceless)
 		return;
 
-	if (chat_event_queue(CHAT_EVENT_AVATAR, peer, 0, 0, NULL, 0) == -1)
+	if (chat_event_queue(CHAT_EVENT_AVATAR, peer, 0, NULL, 0) == -1)
 		return;
 
 	peer->faceless = 1;
@@ -2999,7 +2837,14 @@ chat_frame_send(struct chat_tunnel *tun, struct chat_msg *msg)
 		msg->pending = 0;
 		memcpy(frame, &msg->frame, sizeof(*frame));
 
-		if (msg->topic.id != 0) {
+		if (msg->group.id != 0) {
+			if (tun->features & VIGIL_CHAT_FEATURE_GROUP) {
+				chat_group_frame(frame, msg);
+			} else {
+				frame->len = 0;
+				memset(frame->data, 0, sizeof(frame->data));
+			}
+		} else if (msg->topic.id != 0) {
 			chat_topic_frame(tun, frame, msg);
 		} else if (msg->quote.hash != 0 &&
 		    (tun->features & VIGIL_CHAT_FEATURE_REPLY)) {
@@ -3009,8 +2854,8 @@ chat_frame_send(struct chat_tunnel *tun, struct chat_msg *msg)
 		if (msg->frame.type == VIGIL_CHAT_TYPE_TEXT) {
 			msg->age = vigil->now;
 
-			if (tun->group == 0 && msg->sent == 0 &&
-			    chat_event_queue(CHAT_EVENT_SENT, tun->peer, 0,
+			if (msg->sent == 0 &&
+			    chat_event_queue(CHAT_EVENT_SENT, tun->peer,
 			    msg->ref, NULL, 0) != -1)
 				msg->sent = 1;
 		} else {
@@ -3027,7 +2872,8 @@ chat_frame_send(struct chat_tunnel *tun, struct chat_msg *msg)
 		hb = (struct vigil_chat_hb *)frame->data;
 		hb->uid = tun->local_uid;
 		hb->features = VIGIL_CHAT_FEATURE_DATA |
-		    VIGIL_CHAT_FEATURE_REPLY | VIGIL_CHAT_FEATURE_TOPIC;
+		    VIGIL_CHAT_FEATURE_REPLY | VIGIL_CHAT_FEATURE_TOPIC |
+		    VIGIL_CHAT_FEATURE_GROUP;
 
 		if (named) {
 			hb->features |= VIGIL_CHAT_FEATURE_NAME;
@@ -3042,11 +2888,13 @@ chat_frame_send(struct chat_tunnel *tun, struct chat_msg *msg)
 			hb->features |= VIGIL_CHAT_FEATURE_AVATAR;
 
 		hb->avatar_have = htobe64(tun->peer->avatar_held);
+		hb->typing = vigil_atomic_read(&typing[tun->peer->id]);
 
-		if (tun->group != 0)
-			hb->typing = vigil_atomic_read(&group_typing);
-		else
-			hb->typing = vigil_atomic_read(&typing[tun->peer->id]);
+		chat_typing_state(&tun->typed_owner, &tun->typed_group,
+		    &tun->typed_topic);
+		hb->typing_owner = tun->typed_owner;
+		hb->typing_group = htobe64(tun->typed_group);
+		hb->typing_topic = htobe64(tun->typed_topic);
 
 		vigil_lock(&lock);
 		memcpy(hb->name, nick, sizeof(hb->name));
@@ -3101,13 +2949,12 @@ chat_ack_queue(struct chat_tunnel *tun, u_int64_t id)
 
 /*
  * Our peer acked the message with the given id, tell the platform it was
- * delivered and drop it. Group messages count towards their tally instead.
+ * delivered and drop it.
  */
 static void
 chat_ack_recv(struct chat_tunnel *tun, u_int64_t id)
 {
 	struct chat_msg		*msg;
-	struct chat_msg_list	*list;
 
 	PRECOND(tun != NULL);
 	PRECOND(id != 0);
@@ -3119,9 +2966,7 @@ chat_ack_recv(struct chat_tunnel *tun, u_int64_t id)
 		return;
 	}
 
-	chat_outbox_lookup(tun, &list);
-
-	TAILQ_FOREACH(msg, list, wlist) {
+	TAILQ_FOREACH(msg, &tun->peer->outbox, wlist) {
 		if (msg->id == id)
 			break;
 	}
@@ -3129,15 +2974,11 @@ chat_ack_recv(struct chat_tunnel *tun, u_int64_t id)
 	if (msg == NULL)
 		return;
 
-	if (tun->group == 0) {
-		if (chat_event_queue(CHAT_EVENT_DELIVERED,
-		    tun->peer, 0, msg->ref, NULL, 0) == -1)
-			return;
+	if (chat_event_queue(CHAT_EVENT_DELIVERED,
+	    tun->peer, msg->ref, NULL, 0) == -1)
+		return;
 
-		tun->peer->active = vigil->now;
-	} else {
-		chat_tally_update(msg->tally, 1);
-	}
+	tun->peer->active = vigil->now;
 
 	if (msg->pending)
 		TAILQ_REMOVE(&tun->sendq, msg, slist);
@@ -3145,7 +2986,7 @@ chat_ack_recv(struct chat_tunnel *tun, u_int64_t id)
 	if (tun->xfer != NULL && tun->xfer->msg == msg)
 		chat_xfer_free(tun);
 
-	TAILQ_REMOVE(list, msg, wlist);
+	TAILQ_REMOVE(&tun->peer->outbox, msg, wlist);
 	chat_msg_free(msg);
 }
 
@@ -3187,6 +3028,12 @@ chat_hb_recv(struct chat_tunnel *tun, struct vigil_chat_frame *frame)
 	tun->heard = 1;
 	tun->features = hb->features;
 	tun->typing = hb->typing ? 1 : 0;
+	tun->typing_owner = hb->typing_owner;
+	tun->typing_group = be64toh(hb->typing_group);
+	tun->typing_topic = be64toh(hb->typing_topic);
+
+	if (tun->typing_group == 0)
+		tun->typing_owner = 0;
 
 	if (tun->avatar_have != be64toh(hb->avatar_have)) {
 		tun->avatar_have = be64toh(hb->avatar_have);
@@ -3260,7 +3107,7 @@ chat_name_report(struct chat_peer *peer)
 	if (peer->reported)
 		return;
 
-	if (chat_event_queue(CHAT_EVENT_NAME, peer, 0, 0,
+	if (chat_event_queue(CHAT_EVENT_NAME, peer, 0,
 	    (const u_int8_t *)peer->name, strlen(peer->name)) == -1)
 		return;
 
@@ -3276,7 +3123,7 @@ chat_name_report(struct chat_peer *peer)
 static void
 chat_text_recv(struct chat_tunnel *tun, u_int64_t id,
     const struct chat_quote *quote, const struct chat_topic *topic,
-    u_int8_t *data, u_int16_t len)
+    const struct chat_group *group, u_int8_t *data, u_int16_t len)
 {
 	int			ret;
 	u_int32_t		idx;
@@ -3288,17 +3135,9 @@ chat_text_recv(struct chat_tunnel *tun, u_int64_t id,
 	PRECOND(data != NULL);
 	PRECOND(len <= VIGIL_CHAT_MESSAGE_MAX);
 
-	/* An empty text is dropped, a topic without a name was removed. */
-	if (len == 0) {
-		if (topic == NULL) {
-			chat_ack_queue(tun, id);
-			return;
-		}
-
-		if (!topic->set) {
-			chat_ack_queue(tun, id);
-			return;
-		}
+	if (len == 0 && chat_text_empty(topic, group)) {
+		chat_ack_queue(tun, id);
+		return;
 	}
 
 	hash = chat_frame_hash(data, len);
@@ -3324,7 +3163,7 @@ chat_text_recv(struct chat_tunnel *tun, u_int64_t id,
 	tokens++;
 	chat_utf8_normalize(data, len);
 
-	ret = chat_text_report(tun, tokens, quote, topic, data, len);
+	ret = chat_text_report(tun, tokens, quote, topic, group, data, len);
 	if (ret == -1)
 		return;
 
@@ -3338,17 +3177,34 @@ chat_text_recv(struct chat_tunnel *tun, u_int64_t id,
 	seen->token = tokens;
 	seen->age = vigil->now;
 
-	if (tun->group == 0)
-		tun->peer->active = vigil->now;
+	tun->peer->active = vigil->now;
 }
 
 /*
- * We got a reply from our peer, take who wrote the message it replies to
- * and hand it over like any other message.
+ * Returns 1 if an empty text with the given topic and group is one we drop.
+ * A topic without a name was removed and a roster or leave may carry no
+ * text.
+ */
+static int
+chat_text_empty(const struct chat_topic *topic,
+    const struct chat_group *group)
+{
+	if (group != NULL && group->type != VIGIL_CHAT_TYPE_TEXT)
+		return (0);
+
+	if (topic != NULL && topic->set)
+		return (0);
+
+	return (1);
+}
+
+/*
+ * We got a reply from our peer, in the given group if any, take who wrote
+ * the message it replies to and hand it over like any other message.
  */
 static void
-chat_reply_recv(struct chat_tunnel *tun, u_int64_t id, u_int8_t *data,
-    u_int16_t len)
+chat_reply_recv(struct chat_tunnel *tun, u_int64_t id,
+    const struct chat_group *group, u_int8_t *data, u_int16_t len)
 {
 	size_t			head;
 	struct chat_quote	quote;
@@ -3372,11 +3228,12 @@ chat_reply_recv(struct chat_tunnel *tun, u_int64_t id, u_int8_t *data,
 		quote.author = 0;
 
 	if (quote.hash == 0) {
-		chat_text_recv(tun, id, NULL, NULL, reply->text, len - head);
+		chat_text_recv(tun, id, NULL, NULL, group,
+		    reply->text, len - head);
 		return;
 	}
 
-	chat_text_recv(tun, id, &quote, NULL, reply->text, len - head);
+	chat_text_recv(tun, id, &quote, NULL, group, reply->text, len - head);
 }
 
 /*
@@ -3406,12 +3263,13 @@ chat_reply_frame(struct vigil_chat_frame *frame, const struct chat_msg *msg)
 }
 
 /*
- * Our peer set up or removed a topic, hand it over like a message. One we
- * cannot use is acked right away so our peer stops sending it.
+ * Our peer set up or removed a topic, in the given group if any, hand it
+ * over like a message. One we cannot use is acked right away so our peer
+ * stops sending it.
  */
 static void
-chat_topic_recv(struct chat_tunnel *tun, u_int64_t id, u_int8_t *data,
-    u_int16_t len)
+chat_topic_recv(struct chat_tunnel *tun, u_int64_t id,
+    const struct chat_group *group, u_int8_t *data, u_int16_t len)
 {
 	size_t			head;
 	struct vigil_chat_topic	*wire;
@@ -3427,11 +3285,6 @@ chat_topic_recv(struct chat_tunnel *tun, u_int64_t id, u_int8_t *data,
 
 	if (len < head)
 		return;
-
-	if (tun->group != 0) {
-		chat_ack_queue(tun, id);
-		return;
-	}
 
 	if (len - head > sizeof(wire->name)) {
 		chat_ack_queue(tun, id);
@@ -3449,17 +3302,17 @@ chat_topic_recv(struct chat_tunnel *tun, u_int64_t id, u_int8_t *data,
 		return;
 	}
 
-	chat_text_recv(tun, id, NULL, &topic, wire->name, len - head);
+	chat_text_recv(tun, id, NULL, &topic, group, wire->name, len - head);
 }
 
 /*
- * We got a message in a topic from our peer, hand it over like any other
- * message. One we cannot use is acked right away so our peer stops sending
- * it.
+ * We got a message in a topic from our peer, in the given group if any,
+ * hand it over like any other message. One we cannot use is acked right
+ * away so our peer stops sending it.
  */
 static void
-chat_topic_text_recv(struct chat_tunnel *tun, u_int64_t id, u_int8_t *data,
-    u_int16_t len)
+chat_topic_text_recv(struct chat_tunnel *tun, u_int64_t id,
+    const struct chat_group *group, u_int8_t *data, u_int16_t len)
 {
 	size_t				head;
 	struct vigil_chat_topic_text	*wire;
@@ -3477,11 +3330,6 @@ chat_topic_text_recv(struct chat_tunnel *tun, u_int64_t id, u_int8_t *data,
 	if (len < head)
 		return;
 
-	if (tun->group != 0) {
-		chat_ack_queue(tun, id);
-		return;
-	}
-
 	memset(&quote, 0, sizeof(quote));
 	memset(&topic, 0, sizeof(topic));
 
@@ -3498,11 +3346,12 @@ chat_topic_text_recv(struct chat_tunnel *tun, u_int64_t id, u_int8_t *data,
 		quote.author = 0;
 
 	if (quote.hash == 0) {
-		chat_text_recv(tun, id, NULL, &topic, wire->text, len - head);
+		chat_text_recv(tun, id, NULL, &topic, group,
+		    wire->text, len - head);
 		return;
 	}
 
-	chat_text_recv(tun, id, &quote, &topic, wire->text, len - head);
+	chat_text_recv(tun, id, &quote, &topic, group, wire->text, len - head);
 }
 
 /*
@@ -3564,13 +3413,245 @@ chat_topic_frame(struct chat_tunnel *tun, struct vigil_chat_frame *frame,
 }
 
 /*
+ * We got a frame in a group from our peer, hand what it carries over like
+ * any other message. One we cannot use is acked right away so our peer
+ * stops sending it.
+ */
+static void
+chat_group_recv(struct chat_tunnel *tun, u_int64_t id, u_int8_t *data,
+    u_int16_t len)
+{
+	size_t			head;
+	struct chat_group	group;
+	struct vigil_chat_group	*wire;
+
+	PRECOND(tun != NULL);
+	PRECOND(id != 0);
+	PRECOND(data != NULL);
+	PRECOND(len <= VIGIL_CHAT_MESSAGE_MAX);
+
+	wire = (struct vigil_chat_group *)data;
+	head = sizeof(*wire) - sizeof(wire->data);
+
+	if (len < head)
+		return;
+
+	len -= head;
+	memset(&group, 0, sizeof(group));
+
+	group.type = wire->type;
+	group.owner = wire->owner;
+	group.id = be64toh(wire->id);
+	group.serial = be32toh(wire->serial);
+
+	if (group.id == 0) {
+		chat_ack_queue(tun, id);
+		return;
+	}
+
+	if (group.owner == 0) {
+		chat_ack_queue(tun, id);
+		return;
+	}
+
+	if (group.owner >= KYRKA_PEERS_PER_FLOCK) {
+		chat_ack_queue(tun, id);
+		return;
+	}
+
+	switch (group.type) {
+	case VIGIL_CHAT_TYPE_TEXT:
+		chat_text_recv(tun, id, NULL, NULL, &group, wire->data, len);
+		break;
+	case VIGIL_CHAT_TYPE_REPLY:
+		group.type = VIGIL_CHAT_TYPE_TEXT;
+		chat_reply_recv(tun, id, &group, wire->data, len);
+		break;
+	case VIGIL_CHAT_TYPE_TOPIC:
+		if (group.owner != tun->peer->id) {
+			vigil_log(LOG_NOTICE,
+			    "[chat] %02x sent a topic for %02x",
+			    tun->peer->id, group.owner);
+			chat_ack_queue(tun, id);
+			return;
+		}
+
+		group.type = VIGIL_CHAT_TYPE_TEXT;
+		chat_topic_recv(tun, id, &group, wire->data, len);
+		break;
+	case VIGIL_CHAT_TYPE_TOPIC_TEXT:
+		group.type = VIGIL_CHAT_TYPE_TEXT;
+		chat_topic_text_recv(tun, id, &group, wire->data, len);
+		break;
+	case VIGIL_CHAT_TYPE_ROSTER:
+		chat_group_roster(tun, id, &group, wire->data, len);
+		break;
+	case VIGIL_CHAT_TYPE_LEAVE:
+		if (group.owner != (vigil->gospel->spi & 0xff)) {
+			chat_ack_queue(tun, id);
+			return;
+		}
+
+		chat_text_recv(tun, id, NULL, NULL, &group, wire->data, 0);
+		break;
+	default:
+		chat_ack_queue(tun, id);
+		break;
+	}
+}
+
+/*
+ * We got the roster of a group, only the owner of a group sends it.
+ */
+static void
+chat_group_roster(struct chat_tunnel *tun, u_int64_t id,
+    struct chat_group *group, u_int8_t *data, u_int16_t len)
+{
+	size_t				head;
+	struct vigil_chat_roster	*roster;
+
+	PRECOND(tun != NULL);
+	PRECOND(id != 0);
+	PRECOND(group != NULL);
+	PRECOND(data != NULL);
+
+	roster = (struct vigil_chat_roster *)data;
+	head = sizeof(*roster) - sizeof(roster->name);
+
+	if (len < head) {
+		chat_ack_queue(tun, id);
+		return;
+	}
+
+	if (len - head > sizeof(roster->name)) {
+		chat_ack_queue(tun, id);
+		return;
+	}
+
+	if (group->owner != tun->peer->id) {
+		vigil_log(LOG_NOTICE, "[chat] %02x sent a roster for %02x",
+		    tun->peer->id, group->owner);
+		chat_ack_queue(tun, id);
+		return;
+	}
+
+	if (roster->state != VIGIL_CHAT_GROUP_OPEN &&
+	    roster->state != VIGIL_CHAT_GROUP_ENDED) {
+		chat_ack_queue(tun, id);
+		return;
+	}
+
+	group->state = roster->state;
+	memcpy(group->members, roster->members, sizeof(group->members));
+
+	chat_text_recv(tun, id, NULL, NULL, group, roster->name, len - head);
+}
+
+/*
+ * Turn the given frame into one for the group of its message.
+ */
+static void
+chat_group_frame(struct vigil_chat_frame *frame, const struct chat_msg *msg)
+{
+	size_t				off;
+	u_int16_t			len;
+	struct vigil_chat_group		*wire;
+	struct vigil_chat_topic		*topic;
+	struct vigil_chat_reply		*reply;
+	struct vigil_chat_roster	*roster;
+	struct vigil_chat_topic_text	*text;
+
+	PRECOND(frame != NULL);
+	PRECOND(msg != NULL);
+	PRECOND(msg->group.id != 0);
+
+	len = be16toh(msg->frame.len);
+	wire = (struct vigil_chat_group *)frame->data;
+
+	wire->type = msg->group.type;
+	wire->owner = msg->group.owner;
+	wire->id = htobe64(msg->group.id);
+	wire->serial = htobe32(msg->group.serial);
+
+	switch (msg->group.type) {
+	case VIGIL_CHAT_TYPE_ROSTER:
+		roster = (struct vigil_chat_roster *)wire->data;
+
+		PRECOND(len <= sizeof(roster->name));
+
+		roster->state = msg->group.state;
+		memcpy(roster->members, msg->group.members,
+		    sizeof(roster->members));
+		memcpy(roster->name, msg->frame.data, len);
+
+		off = len + sizeof(*roster) - sizeof(roster->name);
+		break;
+	case VIGIL_CHAT_TYPE_LEAVE:
+		off = 0;
+		break;
+	default:
+		if (msg->topic.set) {
+			topic = (struct vigil_chat_topic *)wire->data;
+
+			PRECOND(len <= sizeof(topic->name));
+
+			topic->id = htobe64(msg->topic.id);
+			topic->color = htobe32(msg->topic.color);
+			memcpy(topic->name, msg->frame.data, len);
+
+			wire->type = VIGIL_CHAT_TYPE_TOPIC;
+			off = len + sizeof(*topic) - sizeof(topic->name);
+			break;
+		}
+
+		if (msg->topic.id != 0) {
+			text = (struct vigil_chat_topic_text *)wire->data;
+
+			PRECOND(len <= VIGIL_CHAT_GROUP_TOPIC_MAX);
+
+			text->topic = htobe64(msg->topic.id);
+			text->author = msg->quote.author;
+			text->hash = htobe64(msg->quote.hash);
+			memcpy(text->text, msg->frame.data, len);
+
+			wire->type = VIGIL_CHAT_TYPE_TOPIC_TEXT;
+			off = len + sizeof(*text) - sizeof(text->text);
+			break;
+		}
+
+		if (msg->quote.hash == 0) {
+			PRECOND(len <= sizeof(wire->data));
+
+			memcpy(wire->data, msg->frame.data, len);
+			off = len;
+			break;
+		}
+
+		reply = (struct vigil_chat_reply *)wire->data;
+
+		PRECOND(len <= VIGIL_CHAT_GROUP_REPLY_MAX);
+
+		reply->author = msg->quote.author;
+		reply->hash = htobe64(msg->quote.hash);
+		memcpy(reply->text, msg->frame.data, len);
+
+		wire->type = VIGIL_CHAT_TYPE_REPLY;
+		off = len + sizeof(*reply) - sizeof(reply->text);
+		break;
+	}
+
+	frame->type = VIGIL_CHAT_TYPE_GROUP;
+	frame->len = htobe16(off + sizeof(*wire) - sizeof(wire->data));
+}
+
+/*
  * Queue an event for a message we got, a message that sets a topic is a
  * topic event. Returns -1 if there are too many.
  */
 static int
 chat_text_report(struct chat_tunnel *tun, u_int64_t token,
     const struct chat_quote *quote, const struct chat_topic *topic,
-    const u_int8_t *data, size_t len)
+    const struct chat_group *group, const u_int8_t *data, size_t len)
 {
 	struct chat_event	*evt;
 
@@ -3583,7 +3664,6 @@ chat_text_report(struct chat_tunnel *tun, u_int64_t token,
 		fatal("calloc: failed to allocate chat event");
 
 	evt->value = token;
-	evt->group = tun->group;
 	evt->peer = tun->peer->id;
 	evt->type = CHAT_EVENT_MESSAGE;
 
@@ -3593,8 +3673,17 @@ chat_text_report(struct chat_tunnel *tun, u_int64_t token,
 	if (topic != NULL)
 		memcpy(&evt->topic, topic, sizeof(*topic));
 
+	if (group != NULL)
+		memcpy(&evt->group, group, sizeof(*group));
+
 	if (evt->topic.set)
 		evt->type = CHAT_EVENT_TOPIC;
+
+	if (evt->group.type == VIGIL_CHAT_TYPE_ROSTER)
+		evt->type = CHAT_EVENT_ROSTER;
+
+	if (evt->group.type == VIGIL_CHAT_TYPE_LEAVE)
+		evt->type = CHAT_EVENT_LEAVE;
 
 	memcpy(evt->text, data, len);
 	memcpy(evt->name, tun->peer->name, sizeof(evt->name));
@@ -3643,13 +3732,10 @@ static void
 chat_msg_resend(struct chat_tunnel *tun)
 {
 	struct chat_msg		*msg;
-	struct chat_msg_list	*list;
 
 	PRECOND(tun != NULL);
 
-	chat_outbox_lookup(tun, &list);
-
-	TAILQ_FOREACH(msg, list, wlist) {
+	TAILQ_FOREACH(msg, &tun->peer->outbox, wlist) {
 		if (msg->pending)
 			continue;
 
@@ -3699,7 +3785,7 @@ chat_msg_queue(struct chat_tunnel *tun, struct chat_msg *msg)
 
 /*
  * Returns 1 if the given message waits until we know what our peer takes,
- * replies and anything in a topic do.
+ * replies and anything in a topic or group do.
  */
 static int
 chat_msg_waits(struct chat_tunnel *tun, struct chat_msg *msg)
@@ -3716,6 +3802,9 @@ chat_msg_waits(struct chat_tunnel *tun, struct chat_msg *msg)
 	if (msg->topic.id != 0)
 		return (1);
 
+	if (msg->group.id != 0)
+		return (1);
+
 	return (0);
 }
 
@@ -3725,15 +3814,18 @@ chat_msg_waits(struct chat_tunnel *tun, struct chat_msg *msg)
 static void
 chat_outbox_add(struct chat_peer *peer, u_int64_t ref,
     const struct chat_quote *quote, const struct chat_topic *topic,
-    const u_int8_t *data, size_t len)
+    const struct chat_group *group, const u_int8_t *data, size_t len)
 {
 	struct chat_msg		*msg;
 
 	PRECOND(peer != NULL);
 	PRECOND(quote != NULL);
 	PRECOND(topic != NULL);
+	PRECOND(group != NULL);
 	PRECOND(data != NULL);
-	PRECOND(len > 0 || topic->set);
+	PRECOND(len > 0 || topic->set ||
+	    group->type == VIGIL_CHAT_TYPE_ROSTER ||
+	    group->type == VIGIL_CHAT_TYPE_LEAVE);
 	PRECOND(len <= VIGIL_CHAT_MESSAGE_MAX);
 
 	TAILQ_FOREACH(msg, &peer->outbox, wlist) {
@@ -3752,6 +3844,7 @@ chat_outbox_add(struct chat_peer *peer, u_int64_t ref,
 	memcpy(msg->frame.data, data, len);
 	memcpy(&msg->quote, quote, sizeof(*quote));
 	memcpy(&msg->topic, topic, sizeof(*topic));
+	memcpy(&msg->group, group, sizeof(*group));
 
 	TAILQ_INSERT_TAIL(&peer->outbox, msg, wlist);
 
@@ -3796,8 +3889,6 @@ chat_token_ack(u_int64_t token)
 	for (idx = 0; idx < KYRKA_PEERS_PER_FLOCK; idx++) {
 		if (chat_tunnel_ack(peers[idx].tunnel, token) != -1)
 			return;
-		if (chat_tunnel_ack(peers[idx].group, token) != -1)
-			return;
 	}
 }
 
@@ -3836,15 +3927,13 @@ chat_tunnel_ack(struct chat_tunnel *tun, u_int64_t token)
 static int
 chat_command_queue(int type, u_int8_t peer, u_int64_t value,
     const struct chat_quote *quote, const struct chat_topic *topic,
-    const void *data, size_t len)
+    const struct chat_group *group, const void *data, size_t len)
 {
 	struct chat_command	*cmd;
 
 	PRECOND(type == CHAT_COMMAND_SEND ||
 	    type == CHAT_COMMAND_FORGET ||
-	    type == CHAT_COMMAND_STORED ||
-	    type == CHAT_COMMAND_GROUP ||
-	    type == CHAT_COMMAND_GROUP_SEND);
+	    type == CHAT_COMMAND_STORED);
 	PRECOND(data != NULL || len == 0);
 	PRECOND(len <= VIGIL_CHAT_MESSAGE_MAX);
 
@@ -3863,6 +3952,9 @@ chat_command_queue(int type, u_int8_t peer, u_int64_t value,
 	if (topic != NULL)
 		memcpy(&cmd->topic, topic, sizeof(*topic));
 
+	if (group != NULL)
+		memcpy(&cmd->group, group, sizeof(*group));
+
 	if (len > 0)
 		memcpy(cmd->data, data, len);
 
@@ -3875,18 +3967,18 @@ chat_command_queue(int type, u_int8_t peer, u_int64_t value,
  * Data we already hold is not copied again.
  */
 static int
-chat_data_queue(int type, u_int8_t peer, u_int64_t value, u_int64_t topic,
-    int kind, const char *name, const void *data, size_t len)
+chat_data_queue(u_int8_t peer, u_int64_t value, const struct chat_group *group,
+    u_int64_t topic, int kind, const char *name, const void *data, size_t len)
 {
 	int				ret;
+	u_int64_t			id;
 	size_t				off;
 	size_t				size;
+	u_int32_t			serial;
 	struct chat_command		*cmd;
 	struct vigil_chat_data_head	head;
 	struct chat_blob		*blob;
 
-	PRECOND(type == CHAT_COMMAND_DATA ||
-	    type == CHAT_COMMAND_GROUP_DATA);
 	PRECOND(name != NULL);
 	PRECOND(data != NULL);
 	PRECOND(len > 0 && len <= VIGIL_CHAT_DATA_MAX);
@@ -3905,6 +3997,9 @@ chat_data_queue(int type, u_int8_t peer, u_int64_t value, u_int64_t topic,
 
 	size = sizeof(head) + len;
 
+	if (group != NULL)
+		size += CHAT_DATA_GROUP;
+
 	if (topic != 0)
 		size += sizeof(topic);
 
@@ -3922,6 +4017,9 @@ chat_data_queue(int type, u_int8_t peer, u_int64_t value, u_int64_t topic,
 	head.kind = kind;
 	head.len = strlen(name);
 	memcpy(head.name, name, head.len);
+
+	if (group != NULL)
+		head.kind |= VIGIL_CHAT_DATA_GROUP;
 
 	if (topic != 0)
 		head.kind |= VIGIL_CHAT_DATA_TOPIC;
@@ -3944,6 +4042,16 @@ chat_data_queue(int type, u_int8_t peer, u_int64_t value, u_int64_t topic,
 	off = sizeof(head);
 	memcpy(blob->data, &head, sizeof(head));
 
+	if (group != NULL) {
+		id = htobe64(group->id);
+		serial = htobe32(group->serial);
+		blob->data[off++] = group->owner;
+		memcpy(blob->data + off, &id, sizeof(id));
+		off += sizeof(id);
+		memcpy(blob->data + off, &serial, sizeof(serial));
+		off += sizeof(serial);
+	}
+
 	if (topic != 0) {
 		topic = htobe64(topic);
 		memcpy(blob->data + off, &topic, sizeof(topic));
@@ -3956,10 +4064,10 @@ chat_data_queue(int type, u_int8_t peer, u_int64_t value, u_int64_t topic,
 	if (cmd == NULL)
 		fatal("calloc: failed to allocate chat command");
 
-	cmd->type = type;
 	cmd->peer = peer;
 	cmd->blob = blob;
 	cmd->value = value;
+	cmd->type = CHAT_COMMAND_DATA;
 
 	return (chat_command_insert(cmd));
 }
@@ -4053,7 +4161,8 @@ chat_commands_run(void)
 
 			if (cmd->peer != local) {
 				chat_outbox_add(peer, cmd->value, &cmd->quote,
-				    &cmd->topic, cmd->data, cmd->len);
+				    &cmd->topic, &cmd->group, cmd->data,
+				    cmd->len);
 			}
 			break;
 		case CHAT_COMMAND_FORGET:
@@ -4062,22 +4171,9 @@ chat_commands_run(void)
 		case CHAT_COMMAND_STORED:
 			chat_token_ack(cmd->value);
 			break;
-		case CHAT_COMMAND_GROUP:
-			chat_group_join(cmd->value & 0xffff);
-			break;
-		case CHAT_COMMAND_GROUP_SEND:
-			if (cmd->quote.hash != 0 && cmd->quote.author == 0)
-				cmd->quote.author = local;
-
-			chat_group_send(cmd->value,
-			    &cmd->quote, cmd->data, cmd->len);
-			break;
 		case CHAT_COMMAND_DATA:
 			if (cmd->peer != local)
 				chat_outbox_data(peer, cmd->value, cmd->blob);
-			break;
-		case CHAT_COMMAND_GROUP_DATA:
-			chat_group_data(cmd->value, cmd->blob);
 			break;
 		}
 
@@ -4106,15 +4202,13 @@ chat_commands_free(void)
  * Queue an event for the platform, returns -1 if there are too many.
  */
 static int
-chat_event_queue(int type, struct chat_peer *peer, u_int16_t id,
-    u_int64_t value, const u_int8_t *data, size_t len)
+chat_event_queue(int type, struct chat_peer *peer, u_int64_t value,
+    const u_int8_t *data, size_t len)
 {
 	struct chat_event	*evt;
 
 	PRECOND(type == CHAT_EVENT_SENT ||
 	    type == CHAT_EVENT_DELIVERED ||
-	    type == CHAT_EVENT_JOINED ||
-	    type == CHAT_EVENT_LEFT ||
 	    type == CHAT_EVENT_AVATAR ||
 	    type == CHAT_EVENT_NAME ||
 	    type == CHAT_EVENT_AMBRY);
@@ -4126,7 +4220,6 @@ chat_event_queue(int type, struct chat_peer *peer, u_int16_t id,
 	if (evt == NULL)
 		fatal("calloc: failed to allocate chat event");
 
-	evt->group = id;
 	evt->type = type;
 	evt->value = value;
 	evt->peer = peer->id;
@@ -4141,32 +4234,7 @@ chat_event_queue(int type, struct chat_peer *peer, u_int16_t id,
 }
 
 /*
- * Tell the platform the given peer joined or left our group.
- */
-static void
-chat_member_report(struct chat_peer *peer, u_int16_t group, int joined)
-{
-	PRECOND(peer != NULL);
-	PRECOND(group != 0);
-
-	if (joined) {
-		if (chat_event_queue(CHAT_EVENT_JOINED,
-		    peer, group, 0, NULL, 0) == -1) {
-			vigil_log(LOG_NOTICE, "[chat] %02x joined %04x, "
-			    "too many events to tell", peer->id, group);
-		}
-		return;
-	}
-
-	if (chat_event_queue(CHAT_EVENT_LEFT, peer, group, 0, NULL, 0) == -1) {
-		vigil_log(LOG_NOTICE, "[chat] %02x left %04x, "
-		    "too many events to tell", peer->id, group);
-	}
-}
-
-/*
- * Tell the platform the ambry generation the given tunnel received. All
- * tunnels in our group share a generation so we report it only once there.
+ * Tell the platform the ambry generation the given tunnel received.
  */
 static void
 chat_ambry_report(struct chat_tunnel *tun, u_int32_t generation)
@@ -4176,42 +4244,28 @@ chat_ambry_report(struct chat_tunnel *tun, u_int32_t generation)
 	vigil_log(LOG_INFO, "[chat] %02x ambry generation %08x",
 	    tun->peer->id, generation);
 
-	if (tun->group != 0 && generation == discovery.ambry)
-		return;
-
 	if (chat_event_queue(CHAT_EVENT_AMBRY,
-	    tun->peer, tun->group, generation, NULL, 0) == -1) {
+	    tun->peer, generation, NULL, 0) == -1) {
 		vigil_log(LOG_NOTICE, "[chat] %02x ambry generation %08x, "
 		    "too many events to tell", tun->peer->id, generation);
-		return;
 	}
-
-	if (tun->group != 0)
-		discovery.ambry = generation;
 }
 
 /*
- * Queue an event with the counts of the given tally for the platform,
- * returns -1 if there are too many.
+ * Take the group and topic we are typing in, an id of 0 means none.
  */
-static int
-chat_tally_report(struct chat_tally *tally)
+static void
+chat_typing_state(u_int8_t *owner, u_int64_t *id, u_int64_t *topic)
 {
-	struct chat_event	*evt;
+	PRECOND(owner != NULL);
+	PRECOND(id != NULL);
+	PRECOND(topic != NULL);
 
-	PRECOND(tally != NULL);
-
-	evt = calloc(1, sizeof(*evt));
-	if (evt == NULL)
-		fatal("calloc: failed to allocate chat event");
-
-	evt->value = tally->ref;
-	evt->group = tally->group;
-	evt->acked = tally->acked;
-	evt->type = CHAT_EVENT_ACKS;
-	evt->pending = tally->pending;
-
-	return (chat_event_insert(evt));
+	vigil_lock(&lock);
+	*id = typing_group;
+	*topic = typing_topic;
+	*owner = typing_owner;
+	vigil_unlock(&lock);
 }
 
 /*
@@ -4273,14 +4327,19 @@ chat_events_take(struct chat_event_list *list, size_t max)
 static void
 chat_event_render(struct vigil_buf *buf, struct chat_event *evt, int first)
 {
+	int		idx, more;
+
 	PRECOND(buf != NULL);
 	PRECOND(evt != NULL);
 
 	vigil_buf_appendf(buf, "%s{\"peer\":\"%02x\"",
 	    first ? "" : ",", evt->peer);
 
-	if (evt->group != 0) {
-		vigil_buf_appendf(buf, ",\"group\":\"%04x\"", evt->group);
+	if (evt->group.id != 0) {
+		vigil_buf_appendf(buf,
+		    ",\"owner\":\"%02x\",\"group\":\"%016" PRIx64 "\""
+		    ",\"serial\":%u", evt->group.owner, evt->group.id,
+		    evt->group.serial);
 	}
 
 	switch (evt->type) {
@@ -4323,19 +4382,30 @@ chat_event_render(struct vigil_buf *buf, struct chat_event *evt, int first)
 		vigil_buf_appendf(buf,
 		    ",\"type\":\"delivered\",\"ref\":%" PRIu64, evt->value);
 		break;
-	case CHAT_EVENT_ACKS:
+	case CHAT_EVENT_ROSTER:
 		vigil_buf_appendf(buf,
-		    ",\"type\":\"acks\",\"ref\":%" PRIu64
-		    ",\"acked\":%u,\"pending\":%u", evt->value,
-		    evt->acked, evt->pending);
+		    ",\"type\":\"roster\",\"token\":%" PRIu64
+		    ",\"ended\":%s,\"members\":[", evt->value,
+		    evt->group.state == VIGIL_CHAT_GROUP_ENDED ?
+		    "true" : "false");
+
+		more = 0;
+
+		for (idx = 1; idx < KYRKA_PEERS_PER_FLOCK; idx++) {
+			if (!(evt->group.members[idx / 8] & (1 << (idx % 8))))
+				continue;
+
+			vigil_buf_appendf(buf, "%s\"%02x\"",
+			    more ? "," : "", idx);
+			more = 1;
+		}
+
+		vigil_buf_appendf(buf, "],\"name\":");
+		vigil_buf_quote(buf, evt->text);
 		break;
-	case CHAT_EVENT_JOINED:
-		vigil_buf_appendf(buf, ",\"type\":\"joined\",\"nick\":");
-		vigil_buf_quote(buf, evt->nick);
-		break;
-	case CHAT_EVENT_LEFT:
-		vigil_buf_appendf(buf, ",\"type\":\"left\",\"nick\":");
-		vigil_buf_quote(buf, evt->nick);
+	case CHAT_EVENT_LEAVE:
+		vigil_buf_appendf(buf,
+		    ",\"type\":\"leave\",\"token\":%" PRIu64, evt->value);
 		break;
 	case CHAT_EVENT_DATA:
 		vigil_buf_appendf(buf, ",\"type\":\"data\",\"kind\":\"%s\""
@@ -4404,7 +4474,7 @@ chat_mention_check(struct chat_event *evt)
 
 	PRECOND(evt != NULL);
 
-	if (evt->group == 0)
+	if (evt->group.id == 0)
 		return;
 
 	vigil_lock(&lock);
@@ -4598,22 +4668,6 @@ chat_command_next(struct chat_command **cmd)
 }
 
 /*
- * Returns the list that the messages waiting for an ack from the peer of
- * the given tunnel are on.
- */
-static void
-chat_outbox_lookup(struct chat_tunnel *tun, struct chat_msg_list **list)
-{
-	PRECOND(tun != NULL);
-	PRECOND(list != NULL);
-
-	if (tun->group != 0)
-		*list = &tun->waitq;
-	else
-		*list = &tun->peer->outbox;
-}
-
-/*
  * Free the given message and drop the data it carries, if any.
  */
 static void
@@ -4700,7 +4754,7 @@ chat_data_msg(u_int64_t ref, struct chat_blob *blob)
 		fatal("calloc: failed to allocate chat message");
 
 	head = (struct vigil_chat_data_head *)blob->data;
-	kind = head->kind & ~VIGIL_CHAT_DATA_TOPIC;
+	kind = head->kind & ~CHAT_DATA_FLAGS;
 
 	if (kind == VIGIL_CHAT_DATA_IMAGE) {
 		(void)snprintf(what, sizeof(what), "an image");
@@ -4754,56 +4808,12 @@ chat_outbox_data(struct chat_peer *peer, u_int64_t ref,
 }
 
 /*
- * Queue the given data for every member of our group, like we do for
- * messages to it with chat_group_send().
- */
-static void
-chat_group_data(u_int64_t ref, struct chat_blob *blob)
-{
-	int			idx;
-	struct chat_tunnel	*tun;
-	struct chat_msg		*msg;
-	struct chat_tally	*tally;
-
-	PRECOND(blob != NULL);
-
-	tally = NULL;
-
-	for (idx = 0; idx < KYRKA_PEERS_PER_FLOCK; idx++) {
-		tun = peers[idx].group;
-		if (tun == NULL)
-			continue;
-
-		if (tally == NULL) {
-			tally = calloc(1, sizeof(*tally));
-			if (tally == NULL)
-				fatal("calloc: failed to allocate tally");
-
-			tally->ref = ref;
-			tally->report = 1;
-			tally->group = discovery.group;
-
-			TAILQ_INSERT_TAIL(&tallies, tally, list);
-		}
-
-		msg = chat_data_msg(ref, blob);
-		msg->tally = tally;
-
-		TAILQ_INSERT_TAIL(&tun->waitq, msg, wlist);
-		chat_msg_queue(tun, msg);
-
-		tally->pending++;
-	}
-}
-
-/*
  * Start the xfer for the peer if it indicated it can take more.
  */
 static void
 chat_xfer_run(struct chat_tunnel *tun)
 {
 	struct chat_msg		*msg;
-	struct chat_msg_list	*list;
 
 	PRECOND(tun != NULL);
 
@@ -4811,8 +4821,7 @@ chat_xfer_run(struct chat_tunnel *tun)
 		if (!tun->heard)
 			return;
 
-		chat_outbox_lookup(tun, &list);
-		TAILQ_FOREACH(msg, list, wlist) {
+		TAILQ_FOREACH(msg, &tun->peer->outbox, wlist) {
 			if (msg->blob == NULL || msg->id == 0)
 				continue;
 
@@ -5174,9 +5183,9 @@ chat_chunk_send(struct chat_tunnel *tun, u_int32_t idx)
 
 	xfer->sent[idx] = vigil->now;
 
-	if (tun->group == 0 && xfer->msg->sent == 0) {
+	if (xfer->msg->sent == 0) {
 		if (chat_event_queue(CHAT_EVENT_SENT,
-		    tun->peer, 0, xfer->msg->ref, NULL, 0) != -1)
+		    tun->peer, xfer->msg->ref, NULL, 0) != -1)
 			xfer->msg->sent = 1;
 	}
 }
@@ -5481,9 +5490,11 @@ chat_data_gospel(struct chat_tunnel *tun, struct chat_msg *msg)
 static int
 chat_data_arrived(struct chat_tunnel *tun, struct chat_rxfer *xfer)
 {
+	size_t				off;
 	u_int8_t			kind;
 	u_int64_t			held;
 	u_int64_t			topic;
+	struct chat_group		group;
 	struct chat_seen		*seen;
 	struct vigil_chat_data_head	*head;
 	struct chat_parcel		*parcel;
@@ -5494,18 +5505,14 @@ chat_data_arrived(struct chat_tunnel *tun, struct chat_rxfer *xfer)
 	PRECOND(xfer->size > sizeof(*head));
 
 	head = (struct vigil_chat_data_head *)xfer->data;
-	kind = head->kind & ~VIGIL_CHAT_DATA_TOPIC;
+	kind = head->kind & ~CHAT_DATA_FLAGS;
 
-	topic = 0;
-
-	if (head->kind & VIGIL_CHAT_DATA_TOPIC) {
-		if (chat_data_topic(tun, xfer, kind, &topic) == -1) {
-			vigil_log(LOG_NOTICE,
-			    "[chat] %02x sent data in a bad topic",
-			    tun->peer->id);
-			chat_data_discard(tun, xfer);
-			return (0);
-		}
+	if (chat_data_tags(xfer, kind, &off, &group, &topic) == -1) {
+		vigil_log(LOG_NOTICE,
+		    "[chat] %02x sent data in a bad topic or group",
+		    tun->peer->id);
+		chat_data_discard(tun, xfer);
+		return (0);
 	}
 
 	if (chat_data_kind_valid(kind) == -1) {
@@ -5563,11 +5570,13 @@ chat_data_arrived(struct chat_tunnel *tun, struct chat_rxfer *xfer)
 	if (parcel == NULL)
 		fatal("calloc: failed to allocate data");
 
+	parcel->off = off;
 	parcel->topic = topic;
 	parcel->data = xfer->data;
 	parcel->size = xfer->size;
 	parcel->age = vigil->now;
 	parcel->token = ++tokens;
+	memcpy(&parcel->group, &group, sizeof(group));
 
 	xfer->data = NULL;
 
@@ -5590,7 +5599,7 @@ chat_data_arrived(struct chat_tunnel *tun, struct chat_rxfer *xfer)
 	seen->token = parcel->token;
 	seen->age = vigil->now;
 
-	if (tun->group == 0 && kind != VIGIL_CHAT_DATA_AVATAR)
+	if (kind != VIGIL_CHAT_DATA_AVATAR)
 		tun->peer->active = vigil->now;
 
 	vigil_log(LOG_INFO, "[chat] %02x sent us data of %zu bytes",
@@ -5600,36 +5609,74 @@ chat_data_arrived(struct chat_tunnel *tun, struct chat_rxfer *xfer)
 }
 
 /*
- * Take the topic the data on the given xfer is in, returns -1 if it is not
- * one we can use.
+ * Take the group and topic the data on the given xfer is in and where the
+ * data starts, returns -1 if they are not ones we can use.
  */
 static int
-chat_data_topic(struct chat_tunnel *tun, struct chat_rxfer *xfer,
-    u_int8_t kind, u_int64_t *topic)
+chat_data_tags(struct chat_rxfer *xfer, u_int8_t kind, size_t *off,
+    struct chat_group *group, u_int64_t *topic)
 {
-	size_t		off;
+	u_int64_t			id;
+	u_int8_t			flags;
+	struct vigil_chat_data_head	*head;
+	u_int32_t			serial;
 
-	PRECOND(tun != NULL);
 	PRECOND(xfer != NULL);
 	PRECOND(xfer->data != NULL);
+	PRECOND(off != NULL);
+	PRECOND(group != NULL);
 	PRECOND(topic != NULL);
 
-	if (tun->group != 0)
-		return (-1);
+	memset(group, 0, sizeof(*group));
+
+	*topic = 0;
+	*off = sizeof(*head);
+
+	head = (struct vigil_chat_data_head *)xfer->data;
+	flags = head->kind & CHAT_DATA_FLAGS;
+
+	if (flags == 0)
+		return (0);
 
 	if (kind == VIGIL_CHAT_DATA_AVATAR)
 		return (-1);
 
-	off = sizeof(struct vigil_chat_data_head);
+	if (flags & VIGIL_CHAT_DATA_GROUP) {
+		if (xfer->size <= *off + CHAT_DATA_GROUP)
+			return (-1);
 
-	if (xfer->size <= off + sizeof(*topic))
-		return (-1);
+		memcpy(&id, xfer->data + *off + 1, sizeof(id));
+		memcpy(&serial, xfer->data + *off + 1 + sizeof(id),
+		    sizeof(serial));
 
-	memcpy(topic, xfer->data + off, sizeof(*topic));
-	*topic = be64toh(*topic);
+		group->id = be64toh(id);
+		group->serial = be32toh(serial);
+		group->owner = xfer->data[*off];
+		group->type = VIGIL_CHAT_TYPE_TEXT;
 
-	if (*topic == 0)
-		return (-1);
+		*off += CHAT_DATA_GROUP;
+
+		if (group->id == 0)
+			return (-1);
+
+		if (group->owner == 0)
+			return (-1);
+
+		if (group->owner >= KYRKA_PEERS_PER_FLOCK)
+			return (-1);
+	}
+
+	if (flags & VIGIL_CHAT_DATA_TOPIC) {
+		if (xfer->size <= *off + sizeof(*topic))
+			return (-1);
+
+		memcpy(topic, xfer->data + *off, sizeof(*topic));
+		*topic = be64toh(*topic);
+		*off += sizeof(*topic);
+
+		if (*topic == 0)
+			return (-1);
+	}
 
 	return (0);
 }
@@ -5678,16 +5725,14 @@ chat_data_report(struct chat_tunnel *tun, struct chat_parcel *parcel)
 	if (evt == NULL)
 		fatal("calloc: failed to allocate chat event");
 
-	evt->group = tun->group;
 	evt->peer = tun->peer->id;
 	evt->value = parcel->token;
 	evt->type = CHAT_EVENT_DATA;
 	evt->topic.id = parcel->topic;
-	evt->size = parcel->size - sizeof(*head);
-	evt->kind = head->kind & ~VIGIL_CHAT_DATA_TOPIC;
+	evt->size = parcel->size - parcel->off;
+	evt->kind = head->kind & ~CHAT_DATA_FLAGS;
 
-	if (parcel->topic != 0)
-		evt->size -= sizeof(parcel->topic);
+	memcpy(&evt->group, &parcel->group, sizeof(parcel->group));
 
 	if (evt->kind == VIGIL_CHAT_DATA_AVATAR)
 		evt->type = CHAT_EVENT_AVATAR;

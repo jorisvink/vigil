@@ -113,11 +113,12 @@ final class VigilPlugin: NSObject, FlutterPlugin, UIDocumentPickerDelegate,
 
         if let chat = opened {
             if ChatVault.group(chat) != nil {
-                VigilCall.shared.send?("chat-group-typing 0")
+                VigilCall.shared.send?("chat-group-typing 0 0 0")
             } else {
                 VigilCall.shared.send?("chat-open \(chat) 0")
-                VigilCall.shared.send?("chat-typing \(chat) 0")
+                VigilCall.shared.send?("chat-typing \(chat) 0 0")
             }
+
             opened = nil
         }
 
@@ -268,6 +269,14 @@ final class VigilPlugin: NSObject, FlutterPlugin, UIDocumentPickerDelegate,
             } catch {
                 result(FlutterError(code: "failed", message: "\(error)", details: nil))
             }
+        case "chatGroups":
+            do {
+                result(json(try ChatVault.shared.groups()))
+            } catch let error as ChatVault.Locked {
+                result(FlutterError(code: "locked", message: error.description, details: nil))
+            } catch {
+                result(FlutterError(code: "failed", message: "\(error)", details: nil))
+            }
         case "chatNames":
             do {
                 result(json(try ChatVault.shared.peerNames()))
@@ -352,8 +361,8 @@ final class VigilPlugin: NSObject, FlutterPlugin, UIDocumentPickerDelegate,
                 DispatchQueue.main.async { result(reply) }
             }
         case "chatSend", "chatImageSend", "chatRead", "chatOpen", "chatTyping",
-             "chatImageData", "chatDelete", "chatSettings", "chatGroup", "chatFavorite",
-             "chatPin", "chatMute", "chatTopic":
+             "chatImageData", "chatDelete", "chatSettings", "chatFavorite",
+             "chatPin", "chatMute", "chatTopic", "groupCreate", "groupEdit", "groupLeave":
             result(Self.reply { try chat(call) })
         case "flag":
             let args = call.arguments as? [String: Any] ?? [:]
@@ -886,34 +895,169 @@ final class VigilPlugin: NSObject, FlutterPlugin, UIDocumentPickerDelegate,
 
     private func dataSend(_ hex: String, media: String, name: String, data: Data,
                           topic: String = "") throws -> String {
-        let group = ChatVault.group(hex)
-        let defaults = ChatVault.defaults
-
         guard !data.isEmpty, data.count <= Int(VIGIL_CHAT_DATA_MAX) else {
             throw ChatVault.Failure(description: "A file is at most 4 MB.")
         }
 
-        if let group, Int(group) != defaults.integer(forKey: "chatGroup") {
-            throw ChatVault.Failure(description: "You are not in this group anymore.")
-        }
+        let (ref, _) = try ChatVault.shared.sendData(hex, media: media, name: name, data: data, topic: topic,
+                                                      local: try Self.local())
 
-        if group != nil, !Self.gospelEnabled || VigilCall.shared.send == nil {
-            throw ChatVault.Failure(
-                description: "Gospel is not running, group files only go to members that are around.")
-        }
-
-        let (ref, file) = try ChatVault.shared.sendData(hex, media: media, name: name, data: data, topic: topic)
-
-        if group != nil {
-            let label = Data(name.utf8).base64EncodedString()
-            VigilCall.shared.send?("chat-group-data \(ref) \(file) \(hex) \(media) \(label)")
-        } else {
-            VigilCall.shared.send?("chat")
-        }
-
+        VigilCall.shared.send?("chat")
         version += 1
 
         return "\(ref)"
+    }
+
+    private static func local() throws -> String {
+        guard let local = ChatVault.defaults.string(forKey: "chatSelf"), !local.isEmpty else {
+            throw ChatVault.Failure(description: "Gospel is not running.")
+        }
+
+        return local
+    }
+
+    private static func picked(_ value: Any?, without local: String) -> [String]? {
+        guard let list = value as? [String] else { return nil }
+
+        var out = [String]()
+
+        for peer in list where peer != local && !out.contains(peer) {
+            guard peer.count == 2, let id = UInt8(peer, radix: 16), id > 0, id < 0xff else { continue }
+            out.append(peer)
+        }
+
+        return out
+    }
+
+    private func groupCreate(_ args: [String: Any]) throws -> String {
+        let vault = ChatVault.shared
+        let local = try Self.local()
+        let name = (args["name"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let members = Self.picked(args["members"], without: local) ?? []
+
+        guard name.utf8.count <= Int(VIGIL_CHAT_GROUP_NAME_MAX) else {
+            throw ChatVault.Failure(description: "A group name is at most \(VIGIL_CHAT_GROUP_NAME_MAX) bytes.")
+        }
+
+        guard !members.isEmpty, let me = UInt8(local, radix: 16) else {
+            throw ChatVault.Failure(description: "Pick at least one member.")
+        }
+
+        let id = String(format: "%016llx", UInt64.random(in: 1...UInt64.max))
+        let chat = ChatVault.groupChat(local, id)
+        let info: [String: Any] = [
+            "owner": local, "id": id, "name": name, "members": members + [local], "serial": 1,
+            "state": "open",
+        ]
+
+        try vault.groupSave(chat, info)
+        try vault.deliver(chat: chat, peer: me, nick: "", text: name,
+                          time: Int64(Date().timeIntervalSince1970 * 1000), kind: "created")
+        try vault.merge()
+        try vault.rosterQueue(chat, info, local: local)
+
+        VigilCall.shared.send?("chat")
+        Self.namesChanged()
+        version += 1
+
+        return chat
+    }
+
+    private func groupEdit(_ chat: String, _ args: [String: Any]) throws {
+        let vault = ChatVault.shared
+        let local = try Self.local()
+        let time = Int64(Date().timeIntervalSince1970 * 1000)
+
+        guard var info = try vault.groupInfo(chat), let me = UInt8(local, radix: 16) else {
+            throw ChatVault.Failure(description: "There is no group \(chat).")
+        }
+
+        guard info["owner"] as? String == local else {
+            throw ChatVault.Failure(description: "Only the owner can change a group.")
+        }
+
+        guard info["state"] as? String == "open" else {
+            throw ChatVault.Failure(description: "This group is closed.")
+        }
+
+        let before = ChatVault.members(info)
+        let members = Self.picked(args["members"], without: local).map { $0 + [local] } ?? before
+
+        guard members.count > 1 else {
+            throw ChatVault.Failure(description: "A group needs at least one other member.")
+        }
+
+        if let name = (args["name"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines) {
+            guard name.utf8.count <= Int(VIGIL_CHAT_GROUP_NAME_MAX) else {
+                throw ChatVault.Failure(description: "A group name is at most \(VIGIL_CHAT_GROUP_NAME_MAX) bytes.")
+            }
+
+            if name != info["name"] as? String ?? "" {
+                try vault.deliver(chat: chat, peer: me, nick: "", text: name, time: time, kind: "renamed")
+            }
+
+            info["name"] = name
+        }
+
+        let gone = before.filter { !members.contains($0) }
+
+        for member in members where !before.contains(member) {
+            if let id = UInt8(member, radix: 16) {
+                try vault.deliver(chat: chat, peer: id, nick: "", text: "", time: time, kind: "joined")
+            }
+        }
+
+        for member in gone {
+            if let id = UInt8(member, radix: 16) {
+                try vault.deliver(chat: chat, peer: id, nick: "", text: "", time: time, kind: "left")
+            }
+        }
+
+        info["members"] = members
+        info["serial"] = ((info["serial"] as? NSNumber)?.intValue ?? 0) + 1
+
+        try vault.groupSave(chat, info)
+        try vault.groupDrop(chat, gone)
+        try vault.merge()
+        try vault.rosterQueue(chat, info, local: local, also: gone)
+
+        VigilCall.shared.send?("chat")
+        Self.namesChanged()
+        version += 1
+    }
+
+    private func groupLeave(_ chat: String) throws {
+        let vault = ChatVault.shared
+        let local = try Self.local()
+        let time = Int64(Date().timeIntervalSince1970 * 1000)
+
+        guard var info = try vault.groupInfo(chat), info["state"] as? String == "open",
+              let owner = info["owner"] as? String, let me = UInt8(local, radix: 16) else { return }
+
+        try vault.groupDrop(chat, ChatVault.members(info) + [owner])
+
+        if owner == local {
+            info["state"] = "ended"
+            info["serial"] = ((info["serial"] as? NSNumber)?.intValue ?? 0) + 1
+            try vault.groupSave(chat, info)
+            try vault.deliver(chat: chat, peer: me, nick: "", text: "", time: time, kind: "ended")
+            try vault.rosterQueue(chat, info, local: local)
+        } else {
+            info["state"] = "left"
+            try vault.groupSave(chat, info)
+            try vault.deliver(chat: chat, peer: me, nick: "", text: "", time: time, kind: "parted")
+            try vault.leaveQueue(chat, owner: owner)
+        }
+
+        try vault.merge()
+
+        VigilCall.shared.send?("chat")
+        Self.namesChanged()
+        version += 1
+    }
+
+    private static func namesChanged() {
+        ChatVault.defaults.set(ChatVault.defaults.integer(forKey: "chatNames") + 1, forKey: "chatNames")
     }
 
     func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {
@@ -1230,28 +1374,9 @@ final class VigilPlugin: NSObject, FlutterPlugin, UIDocumentPickerDelegate,
     }
 
     private func unsent(_ message: String) {
-        let words = message.split(separator: " ")
-        let chat: String
-
-        switch words.first {
-        case "chat-group-send":
-            let group = ChatVault.defaults.integer(forKey: "chatGroup")
-            chat = ChatVault.groupChat(UInt16(truncatingIfNeeded: group))
-        case "chat-group-data":
-            guard words.count == 6 else { return }
-            chat = String(words[3])
-        case "chat":
+        if message.split(separator: " ").first == "chat" {
             NSLog("vigil: the tunnel did not hear about our outbox")
-            return
-        default:
-            return
         }
-
-        guard words.count > 1, let ref = Int64(words[1]) else { return }
-
-        try? ChatVault.shared.unqueue(UInt64(bitPattern: ref))
-        try? ChatVault.shared.receipt(chat, ref: ref, kind: "failed")
-        version += 1
     }
 
     private func combined(_ tunnel: String, _ status: String, linked: Bool, linking: Bool) -> String {
@@ -1270,17 +1395,8 @@ final class VigilPlugin: NSObject, FlutterPlugin, UIDocumentPickerDelegate,
         let hex = (call.arguments as? String) ?? (args["peer"] as? String) ?? ""
         let group = ChatVault.group(hex)
 
-        if call.method == "chatGroup" {
-            let id = hex.isEmpty ? 0 : UInt16(hex, radix: 16)
-            guard let id, hex.count <= 4 else {
-                throw ChatVault.Failure(description: "A group is 1 to 4 hex digits.")
-            }
-
-            defaults.set(Int(id), forKey: "chatGroup")
-            VigilCall.shared.send?("chat-group")
-            version += 1
-
-            return ""
+        if call.method == "groupCreate" {
+            return try groupCreate(args)
         }
 
         guard call.method == "chats" || call.method == "chatSettings" ||
@@ -1314,30 +1430,22 @@ final class VigilPlugin: NSObject, FlutterPlugin, UIDocumentPickerDelegate,
                 max = Int(VIGIL_CHAT_TOPIC_MAX)
             }
 
+            if group != nil {
+                max = Int(quote == nil ? VIGIL_CHAT_GROUP_MAX : VIGIL_CHAT_GROUP_REPLY_MAX)
+            }
+
+            if group != nil, !topic.isEmpty {
+                max = Int(VIGIL_CHAT_GROUP_TOPIC_MAX)
+            }
+
             guard size > 0, size <= max else {
                 throw ChatVault.Failure(description: "A message is at most \(max) bytes.")
             }
 
-            if let group, Int(group) != defaults.integer(forKey: "chatGroup") {
-                throw ChatVault.Failure(description: "You are not in this group anymore.")
-            }
+            let local = try group == nil ? "" : Self.local()
+            let ref = try vault.send(hex, text: text, quote: quote, topic: topic, local: local)
 
-            if group != nil, !Self.gospelEnabled || VigilCall.shared.send == nil {
-                throw ChatVault.Failure(
-                    description: "Gospel is not running, group messages only go to members that are around.")
-            }
-
-            let ref = try vault.send(hex, text: text, quote: quote, topic: topic)
-            let encoded = Data(text.utf8).base64EncodedString()
-
-            if group != nil, let quote {
-                VigilCall.shared.send?("chat-group-send \(ref) \(encoded) \(quote.author) \(quote.hash)")
-            } else if group != nil {
-                VigilCall.shared.send?("chat-group-send \(ref) \(encoded)")
-            } else {
-                VigilCall.shared.send?("chat")
-            }
-
+            VigilCall.shared.send?("chat")
             version += 1
 
             return "\(ref)"
@@ -1358,10 +1466,6 @@ final class VigilPlugin: NSObject, FlutterPlugin, UIDocumentPickerDelegate,
             let color = ((args["color"] as? NSNumber)?.intValue ?? 0) & 0xffffff
             var topic = try Self.topic(hex, args["topic"])
 
-            guard group == nil else {
-                throw ChatVault.Failure(description: "Groups have no topics.")
-            }
-
             guard name.utf8.count <= Int(VIGIL_CHAT_TOPIC_NAME_MAX) else {
                 throw ChatVault.Failure(description: "A topic name is at most \(VIGIL_CHAT_TOPIC_NAME_MAX) bytes.")
             }
@@ -1370,7 +1474,9 @@ final class VigilPlugin: NSObject, FlutterPlugin, UIDocumentPickerDelegate,
                 topic = String(format: "%016llx", UInt64.random(in: 1...UInt64.max))
             }
 
-            _ = try vault.topic(hex, topic: topic, name: name, color: color)
+            let local = try group == nil ? "" : Self.local()
+
+            _ = try vault.topic(hex, topic: topic, name: name, color: color, local: local)
             VigilCall.shared.send?("chat")
             version += 1
 
@@ -1396,10 +1502,16 @@ final class VigilPlugin: NSObject, FlutterPlugin, UIDocumentPickerDelegate,
             try vault.pin(hex, ref: ref, on: args["on"] as? Bool ?? false)
             version += 1
             return ""
+        case "groupEdit":
+            try groupEdit(hex, args)
+            return ""
+        case "groupLeave":
+            try groupLeave(hex)
+            return ""
         case "chatOpen":
             let on = args["on"] as? Bool ?? false
 
-            if let previous = opened, previous != hex {
+            if let previous = opened, previous != hex, ChatVault.group(previous) == nil {
                 VigilCall.shared.send?("chat-open \(previous) 0")
             }
 
@@ -1418,11 +1530,18 @@ final class VigilPlugin: NSObject, FlutterPlugin, UIDocumentPickerDelegate,
             return ""
         case "chatTyping":
             let on = args["on"] as? Bool == true ? 1 : 0
+            let topic = try Self.topic(hex, args["topic"])
+            let inside = topic.isEmpty ? "0" : topic
 
-            if group != nil {
-                VigilCall.shared.send?("chat-group-typing \(on)")
+            if let group {
+                if on == 1 {
+                    VigilCall.shared.send?("chat-group-typing \(ChatVault.hex(group.owner)) " +
+                                           String(format: "%016llx", group.id) + " \(inside)")
+                } else {
+                    VigilCall.shared.send?("chat-group-typing 0 0 0")
+                }
             } else {
-                VigilCall.shared.send?("chat-typing \(hex) \(on)")
+                VigilCall.shared.send?("chat-typing \(hex) \(on) \(inside)")
             }
             return ""
         case "chatMute":
@@ -1432,6 +1551,10 @@ final class VigilPlugin: NSObject, FlutterPlugin, UIDocumentPickerDelegate,
 
             return "\(ChatVault.muted(hex))"
         case "chatDelete":
+            if group != nil, (try vault.groupInfo(hex))?["state"] as? String == "open" {
+                try groupLeave(hex)
+            }
+
             try vault.delete(hex)
             ChatVault.mute(hex, until: 0)
             if group == nil {
@@ -1486,7 +1609,6 @@ final class VigilPlugin: NSObject, FlutterPlugin, UIDocumentPickerDelegate,
         let defaults = ChatVault.defaults
         let unseen = defaults.dictionary(forKey: "chatUnseen") as? [String: Int] ?? [:]
         let open = Self.requested
-        let group = defaults.integer(forKey: "chatGroup")
         Self.requested = nil
 
         badge(unseen.values.reduce(0, +))
@@ -1498,7 +1620,6 @@ final class VigilPlugin: NSObject, FlutterPlugin, UIDocumentPickerDelegate,
             "unseen": unseen.values.reduce(0, +),
             "hardware": ChatVault.shared.hardware,
             "open": open ?? NSNull(),
-            "group": group != 0 ? ChatVault.groupChat(UInt16(truncatingIfNeeded: group)) as Any : NSNull(),
         ] as [String: Any])
     }
 
@@ -1617,10 +1738,6 @@ final class VigilPlugin: NSObject, FlutterPlugin, UIDocumentPickerDelegate,
 
     private static func topic(_ hex: String, _ value: Any?) throws -> String {
         guard let topic = value as? String, !topic.isEmpty else { return "" }
-
-        guard ChatVault.group(hex) == nil else {
-            throw ChatVault.Failure(description: "Groups have no topics.")
-        }
 
         guard topic.count == 16, let id = UInt64(topic, radix: 16), id != 0 else {
             throw ChatVault.Failure(description: "There is no topic \(topic).")

@@ -17,7 +17,8 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
     private var chatSession: UInt64 = 0
     private var chatResubmit: TimeInterval = 0
     private var chatWaiting = Set<UInt64>()
-    private var receipts = [(String, Int64, String, Int, Int)]()
+    private var receipts = [(String, Int64, String)]()
+    private var local = ""
     private var paths: NWPathMonitor?
     private var probe: WakeProbe?
     private var network: String?
@@ -228,14 +229,19 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             }
         case "chat-avatar":
             submitAvatar()
-        case "chat-open", "chat-typing":
+        case "chat-group-typing":
+            if words.count == 4, let owner = UInt8(words[1], radix: 16), let id = UInt64(words[2], radix: 16),
+               let topic = UInt64(words[3], radix: 16) {
+                vigil_chat_group_typing(owner, id, topic)
+            }
+        case "chat-typing":
+            if words.count == 4, let peer = UInt8(words[1], radix: 16), peer > 0, peer < 0xff,
+               let topic = UInt64(words[3], radix: 16) {
+                vigil_chat_typing(peer, topic, words[2] == "1" ? 1 : 0)
+            }
+        case "chat-open":
             if words.count == 3, let peer = UInt8(words[1], radix: 16), peer > 0, peer < 0xff {
-                let on: Int32 = words[2] == "1" ? 1 : 0
-                if words.first == "chat-open" {
-                    vigil_chat_open(peer, on)
-                } else {
-                    vigil_chat_typing(peer, on)
-                }
+                vigil_chat_open(peer, words[2] == "1" ? 1 : 0)
             }
         case "chat-forget":
             if words.count == 2, let peer = UInt8(words[1], radix: 16), peer > 0, peer < 0xff,
@@ -244,52 +250,6 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             }
         case "gospel":
             attachGospel()
-        case "chat-group":
-            if vigil_chat_group(UInt16(truncatingIfNeeded: ChatVault.defaults.integer(forKey: "chatGroup"))) == -1 {
-                chatSession = 0
-            }
-        case "chat-group-typing":
-            if words.count == 2 {
-                vigil_chat_group_typing(words[1] == "1" ? 1 : 0)
-            }
-        case "chat-group-data":
-            if words.count == 6, let ref = UInt64(words[1]),
-               let data = try? ChatVault.shared.queued(ref),
-               !data.isEmpty, data.count <= Int(VIGIL_CHAT_DATA_MAX),
-               let name = Data(base64Encoded: String(words[5])).flatMap({ String(data: $0, encoding: .utf8) }) {
-                let sent = data.withUnsafeBytes {
-                    vigil_chat_group_data_send(ref, ChatVault.kind(String(words[4])), name,
-                                               $0.baseAddress, data.count)
-                }
-
-                if sent == -1 {
-                    NSLog("vigil: group data \(ref) was refused")
-                }
-
-                try? ChatVault.shared.unqueue(ref)
-            }
-        case "chat-group-send":
-            if words.count == 3 || words.count == 5, let ref = UInt64(words[1]),
-               let text = Data(base64Encoded: String(words[2])) {
-                let bytes = [UInt8](text).map { CChar(bitPattern: $0) }
-                var quote: ChatVault.Quote?
-
-                if words.count == 5 {
-                    quote = ChatVault.quote(String(words[3]), String(words[4]))
-                }
-
-                var sent: Int32 = 0
-
-                if let quote, !bytes.isEmpty, bytes.count <= Int(VIGIL_CHAT_REPLY_MAX) {
-                    sent = vigil_chat_group_reply(ref, quote.peer, quote.digest, bytes, bytes.count)
-                } else if quote == nil, !bytes.isEmpty, bytes.count <= Int(VIGIL_CHAT_MESSAGE_MAX) {
-                    sent = vigil_chat_group_send(ref, bytes, bytes.count)
-                }
-
-                if sent == -1 {
-                    NSLog("vigil: group message \(ref) was refused")
-                }
-            }
         default:
             break
         }
@@ -311,6 +271,11 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         let defaults = ChatVault.defaults
         let session = (chat["session"] as? NSNumber)?.uint64Value ?? 0
 
+        if let id = chat["id"] as? String, id != local {
+            local = id
+            defaults.set(id, forKey: "chatSelf")
+        }
+
         if session != chatSession {
             chatResubmit = 0
             chatWaiting.removeAll()
@@ -320,9 +285,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
 
             submitAvatar()
 
-            let joined = vigil_chat_group(UInt16(truncatingIfNeeded: defaults.integer(forKey: "chatGroup"))) == 0
-
-            if submitOutbox(), joined { chatSession = session }
+            if submitOutbox() { chatSession = session }
         } else if chatResubmit != 0, ProcessInfo.processInfo.systemUptime >= chatResubmit {
             chatResubmit = 0
             submitOutbox(only: chatWaiting)
@@ -331,8 +294,8 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         let pending = receipts
         receipts.removeAll()
 
-        for (chat, ref, kind, acked, waiting) in pending {
-            receipt(chat, ref: ref, kind: kind, acked: acked, pending: waiting)
+        for (peer, ref, kind) in pending {
+            receipt(peer, ref: ref, kind: kind)
         }
 
         var buf = [CChar](repeating: 0, count: Int(VIGIL_CHAT_EVENTS_MAX))
@@ -352,10 +315,10 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
                   let peer = UInt8(hex, radix: 16), peer < 0xff,
                   let kind = event["type"] as? String else { continue }
 
-            let group = (event["group"] as? String).flatMap { UInt16($0, radix: 16) }
-            let chat = group.map { ChatVault.groupChat($0) } ?? hex
+            let chat = (event["group"] as? String).map { ChatVault.groupChat(event["owner"] as? String ?? "", $0) }
+                ?? hex
 
-            guard group != nil || peer > 0 else { continue }
+            guard peer > 0 else { continue }
 
             do {
                 switch kind {
@@ -363,6 +326,16 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
                     let text = event["text"] as? String ?? ""
                     let nick = event["nick"] as? String ?? ""
                     let quote = ChatVault.quote(event["author"] as? String, event["hash"] as? String)
+
+                    switch try admit(chat, hex, event) {
+                    case .drop:
+                        stored((event["token"] as? NSNumber)?.uint64Value ?? 0)
+                        continue
+                    case .hold:
+                        continue
+                    case .store:
+                        break
+                    }
 
                     try vault.deliver(chat: chat, peer: peer, nick: nick, text: text,
                                       time: Int64(Date().timeIntervalSince1970 * 1000), quote: quote,
@@ -378,16 +351,28 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
                 case "topic":
                     guard let topic = event["topic"] as? String else { continue }
 
+                    switch try admit(chat, hex, event) {
+                    case .drop:
+                        stored((event["token"] as? NSNumber)?.uint64Value ?? 0)
+                        continue
+                    case .hold:
+                        continue
+                    case .store:
+                        break
+                    }
+
                     try vault.deliver(chat: chat, peer: peer, nick: event["nick"] as? String ?? "",
                                       text: event["name"] as? String ?? "",
                                       time: Int64(Date().timeIntervalSince1970 * 1000), kind: kind,
                                       topic: topic,
                                       color: Int(event["color"] as? String ?? "", radix: 16) ?? 0)
                     stored((event["token"] as? NSNumber)?.uint64Value ?? 0)
-                case "joined", "left":
-                    try vault.deliver(chat: chat, peer: peer, nick: event["nick"] as? String ?? "",
-                                      text: "", time: Int64(Date().timeIntervalSince1970 * 1000),
-                                      kind: kind)
+                case "roster":
+                    try roster(chat, peer, event)
+                    stored((event["token"] as? NSNumber)?.uint64Value ?? 0)
+                case "leave":
+                    try left(chat, hex)
+                    stored((event["token"] as? NSNumber)?.uint64Value ?? 0)
                 case "ambry":
                     try vault.deliver(chat: chat, peer: peer, nick: "",
                                       text: event["generation"] as? String ?? "",
@@ -406,6 +391,18 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
                     let taken = vigil_chat_data_take(token, &bytes, bytes.count)
 
                     guard taken > 0 else { continue }
+
+                    switch try admit(chat, hex, event) {
+                    case .drop:
+                        TunnelKeychain.wipe(&bytes)
+                        stored(token)
+                        continue
+                    case .hold:
+                        TunnelKeychain.wipe(&bytes)
+                        continue
+                    case .store:
+                        break
+                    }
 
                     try vault.deliver(chat: chat, peer: peer, nick: nick, text: "",
                                       time: Int64(Date().timeIntervalSince1970 * 1000),
@@ -444,11 +441,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
 
                     defaults.set(defaults.integer(forKey: "chatAvatars") + 1, forKey: "chatAvatars")
                 case "sent", "delivered":
-                    receipt(chat, ref: (event["ref"] as? NSNumber)?.int64Value ?? 0, kind: kind)
-                case "acks":
-                    receipt(chat, ref: (event["ref"] as? NSNumber)?.int64Value ?? 0, kind: kind,
-                            acked: (event["acked"] as? NSNumber)?.intValue ?? 0,
-                            pending: (event["pending"] as? NSNumber)?.intValue ?? 0)
+                    receipt(hex, ref: (event["ref"] as? NSNumber)?.int64Value ?? 0, kind: kind)
                 default:
                     break
                 }
@@ -516,13 +509,97 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         }
     }
 
-    private func receipt(_ chat: String, ref: Int64, kind: String, acked: Int = 0, pending: Int = 0) {
+    private func receipt(_ peer: String, ref: Int64, kind: String) {
         do {
-            try ChatVault.shared.receipt(chat, ref: ref, kind: kind, acked: acked, pending: pending)
+            try ChatVault.shared.receipt(peer, ref: ref, kind: kind)
         } catch {
             NSLog("vigil: failed to store a receipt, trying again: \(error)")
-            receipts.append((chat, ref, kind, acked, pending))
+            receipts.append((peer, ref, kind))
         }
+    }
+
+    private func admit(_ chat: String, _ peer: String, _ event: [String: Any]) throws -> ChatVault.Admit {
+        guard ChatVault.group(chat) != nil else { return .store }
+
+        let serial = (event["serial"] as? NSNumber)?.uint32Value ?? 0
+
+        return try ChatVault.shared.groupCheck(chat, peer: peer, serial: serial)
+    }
+
+    private func roster(_ chat: String, _ peer: UInt8, _ event: [String: Any]) throws {
+        let vault = ChatVault.shared
+        let owner = ChatVault.hex(peer)
+        let info = try vault.groupInfo(chat)
+        let serial = (event["serial"] as? NSNumber)?.intValue ?? 0
+        let time = Int64(Date().timeIntervalSince1970 * 1000)
+        let previous = info?["state"] as? String ?? ""
+
+        if let info, serial <= (info["serial"] as? NSNumber)?.intValue ?? 0 { return }
+        if previous == "left" || previous == "ended" { return }
+
+        let members = event["members"] as? [String] ?? []
+        let before = info.map { ChatVault.members($0) } ?? []
+        let name = event["name"] as? String ?? ""
+        let state = event["ended"] as? Bool == true ? "ended" : members.contains(local) ? "open" : "removed"
+
+        try vault.groupSave(chat, [
+            "owner": owner, "id": String(chat.dropFirst(3)), "name": name, "members": members,
+            "serial": serial, "state": state,
+        ])
+
+        if info == nil || previous == "removed" {
+            if state == "open" {
+                try vault.deliver(chat: chat, peer: peer, nick: "", text: name, time: time, kind: "added")
+            }
+        } else {
+            for member in members where !before.contains(member) && member != local {
+                if let id = UInt8(member, radix: 16) {
+                    try vault.deliver(chat: chat, peer: id, nick: "", text: "", time: time, kind: "joined")
+                }
+            }
+
+            for member in before where !members.contains(member) && member != local {
+                if let id = UInt8(member, radix: 16) {
+                    try vault.deliver(chat: chat, peer: id, nick: "", text: "", time: time, kind: "left")
+                }
+            }
+
+            if name != info?["name"] as? String ?? "" {
+                try vault.deliver(chat: chat, peer: peer, nick: "", text: name, time: time, kind: "renamed")
+            }
+        }
+
+        if state != "open" {
+            try vault.deliver(chat: chat, peer: peer, nick: "", text: "", time: time, kind: state)
+            try vault.groupDrop(chat, before + members)
+        } else {
+            try vault.groupDrop(chat, before.filter { !members.contains($0) })
+        }
+
+        ChatVault.defaults.set(ChatVault.defaults.integer(forKey: "chatNames") + 1, forKey: "chatNames")
+    }
+
+    private func left(_ chat: String, _ member: String) throws {
+        let vault = ChatVault.shared
+
+        guard var info = try vault.groupInfo(chat), info["owner"] as? String == local,
+              info["state"] as? String == "open" else { return }
+
+        let members = ChatVault.members(info)
+
+        guard members.contains(member), let peer = UInt8(member, radix: 16) else { return }
+
+        info["members"] = members.filter { $0 != member }
+        info["serial"] = ((info["serial"] as? NSNumber)?.intValue ?? 0) + 1
+
+        try vault.groupSave(chat, info)
+        try vault.groupDrop(chat, [member])
+        try vault.deliver(chat: chat, peer: peer, nick: "", text: "",
+                          time: Int64(Date().timeIntervalSince1970 * 1000), kind: "left")
+        try vault.rosterQueue(chat, info, local: local)
+
+        submitOutbox()
+        ChatVault.defaults.set(ChatVault.defaults.integer(forKey: "chatNames") + 1, forKey: "chatNames")
     }
 
     private func onMain(_ body: () -> Void) {
@@ -552,15 +629,36 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         var refs = Set<UInt64>()
 
         for entry in outbox {
-            guard let chat = entry["peer"] as? String,
-                  let peer = UInt8(chat, radix: 16), peer > 0, peer < 0xff,
+            guard let hex = entry["peer"] as? String,
+                  let peer = UInt8(hex, radix: 16), peer > 0, peer < 0xff,
                   let ref = (entry["ref"] as? NSNumber)?.uint64Value else { continue }
+
+            let chat = entry["chat"] as? String ?? hex
+            let group = ChatVault.group(chat)
 
             refs.insert(ref)
 
             if let only, !only.contains(ref) { continue }
 
             let topic = (entry["tp"] as? String).flatMap { UInt64($0, radix: 16) } ?? 0
+
+            if entry["op"] as? String == "roster", let group {
+                let name = Array((entry["name"] as? String ?? "").utf8).map { CChar(bitPattern: $0) }
+                let members = ChatVault.roster(entry["members"] as? [String] ?? [])
+                let serial = UInt32(truncatingIfNeeded: (entry["serial"] as? NSNumber)?.intValue ?? 0)
+                let state = entry["ended"] as? Bool == true ? VIGIL_CHAT_GROUP_ENDED : VIGIL_CHAT_GROUP_OPEN
+
+                guard name.count <= Int(VIGIL_CHAT_GROUP_NAME_MAX) else { continue }
+
+                submitted(ref, vigil_chat_group_roster(peer, ref, group.id, serial, Int32(state), members,
+                                                       name, name.count))
+                continue
+            }
+
+            if entry["op"] as? String == "leave", let group {
+                submitted(ref, vigil_chat_group_leave(peer, ref, group.id))
+                continue
+            }
 
             if entry["op"] as? String == "topic" {
                 guard topic != 0 else { continue }
@@ -569,6 +667,14 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
                 let color = UInt32(truncatingIfNeeded: (entry["color"] as? NSNumber)?.intValue ?? 0)
 
                 guard name.count <= Int(VIGIL_CHAT_TOPIC_NAME_MAX) else { continue }
+
+                if let group {
+                    let serial = UInt32(truncatingIfNeeded: (entry["gs"] as? NSNumber)?.intValue ?? 0)
+
+                    submitted(ref, vigil_chat_group_topic(peer, ref, group.id, serial, topic, color, name,
+                                                          name.count))
+                    continue
+                }
 
                 submitted(ref, vigil_chat_topic(peer, ref, topic, color, name, name.count))
                 continue
@@ -594,7 +700,13 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
                 let media = entry["media"] as? String ?? "file"
                 let name = entry["name"] as? String ?? "file"
 
+                let serial = UInt32(truncatingIfNeeded: (entry["gs"] as? NSNumber)?.intValue ?? 0)
                 let sent = data.withUnsafeBytes { (raw) -> Int32 in
+                    if let group {
+                        return vigil_chat_group_data_send(peer, ref, group.owner, group.id, serial, topic,
+                                                          ChatVault.kind(media), name, raw.baseAddress, data.count)
+                    }
+
                     if topic != 0 {
                         return vigil_chat_topic_data_send(peer, ref, topic, ChatVault.kind(media), name,
                                                           raw.baseAddress, data.count)
@@ -611,6 +723,23 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             guard let text = entry["text"] as? String else { continue }
 
             let bytes = Array(text.utf8).map { CChar(bitPattern: $0) }
+
+            if let group {
+                let quote = ChatVault.quote(entry["qa"] as? String, entry["qh"] as? String)
+                var max = quote == nil ? VIGIL_CHAT_GROUP_MAX : VIGIL_CHAT_GROUP_REPLY_MAX
+
+                if topic != 0 {
+                    max = VIGIL_CHAT_GROUP_TOPIC_MAX
+                }
+
+                guard !bytes.isEmpty, bytes.count <= Int(max) else { continue }
+
+                let serial = UInt32(truncatingIfNeeded: (entry["gs"] as? NSNumber)?.intValue ?? 0)
+
+                submitted(ref, vigil_chat_group_send(peer, ref, group.owner, group.id, serial, topic,
+                                                     quote?.peer ?? 0, quote?.digest ?? 0, bytes, bytes.count))
+                continue
+            }
 
             if topic != 0 {
                 let quote = ChatVault.quote(entry["qa"] as? String, entry["qh"] as? String)

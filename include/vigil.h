@@ -205,6 +205,9 @@ struct vigil_chat_hb {
 	u_int8_t		instance[VIGIL_INSTANCE_MAX];
 	u_int8_t		signature[VIGIL_SIGNATURE_LENGTH];
 	u_int64_t		avatar_have;
+	u_int8_t		typing_owner;
+	u_int64_t		typing_group;
+	u_int64_t		typing_topic;
 } __attribute__((packed));
 
 /*
@@ -246,6 +249,28 @@ struct vigil_chat_topic_text {
 	u_int8_t		author;
 	u_int64_t		hash;
 	u_int8_t		text[VIGIL_CHAT_TOPIC_MAX];
+} __attribute__((packed));
+
+/*
+ * A frame in a group, the owner and random id of the group, the serial of
+ * the roster the sender knows and the type of the frame it carries.
+ */
+struct vigil_chat_group {
+	u_int8_t		owner;
+	u_int64_t		id;
+	u_int32_t		serial;
+	u_int8_t		type;
+	u_int8_t		data[VIGIL_CHAT_GROUP_MAX];
+} __attribute__((packed));
+
+/*
+ * The roster of a group as its owner sends it, a bit for every member and
+ * the name of the group.
+ */
+struct vigil_chat_roster {
+	u_int8_t		state;
+	u_int8_t		members[VIGIL_CHAT_GROUP_ROSTER];
+	u_int8_t		name[VIGIL_CHAT_GROUP_NAME_MAX];
 } __attribute__((packed));
 
 /*

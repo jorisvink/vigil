@@ -30,6 +30,7 @@ import io.flutter.plugin.common.MethodCall
 import io.flutter.plugin.common.MethodChannel
 import java.security.KeyStore
 import java.security.SecureRandom
+import org.json.JSONArray
 import org.json.JSONObject
 
 /**
@@ -283,30 +284,21 @@ class MainActivity : FlutterActivity() {
                             max = TOPIC_MAX
                         }
 
+                        if (group != null) {
+                            max = if (quote != null) GROUP_REPLY_MAX else GROUP_MAX
+                        }
+
+                        if (group != null && topic.isNotEmpty()) {
+                            max = GROUP_TOPIC_MAX
+                        }
+
                         require(bytes.isNotEmpty() && bytes.size <= max) {
                             "A message is at most $max bytes."
                         }
 
-                        require(group == null || group == Chats.group(this)) {
-                            "You are not in this group anymore."
-                        }
-
                         val ref = vault.ref()
-                        val author = quote?.peer ?: 0
-                        val hash = quote?.digest ?: 0L
 
-                        require(group == null || Vigil.chatGroupSend(ref, bytes, author, hash)) {
-                            "Gospel is not running, group messages only go to members that are around."
-                        }
-
-                        vault.send(id, text, ref, quote, topic)
-
-                        if (group == null &&
-                            !Vigil.chatSend(id.toInt(16), ref, bytes, author, hash, ChatVault.topicId(topic))
-                        ) {
-                            Chats.refused(ref)
-                        }
-
+                        Chats.submit(vault, vault.send(id, text, ref, quote, topic, self()))
                         Chats.changed()
                         ref.toString()
                     }
@@ -426,6 +418,7 @@ class MainActivity : FlutterActivity() {
                     }
                 }
                 "chatNames" -> background(result) { Chats.vault(this).peerNames().toString() }
+                "chatGroups" -> background(result) { Chats.vault(this).groups().toString() }
                 "chatAvatarSet" -> {
                     val picked = call.arguments as ByteArray?
 
@@ -497,21 +490,15 @@ class MainActivity : FlutterActivity() {
                         "%016x".format(SecureRandom().nextLong().takeIf { it != 0L } ?: 1L)
                     }
 
-                    require(ChatVault.group(id) == null) { "Groups have no topics." }
                     require(name.toByteArray().size <= TOPIC_NAME_MAX) {
                         "A topic name is at most $TOPIC_NAME_MAX bytes."
                     }
 
                     background(result) {
                         val vault = Chats.vault(this)
-                        val ref = vault.ref()
+                        val self = if (ChatVault.group(id) != null) self() else ""
 
-                        vault.topic(id, topic, name, color, ref)
-
-                        if (!Vigil.chatTopic(id.toInt(16), ref, ChatVault.topicId(topic), color, name.toByteArray())) {
-                            Chats.refused(ref)
-                        }
-
+                        Chats.submit(vault, vault.topic(id, topic, name, color, vault.ref(), self))
                         Chats.changed()
                         topic
                     }
@@ -529,26 +516,52 @@ class MainActivity : FlutterActivity() {
                     result.success("")
                 }
                 "chatTyping" -> {
-                    Chats.typing(chat(call.argument<String>("peer")!!), call.argument<Boolean>("on")!!)
+                    val id = chat(call.argument<String>("peer")!!)
+
+                    Chats.typing(id, call.argument<Boolean>("on")!!, topic(id, call.argument<String>("topic")))
                     result.success("")
                 }
                 "chatDelete" -> {
                     val id = chat(call.arguments as String)
 
-                    if (ChatVault.group(id) == null) {
-                        check(Vigil.chatForget(id.toInt(16))) { "Vigil is busy, try deleting the chat again." }
-                    }
+                    background(result) {
+                        val vault = Chats.vault(this)
 
-                    Chats.vault(this).delete(id)
-                    Chats.mute(this, id, 0L)
-                    Chats.changed()
-                    result.success("")
+                        if (ChatVault.group(id) == null) {
+                            check(Vigil.chatForget(id.toInt(16))) { "Vigil is busy, try deleting the chat again." }
+                        } else if (vault.groupInfo(id)?.optString("state") == "open") {
+                            groupLeave(id)
+                        }
+
+                        vault.delete(id)
+                        Chats.mute(this, id, 0L)
+                        Chats.changed()
+                        ""
+                    }
                 }
-                "chatGroup" -> {
-                    val group = (call.arguments as String).ifEmpty { "0" }
-                    require(group.matches(Regex("[0-9a-fA-F]{1,4}"))) { "A group is 1 to 4 hex digits." }
-                    Chats.join(this, group.toInt(16))
-                    result.success("")
+                "groupCreate" -> {
+                    val name = call.argument<String>("name")!!.trim()
+                    val members = call.argument<List<String>>("members")!!
+
+                    background(result) { groupCreate(name, members) }
+                }
+                "groupEdit" -> {
+                    val id = chat(call.argument<String>("peer")!!)
+                    val name = call.argument<String>("name")?.trim()
+                    val members = call.argument<List<String>>("members")
+
+                    background(result) {
+                        groupEdit(id, name, members)
+                        ""
+                    }
+                }
+                "groupLeave" -> {
+                    val id = chat(call.arguments as String)
+
+                    background(result) {
+                        groupLeave(id)
+                        ""
+                    }
                 }
                 "chatMute" -> result.success(
                     Chats.mute(
@@ -970,28 +983,130 @@ class MainActivity : FlutterActivity() {
     }
 
     private fun dataSend(id: String, media: String, name: String, data: ByteArray, topic: String = ""): String {
-        val group = ChatVault.group(id)
-        val kind = ChatVault.kind(media)
-        val label = name.toByteArray()
-
-        require(group == null || group == Chats.group(this)) { "You are not in this group anymore." }
         require(data.isNotEmpty() && data.size <= DATA_MAX) { "A file is at most 4 MB." }
 
         val vault = Chats.vault(this)
         val ref = vault.ref()
 
-        require(group == null || Vigil.chatGroupDataSend(ref, kind, label, data)) {
-            "Gospel is not running or still sending other files, group files only go to members that are around."
-        }
-
-        vault.sendData(id, media, name, data, ref, topic)
-        if (group == null && !Vigil.chatDataSend(id.toInt(16), ref, kind, label, data, ChatVault.topicId(topic))) {
-            Chats.refused(ref)
-        }
-
+        Chats.submit(vault, vault.sendData(id, media, name, data, ref, topic, self()))
         Chats.changed()
 
         return ref.toString()
+    }
+
+    private fun self(): String {
+        val local = Chats.local
+
+        require(local.isNotEmpty()) { "Gospel is not running." }
+
+        return local
+    }
+
+    private fun groupCreate(name: String, picked: List<String>): String {
+        val local = self()
+        val members = picked.filter { it.matches(Regex("[0-9a-f]{2}")) && it != local }.distinct()
+
+        require(name.toByteArray().size <= GROUP_NAME_MAX) { "A group name is at most $GROUP_NAME_MAX bytes." }
+        require(members.isNotEmpty()) { "Pick at least one member." }
+
+        val id = "%016x".format(SecureRandom().nextLong().takeIf { it != 0L } ?: 1L)
+        val chat = ChatVault.groupChat(local, id)
+        val vault = Chats.vault(this)
+        val info = JSONObject()
+            .put("owner", local)
+            .put("id", id)
+            .put("name", name)
+            .put("members", JSONArray(members + local))
+            .put("serial", 1)
+            .put("state", "open")
+
+        vault.groupSave(chat, info)
+        vault.deliver(chat, local.toInt(16), "", name, System.currentTimeMillis(), "created")
+        vault.merge()
+
+        Chats.submit(vault, vault.rosterQueue(chat, info, local))
+        Chats.namesChanged()
+        Chats.changed()
+
+        return chat
+    }
+
+    private fun groupEdit(chat: String, name: String?, picked: List<String>?) {
+        val local = self()
+        val vault = Chats.vault(this)
+        val info = vault.groupInfo(chat) ?: throw IllegalArgumentException("There is no group $chat.")
+        val before = ChatVault.members(info)
+        val time = System.currentTimeMillis()
+
+        require(info.getString("owner") == local) { "Only the owner can change a group." }
+        require(info.getString("state") == "open") { "This group is closed." }
+
+        val members = picked?.filter { it.matches(Regex("[0-9a-f]{2}")) && it != local }?.distinct()?.plus(local)
+            ?: before
+
+        require(members.size > 1) { "A group needs at least one other member." }
+
+        if (name != null) {
+            require(name.toByteArray().size <= GROUP_NAME_MAX) { "A group name is at most $GROUP_NAME_MAX bytes." }
+
+            if (name != info.getString("name")) {
+                vault.deliver(chat, local.toInt(16), "", name, time, "renamed")
+            }
+
+            info.put("name", name)
+        }
+
+        val gone = before.filter { it !in members }
+
+        for (member in members.filter { it !in before }) {
+            vault.deliver(chat, member.toInt(16), "", "", time, "joined")
+        }
+
+        for (member in gone) {
+            vault.deliver(chat, member.toInt(16), "", "", time, "left")
+        }
+
+        info.put("members", JSONArray(members))
+        info.put("serial", info.getInt("serial") + 1)
+
+        vault.groupSave(chat, info)
+        vault.groupDrop(chat, gone)
+        vault.merge()
+
+        Chats.submit(vault, vault.rosterQueue(chat, info, local, gone))
+        Chats.namesChanged()
+        Chats.changed()
+    }
+
+    private fun groupLeave(chat: String) {
+        val local = self()
+        val vault = Chats.vault(this)
+        val info = vault.groupInfo(chat) ?: return
+        val owner = info.getString("owner")
+        val time = System.currentTimeMillis()
+
+        if (info.getString("state") != "open") {
+            return
+        }
+
+        vault.groupDrop(chat, ChatVault.members(info) + owner)
+
+        if (owner == local) {
+            info.put("state", "ended")
+            info.put("serial", info.getInt("serial") + 1)
+            vault.groupSave(chat, info)
+            vault.deliver(chat, local.toInt(16), "", "", time, "ended")
+            Chats.submit(vault, vault.rosterQueue(chat, info, local))
+        } else {
+            info.put("state", "left")
+            vault.groupSave(chat, info)
+            vault.deliver(chat, local.toInt(16), "", "", time, "parted")
+            Chats.submit(vault, JSONArray().put(vault.leaveQueue(chat, owner)))
+        }
+
+        vault.merge()
+        Chats.namesChanged()
+        Chats.changed()
     }
 
     private fun fileSend(id: String, uri: Uri, topic: String): String {
@@ -1149,7 +1264,6 @@ class MainActivity : FlutterActivity() {
             return ""
         }
 
-        require(ChatVault.group(id) == null) { "Groups have no topics." }
         require(topic.matches(Regex("[0-9a-f]{16}")) && topic != "0".repeat(16)) { "There is no topic $topic." }
 
         return topic
@@ -1176,6 +1290,10 @@ class MainActivity : FlutterActivity() {
         const val REPLY_MAX = MESSAGE_MAX - 9
         const val TOPIC_MAX = MESSAGE_MAX - 17
         const val TOPIC_NAME_MAX = 32
+        const val GROUP_MAX = MESSAGE_MAX - 14
+        const val GROUP_REPLY_MAX = GROUP_MAX - 9
+        const val GROUP_TOPIC_MAX = GROUP_MAX - 17
+        const val GROUP_NAME_MAX = 32
         const val VIDEO_WIDTH = 960
         const val VIDEO_HEIGHT = 540
     }

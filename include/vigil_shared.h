@@ -156,7 +156,7 @@
 #define VIGIL_CHAT_FLOCK_DOMAIN		0x0b
 #define VIGIL_CHAT_GROUP_DOMAIN		0x0c
 
-/* The liturgy group gospel signals in, every other one is a group chat. */
+/* The liturgy group gospel signals in. */
 #define VIGIL_CHAT_SIGNAL_GROUP		0x0000
 
 /* The maximum length of a message and of a nickname. */
@@ -171,6 +171,11 @@
 #define VIGIL_CHAT_TYPE_REPLY		5
 #define VIGIL_CHAT_TYPE_TOPIC		6
 #define VIGIL_CHAT_TYPE_TOPIC_TEXT	7
+#define VIGIL_CHAT_TYPE_GROUP		8
+
+/* The types that only go inside a group frame. */
+#define VIGIL_CHAT_TYPE_ROSTER		9
+#define VIGIL_CHAT_TYPE_LEAVE		10
 
 /* The features we tell our peers about in our heartbeats. */
 #define VIGIL_CHAT_FEATURE_DATA		0x01
@@ -178,6 +183,7 @@
 #define VIGIL_CHAT_FEATURE_NAME		0x04
 #define VIGIL_CHAT_FEATURE_AVATAR	0x08
 #define VIGIL_CHAT_FEATURE_TOPIC	0x10
+#define VIGIL_CHAT_FEATURE_GROUP	0x20
 
 /* The maximum length of a reply, it carries who wrote what it replies to. */
 #define VIGIL_CHAT_REPLY_MAX		(VIGIL_CHAT_MESSAGE_MAX - 9)
@@ -185,6 +191,19 @@
 /* The maximum length of a message in a topic and of the name of a topic. */
 #define VIGIL_CHAT_TOPIC_MAX		(VIGIL_CHAT_MESSAGE_MAX - 17)
 #define VIGIL_CHAT_TOPIC_NAME_MAX	32
+
+/* The maximum length of a message, a reply and a topic message in a group. */
+#define VIGIL_CHAT_GROUP_MAX		(VIGIL_CHAT_MESSAGE_MAX - 14)
+#define VIGIL_CHAT_GROUP_REPLY_MAX	(VIGIL_CHAT_GROUP_MAX - 9)
+#define VIGIL_CHAT_GROUP_TOPIC_MAX	(VIGIL_CHAT_GROUP_MAX - 17)
+
+/* The maximum length of the name of a group and the size of its roster. */
+#define VIGIL_CHAT_GROUP_NAME_MAX	32
+#define VIGIL_CHAT_GROUP_ROSTER		32
+
+/* The states of a group in its roster. */
+#define VIGIL_CHAT_GROUP_OPEN		0
+#define VIGIL_CHAT_GROUP_ENDED		1
 
 /* The largest data we send or take and how much goes in each chunk. */
 #define VIGIL_CHAT_CHUNK_DATA		1152
@@ -255,6 +274,9 @@
 /* Set on the kind of data in a topic, the topic follows the head. */
 #define VIGIL_CHAT_DATA_TOPIC		0x80
 
+/* Set on the kind of data in a group, its owner, id and serial follow. */
+#define VIGIL_CHAT_DATA_GROUP		0x40
+
 /* The largest avatar we send or take. */
 #define VIGIL_CHAT_AVATAR_MAX		(32 * 1024)
 
@@ -309,25 +331,20 @@
 void	vigil_call_hangup(void);
 void	vigil_call_dial(u_int8_t);
 void	vigil_call_done(u_int8_t);
-int	vigil_chat_group(u_int16_t);
 int	vigil_chat_forget(u_int8_t);
-void	vigil_chat_group_typing(int);
 int	vigil_chat_stored(u_int64_t);
 int	vigil_chat_nick(const char *);
 void	vigil_chat_open(u_int8_t, int);
-void	vigil_chat_typing(u_int8_t, int);
+void	vigil_chat_typing(u_int8_t, u_int64_t, int);
 size_t	vigil_chat_events(char *, size_t);
 void	vigil_chat_avatar(const void *, size_t);
+void	vigil_chat_group_typing(u_int8_t, u_int64_t, u_int64_t);
 ssize_t	vigil_chat_data_take(u_int64_t, void *, size_t);
-int	vigil_chat_group_send(u_int64_t, const char *, size_t);
+int	vigil_chat_group_leave(u_int8_t, u_int64_t, u_int64_t);
 int	vigil_chat_send(u_int8_t, u_int64_t, const char *, size_t);
 int	vigil_chat_data_send(u_int8_t, u_int64_t, int, const char *,
 	    const void *, size_t);
-int	vigil_chat_group_data_send(u_int64_t, int, const char *,
-	    const void *, size_t);
 int	vigil_chat_reply(u_int8_t, u_int64_t, u_int8_t, u_int64_t,
-	    const char *, size_t);
-int	vigil_chat_group_reply(u_int64_t, u_int8_t, u_int64_t,
 	    const char *, size_t);
 int	vigil_chat_topic(u_int8_t, u_int64_t, u_int64_t, u_int32_t,
 	    const char *, size_t);
@@ -335,6 +352,14 @@ int	vigil_chat_topic_send(u_int8_t, u_int64_t, u_int64_t, u_int8_t,
 	    u_int64_t, const char *, size_t);
 int	vigil_chat_topic_data_send(u_int8_t, u_int64_t, u_int64_t, int,
 	    const char *, const void *, size_t);
+int	vigil_chat_group_roster(u_int8_t, u_int64_t, u_int64_t, u_int32_t,
+	    int, const u_int8_t *, const char *, size_t);
+int	vigil_chat_group_send(u_int8_t, u_int64_t, u_int8_t, u_int64_t,
+	    u_int32_t, u_int64_t, u_int8_t, u_int64_t, const char *, size_t);
+int	vigil_chat_group_topic(u_int8_t, u_int64_t, u_int64_t, u_int32_t,
+	    u_int64_t, u_int32_t, const char *, size_t);
+int	vigil_chat_group_data_send(u_int8_t, u_int64_t, u_int8_t, u_int64_t,
+	    u_int32_t, u_int64_t, int, const char *, const void *, size_t);
 
 /* src/link.c */
 void	vigil_link_close(void);

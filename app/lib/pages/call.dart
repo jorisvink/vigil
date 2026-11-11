@@ -78,9 +78,7 @@ class _NamePromptState extends State<_NamePrompt> {
       mainAxisSize: MainAxisSize.min,
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        sheetTitle(
-          isGroup(peer) ? 'Name group ${peer.substring(1)}' : 'Name peer $peer',
-        ),
+        sheetTitle('Name peer $peer'),
         const SizedBox(height: 16),
         Pre(
           child: TextField(
@@ -93,9 +91,7 @@ class _NamePromptState extends State<_NamePrompt> {
             style: Styles.pre,
             cursorColor: Palette.amber,
             decoration: InputDecoration.collapsed(
-              hintText: isGroup(peer)
-                  ? 'Group ${peer.substring(1)}'
-                  : 'Peer $peer',
+              hintText: 'Peer $peer',
               hintStyle: Styles.pre.copyWith(color: Palette.dim),
             ).copyWith(counterText: ''),
             onSubmitted: (value) => Navigator.of(context).pop(value),

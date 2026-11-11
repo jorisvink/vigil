@@ -23,6 +23,10 @@ import 'call.dart';
 const _messageMax = 512;
 const _replyMax = _messageMax - 9;
 const _topicMax = _messageMax - 17;
+const _groupMax = _messageMax - 14;
+const _groupReplyMax = _groupMax - 9;
+const _groupTopicMax = _groupMax - 17;
+const _groupNameMax = 32;
 const _topicNameMax = 32;
 const _topicColors = [
   0xffb000,
@@ -72,35 +76,101 @@ var _voiceRate = 1.0;
 }
 
 (Liveness, String, Color) _groupLink(Status status, String chat) {
-  final group = status.chat?.group;
+  final group = Vigil.instance.group(chat);
 
-  if (status.chats.group != chat) {
-    return (Liveness.off, 'NOT JOINED', Palette.dim);
+  switch (group?.state) {
+    case 'ended':
+      return (Liveness.off, 'ENDED', Palette.dim);
+    case 'left':
+      return (Liveness.off, 'YOU LEFT', Palette.dim);
+    case 'removed':
+      return (Liveness.off, 'REMOVED', Palette.dim);
   }
 
-  if (status.chat == null) {
-    return (Liveness.off, 'OFFLINE', Palette.dim);
+  if (group == null) {
+    return (Liveness.pending, 'WAITING FOR THE ROSTER', Palette.amber);
   }
 
-  if (group == null || group.chat != chat || !group.alive) {
-    return (Liveness.pending, 'JOINING', Palette.amber);
-  }
+  final members = groupMembers(status, chat);
+  final online = members.where((m) => m.online).length;
 
-  final online = group.members.where((m) => m.online).toList();
-
-  if (online.length == 1) {
+  if (online == 1) {
     return (Liveness.online, '1 MEMBER ONLINE', Palette.good);
   }
 
-  if (online.isNotEmpty) {
-    return (Liveness.online, '${online.length} MEMBERS ONLINE', Palette.good);
+  if (online > 0) {
+    return (Liveness.online, '$online MEMBERS ONLINE', Palette.good);
   }
 
-  if (group.members.isNotEmpty) {
+  if (members.any((m) => m.link == 'connecting')) {
     return (Liveness.pending, 'CONNECTING', Palette.amber);
   }
 
-  return (Liveness.off, 'NOBODY ELSE HERE', Palette.fg2);
+  return (Liveness.off, '${members.length + 1} MEMBERS', Palette.fg2);
+}
+
+class ChatMember {
+  ChatMember(this.id, this.peer, this.chat);
+
+  final String id;
+  final ChatPeer? peer;
+  final String chat;
+
+  bool get online => peer?.online ?? false;
+  String get link => peer?.link ?? 'none';
+  bool get typing => online && peer!.typingGroup == chat;
+  String get topic => peer?.typingTopic ?? '';
+  String get nick => peer?.nick ?? '';
+}
+
+List<String> chatTypers(Status status, String chat, String topic) {
+  final vigil = Vigil.instance;
+
+  if (!isGroup(chat)) {
+    final peer = status.chat?.peer(chat);
+
+    if ((peer?.typing ?? false) && peer!.typingTopic == topic) {
+      return [vigil.name(chat)];
+    }
+
+    return const [];
+  }
+
+  return [
+    for (final m in groupMembers(status, chat))
+      if (m.typing && m.topic == topic)
+        if (vigil.known(m.id) || m.nick.isEmpty)
+          vigil.name(m.id)
+        else
+          chosen(m.nick),
+  ];
+}
+
+String? typingLine(Status status, String chat, String topic) {
+  final names = chatTypers(status, chat, topic);
+
+  if (names.isEmpty) {
+    return null;
+  }
+
+  if (!isGroup(chat)) {
+    return 'typing…';
+  }
+
+  if (names.length == 1) {
+    return '${names.first} typing…';
+  }
+
+  return '${names.first} +${names.length - 1} typing…';
+}
+
+List<ChatMember> groupMembers(Status status, String chat) {
+  final own = status.chat?.id ?? ownPeer();
+
+  return [
+    for (final id in Vigil.instance.group(chat)?.members ?? const <String>[])
+      if (id != own) ChatMember(id, status.chat?.peer(id), chat),
+  ];
 }
 
 bool chatOnline(Status status, String peer) =>
@@ -146,15 +216,21 @@ bool senderPicked(ChatMessage message) {
 }
 
 String memberLine(ChatMessage message) {
-  if (message.kind == 'ambry') {
-    return 'The keys have been rotated, bundle ${message.text}';
-  }
+  final own = Vigil.instance.status.chat?.id ?? ownPeer();
+  final who = message.from == own ? 'You' : sender(message);
+  final name = message.text.isEmpty ? 'a group' : message.text;
 
-  if (message.kind == 'joined') {
-    return '${sender(message)} has joined';
-  }
-
-  return '${sender(message)} has left';
+  return switch (message.kind) {
+    'ambry' => 'The keys have been rotated, bundle ${message.text}',
+    'joined' => '$who joined',
+    'created' => 'You created $name',
+    'added' => '$who added you to $name',
+    'renamed' => '$who renamed the group to $name',
+    'ended' => '$who ended the group',
+    'removed' => '$who removed you from the group',
+    'parted' => 'You left the group',
+    _ => '$who left',
+  };
 }
 
 String _summary(ChatMessage message) {
@@ -193,7 +269,7 @@ String _preview(ChatMessage? last) {
 
 Future<bool> removeChat(String peer) async {
   final vigil = Vigil.instance;
-  final joined = vigil.status.chats.group == peer;
+  final joined = vigil.group(peer)?.open ?? false;
 
   if (!await confirm(
     title: 'Delete chat',
@@ -208,10 +284,6 @@ Future<bool> removeChat(String peer) async {
   }
 
   try {
-    if (joined) {
-      await vigil.joinGroup('');
-    }
-
     await vigil.deleteChat(peer);
   } on VigilError catch (e) {
     notify(e.message);
@@ -364,17 +436,9 @@ Future<void> newChat(Status status) async {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Text(
-                        status.chats.group == null
-                            ? 'Join a group'
-                            : 'Swap group',
-                        style: Styles.cardTitle,
-                      ),
-                      Text(
-                        status.chats.group == null
-                            ? 'Everyone who joins the same group id'
-                            : 'Leaves ${vigil.name(status.chats.group!)} '
-                                  'for another group',
+                      Text('New group', style: Styles.cardTitle),
+                      const Text(
+                        'Pick the members, you own the group',
                         style: Styles.detail,
                         overflow: TextOverflow.ellipsis,
                       ),
@@ -448,7 +512,7 @@ Future<void> newChat(Status status) async {
   );
 
   if (peer == '') {
-    await joinGroup();
+    await newGroup(peers);
   } else if (peer == '#') {
     await _chatById();
   } else if (peer != null) {
@@ -673,13 +737,13 @@ class ChatRow extends StatelessWidget {
   Widget build(BuildContext context) {
     final vigil = Vigil.instance;
     final last = chat.last;
-    final typing = status.chat?.peer(chat.peer)?.typing ?? false;
+    final typing = typingLine(status, chat.peer, '');
 
     final row = _Swipe(
       label: 'Delete chat with ${vigil.name(chat.peer)}',
       onAction: () => removeChat(chat.peer),
       child: GestureDetector(
-        onLongPress: isGroup(chat.peer) ? null : () => manageTopics(chat.peer),
+        onLongPress: () => manageTopics(chat.peer),
         child: _row(vigil, last, typing),
       ),
     );
@@ -696,12 +760,13 @@ class ChatRow extends StatelessWidget {
             peer: chat.peer,
             topic: topic,
             end: i == chat.topics.length - 1,
+            typing: typingLine(status, chat.peer, topic.id),
           ),
       ],
     );
   }
 
-  Widget _row(Vigil vigil, ChatMessage? last, bool typing) {
+  Widget _row(Vigil vigil, ChatMessage? last, String? typing) {
     return Panel(
       accent: chat.unread > 0,
       padding: const EdgeInsets.fromLTRB(16, 14, 14, 14),
@@ -718,9 +783,9 @@ class ChatRow extends StatelessWidget {
                 PeerName(chat.peer, style: Styles.cardTitle),
                 const SizedBox(height: 3),
                 Text(
-                  typing ? 'typing…' : _preview(last),
+                  typing ?? _preview(last),
                   style: Styles.detail.copyWith(
-                    color: typing
+                    color: typing != null
                         ? Palette.amber
                         : chat.unread > 0
                         ? Palette.fg
@@ -755,6 +820,17 @@ class ChatRow extends StatelessWidget {
 
 Color topicColor(int rgb) => Color(0xff000000 | rgb);
 
+bool _topicsOwned(String peer) {
+  if (!isGroup(peer)) {
+    return true;
+  }
+
+  final group = Vigil.instance.group(peer);
+  final own = Vigil.instance.status.chat?.id ?? ownPeer();
+
+  return group != null && group.open && group.owner == own;
+}
+
 Future<void> manageTopics(String peer) async {
   final context = navigatorKey.currentContext;
   if (context == null) {
@@ -775,6 +851,13 @@ Future<void> manageTopics(String peer) async {
     return;
   }
 
+  final owned = _topicsOwned(peer);
+
+  if (!owned && topics.isEmpty) {
+    notify('Only the owner of ${vigil.name(peer)} can set up topics.');
+    return;
+  }
+
   final action = await sheet<String>(
     context,
     (context) => Column(
@@ -784,8 +867,12 @@ Future<void> manageTopics(String peer) async {
         sheetTitle('Topics'),
         const SizedBox(height: 8),
         Text(
-          'Topics are chats of their own with ${vigil.name(peer)}, both of '
-          'you see them and either of you can remove them.',
+          isGroup(peer)
+              ? 'Topics are chats of their own in ${vigil.name(peer)}, every '
+                    'member sees them and only the owner sets them up or '
+                    'removes them.'
+              : 'Topics are chats of their own with ${vigil.name(peer)}, '
+                    'both of you see them and either of you can remove them.',
           style: Styles.detail,
         ),
         const SizedBox(height: 16),
@@ -806,23 +893,25 @@ Future<void> manageTopics(String peer) async {
                       overflow: TextOverflow.ellipsis,
                     ),
                   ),
-                  GlyphBtn(
-                    GlyphKind.close,
-                    label: 'Remove ${topic.name}',
-                    onTap: () =>
-                        Navigator.of(context).pop('remove:${topic.id}'),
-                  ),
+                  if (owned)
+                    GlyphBtn(
+                      GlyphKind.close,
+                      label: 'Remove ${topic.name}',
+                      onTap: () =>
+                          Navigator.of(context).pop('remove:${topic.id}'),
+                    ),
                 ],
               ),
             ),
           ),
-        const SizedBox(height: 8),
-        Btn(
-          label: 'New topic',
-          glyph: GlyphKind.plus,
-          expand: true,
-          onTap: () => Navigator.of(context).pop('new'),
-        ),
+        if (owned) const SizedBox(height: 8),
+        if (owned)
+          Btn(
+            label: 'New topic',
+            glyph: GlyphKind.plus,
+            expand: true,
+            onTap: () => Navigator.of(context).pop('new'),
+          ),
       ],
     ),
   );
@@ -856,9 +945,12 @@ Future<void> _removeTopic(String peer, ChatTopic topic) async {
 
   if (!await confirm(
     title: 'Remove topic',
-    text:
-        'This removes ${topic.name} for you and ${vigil.name(peer)}, the '
-        'files sent in it are wiped from this device.',
+    text: isGroup(peer)
+        ? 'This removes ${topic.name} for every member of '
+              '${vigil.name(peer)}, the files sent in it are wiped from this '
+              'device.'
+        : 'This removes ${topic.name} for you and ${vigil.name(peer)}, the '
+              'files sent in it are wiped from this device.',
     action: 'Remove',
   )) {
     return;
@@ -995,11 +1087,13 @@ class _TopicBranch extends StatelessWidget {
     required this.peer,
     required this.topic,
     required this.end,
+    required this.typing,
   });
 
   final String peer;
   final ChatTopic topic;
   final bool end;
+  final String? typing;
 
   @override
   Widget build(BuildContext context) {
@@ -1018,7 +1112,9 @@ class _TopicBranch extends StatelessWidget {
             child: Padding(
               padding: const EdgeInsets.only(top: 6),
               child: GestureDetector(
-                onLongPress: () => _removeTopic(peer, topic),
+                onLongPress: _topicsOwned(peer)
+                    ? () => _removeTopic(peer, topic)
+                    : null,
                 child: Panel(
                   accent: unread > 0,
                   padding: const EdgeInsets.fromLTRB(14, 10, 14, 10),
@@ -1039,9 +1135,13 @@ class _TopicBranch extends StatelessWidget {
                             ),
                             const SizedBox(height: 2),
                             Text(
-                              _preview(last),
+                              typing ?? _preview(last),
                               style: Styles.detail.copyWith(
-                                color: unread > 0 ? Palette.fg : Palette.dim,
+                                color: typing != null
+                                    ? Palette.amber
+                                    : unread > 0
+                                    ? Palette.fg
+                                    : Palette.dim,
                               ),
                               maxLines: 1,
                               overflow: TextOverflow.ellipsis,
@@ -1172,30 +1272,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
       _muted == -1 || _muted > DateTime.now().millisecondsSinceEpoch;
 
   String? _typers(Status status) {
-    final vigil = Vigil.instance;
-
-    if (!isGroup(peer)) {
-      if (status.chat?.peer(peer)?.typing ?? false) {
-        return vigil.name(peer);
-      }
-
-      return null;
-    }
-
-    final group = status.chat?.group;
-
-    if (group == null || group.chat != peer) {
-      return null;
-    }
-
-    final names = [
-      for (final m in group.members)
-        if (m.online && m.typing)
-          if (vigil.known(m.id) || m.nick.isEmpty)
-            vigil.name(m.id)
-          else
-            chosen(m.nick),
-    ];
+    final names = chatTypers(status, peer, _topic);
 
     if (names.isEmpty) {
       return null;
@@ -1356,7 +1433,9 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
     }
 
     _typing = on;
-    unawaited(Vigil.instance.typing(peer, on).catchError((Object _) {}));
+    unawaited(
+      Vigil.instance.typing(peer, on, topic: _topic).catchError((Object _) {}),
+    );
   }
 
   Future<void> _send() async {
@@ -1726,9 +1805,10 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
         initialData: vigil.status,
         builder: (context, snapshot) {
           final status = snapshot.data!;
-          final group = status.chat?.group;
-          final joined = status.chats.group == peer && group?.chat == peer;
-          final members = joined ? group!.members : <ChatMember>[];
+          final group = vigil.group(peer);
+          final owner = group?.owner == (status.chat?.id ?? ownPeer());
+          final open = group?.open ?? false;
+          final members = groupMembers(status, peer);
 
           members.sort((a, b) {
             if (a.online && !b.online) {
@@ -1749,19 +1829,15 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
               sheetTitle(vigil.name(peer)),
               const SizedBox(height: 6),
               Text(
-                'GROUP ${peer.substring(1)} · '
-                '${members.where((m) => m.online).length} OF '
+                '${owner ? 'YOURS' : 'OWNED BY ${vigil.name(group?.owner ?? '').toUpperCase()}'}'
+                ' · ${members.where((m) => m.online).length} OF '
                 '${members.length} ONLINE',
                 style: Styles.rubric,
+                overflow: TextOverflow.ellipsis,
               ),
               const SizedBox(height: 12),
               if (members.isEmpty)
-                Text(
-                  joined
-                      ? 'Nobody else is in this group right now.'
-                      : 'You are not in this group.',
-                  style: Styles.body,
-                ),
+                const Text('Nobody else is in this group.', style: Styles.body),
               ConstrainedBox(
                 constraints: BoxConstraints(
                   maxHeight: MediaQuery.sizeOf(context).height * 0.5,
@@ -1774,6 +1850,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
                           padding: const EdgeInsets.only(bottom: 8),
                           child: _Member(
                             member: member,
+                            owner: member.id == group?.owner,
                             onTap: () => Navigator.of(context).pop(member.id),
                           ),
                         ),
@@ -1782,12 +1859,23 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
                 ),
               ),
               const SizedBox(height: 8),
-              Btn(
-                label: 'Rename group',
-                kind: BtnKind.secondary,
-                expand: true,
-                onTap: () => Navigator.of(context).pop(''),
-              ),
+              if (owner && open)
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 8),
+                  child: Btn(
+                    label: 'Edit group',
+                    kind: BtnKind.secondary,
+                    expand: true,
+                    onTap: () => Navigator.of(context).pop(''),
+                  ),
+                ),
+              if (open)
+                Btn(
+                  label: owner ? 'End group' : 'Leave group',
+                  kind: BtnKind.secondary,
+                  expand: true,
+                  onTap: () => Navigator.of(context).pop('-'),
+                ),
             ],
           );
         },
@@ -1795,9 +1883,77 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
     );
 
     if (action == '') {
-      await renamePeer(peer);
+      await _edit();
+    } else if (action == '-') {
+      await _leave();
     } else if (action != null && action != ownPeer()) {
       await push(ChatPage(peer: action), opaque: false);
+    }
+  }
+
+  Future<void> _edit() async {
+    final vigil = Vigil.instance;
+    final group = vigil.group(peer);
+    final own = vigil.status.chat?.id ?? ownPeer();
+
+    if (group == null) {
+      return;
+    }
+
+    final members = group.members.where((m) => m != own).toList();
+    final chats = await vigil.chats().catchError((Object _) => <ChatSummary>[]);
+    final peers = <String>{
+      ...?vigil.status.chat?.peers.where((p) => p.present).map((p) => p.id),
+      ...vigil.names.keys.where((p) => !isGroup(p)),
+      ...chats.map((c) => c.peer).where((p) => !isGroup(p)),
+    }.where((p) => p != own).toList();
+
+    if (!mounted) {
+      return;
+    }
+
+    final picked = await sheet<(String, List<String>)>(
+      context,
+      (context) => _GroupForm(
+        peers: peers,
+        edit: true,
+        name: group.name,
+        members: members,
+      ),
+    );
+
+    if (picked == null) {
+      return;
+    }
+
+    try {
+      await vigil.editGroup(peer, name: picked.$1, members: picked.$2);
+    } on VigilError catch (e) {
+      notify(e.message);
+    }
+  }
+
+  Future<void> _leave() async {
+    final vigil = Vigil.instance;
+    final owner =
+        vigil.group(peer)?.owner == (vigil.status.chat?.id ?? ownPeer());
+
+    if (!await confirm(
+      title: owner ? 'End group' : 'Leave group',
+      text: owner
+          ? 'Every member keeps the messages but nobody can write in '
+                '${vigil.name(peer)} anymore.'
+          : 'You stop getting the messages of ${vigil.name(peer)}, the owner '
+                'takes you off the list of members.',
+      action: owner ? 'End' : 'Leave',
+    )) {
+      return;
+    }
+
+    try {
+      await vigil.leaveGroup(peer);
+    } on VigilError catch (e) {
+      notify(e.message);
     }
   }
 
@@ -1879,10 +2035,9 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
   }
 
   (int, List<ChatMember>)? _mentioning(TextEditingValue value, Status status) {
-    final group = status.chat?.group;
     final caret = value.selection.baseOffset;
 
-    if (group?.chat != peer || !value.selection.isCollapsed || caret < 0) {
+    if (!isGroup(peer) || !value.selection.isCollapsed || caret < 0) {
       return null;
     }
 
@@ -1905,7 +2060,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
 
     final vigil = Vigil.instance;
     final found = [
-      for (final m in group!.members)
+      for (final m in groupMembers(status, peer))
         if ([
           vigil.name(m.id),
           vigil.mentionName(m.id),
@@ -1936,7 +2091,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
     final text = value.text.replaceRange(at, value.selection.baseOffset, name);
 
     if (utf8.encode(text).length >
-        (_replying == null ? _messageMax : _replyMax)) {
+        (_replying == null ? _groupMax : _groupReplyMax)) {
       notify('That name does not fit in this message.');
       return;
     }
@@ -1945,14 +2100,6 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
       text: text,
       selection: TextSelection.collapsed(offset: at + name.length),
     );
-  }
-
-  Future<void> _membership(bool join) async {
-    try {
-      await Vigil.instance.joinGroup(join ? peer.substring(1) : '');
-    } on VigilError catch (e) {
-      notify(e.message);
-    }
   }
 
   @override
@@ -1970,7 +2117,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
           initialData: vigil.status,
           builder: (context, snapshot) {
             final status = snapshot.data!;
-            final joined = status.chats.group == peer;
+            final joined = vigil.group(peer)?.open ?? false;
             final callable = status.call?.peers.contains(peer) ?? false;
             final messages = _messages.where((m) => m.topic == _topic).toList();
             final newest = messages.lastIndexWhere(
@@ -2092,12 +2239,6 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
                                 color: _snoozed ? Palette.amber : Palette.fg2,
                                 onTap: _snooze,
                               ),
-                            if (group)
-                              GlyphBtn(
-                                joined ? GlyphKind.hangup : GlyphKind.plus,
-                                label: joined ? 'Leave group' : 'Join group',
-                                onTap: () => _membership(!joined),
-                              ),
                             if (callable &&
                                 status.phone == null &&
                                 videoCalls &&
@@ -2169,9 +2310,9 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
                                             _history == null
                                                 ? ''
                                                 : group
-                                                ? 'Messages go to the members of '
-                                                      '${vigil.name(peer)} that are '
-                                                      'around right now.'
+                                                ? 'Messages wait for every member '
+                                                      'of ${vigil.name(peer)} until '
+                                                      'they are around.'
                                                 : topic != null
                                                 ? 'Write the first message in '
                                                       '${topic!.name}.'
@@ -2322,28 +2463,26 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
                                 style: Styles.detail,
                               )
                             : group && !joined
-                            ? Row(
-                                children: [
-                                  const Expanded(
-                                    child: Text(
-                                      'You are not in this group, join it to '
-                                      'send messages.',
-                                      style: Styles.detail,
-                                    ),
-                                  ),
-                                  const SizedBox(width: 12),
-                                  Btn(
-                                    label: 'Join',
-                                    onTap: () => _membership(true),
-                                  ),
-                                  const SizedBox(width: 8),
-                                ],
-                              )
+                            ? Text(switch (vigil.group(peer)?.state) {
+                                'ended' =>
+                                  '${vigil.name(peer)} has ended, nobody can '
+                                      'write in it anymore.',
+                                'left' => 'You left this group.',
+                                'removed' =>
+                                  'You were removed from this group.',
+                                _ => 'This group is closed.',
+                              }, style: Styles.detail)
                             : _Composer(
                                 input: _input,
                                 focus: _focus,
-                                max: topic != null
+                                max: topic != null && group
+                                    ? _groupTopicMax
+                                    : topic != null
                                     ? _topicMax
+                                    : group
+                                    ? _replying == null
+                                          ? _groupMax
+                                          : _groupReplyMax
                                     : _replying == null
                                     ? _messageMax
                                     : _replyMax,
@@ -2447,9 +2586,14 @@ class _Mentions extends StatelessWidget {
 }
 
 class _Member extends StatelessWidget {
-  const _Member({required this.member, required this.onTap});
+  const _Member({
+    required this.member,
+    required this.owner,
+    required this.onTap,
+  });
 
   final ChatMember member;
+  final bool owner;
   final VoidCallback onTap;
 
   @override
@@ -2463,7 +2607,7 @@ class _Member extends StatelessWidget {
             'p2p' => (Liveness.online, 'ONLINE · P2P', Palette.good),
             'relay' => (Liveness.online, 'ONLINE · RELAY', Palette.good),
             'connecting' => (Liveness.pending, 'CONNECTING', Palette.amber),
-            _ => (Liveness.off, 'IN THE GROUP', Palette.dim),
+            _ => (Liveness.off, owner ? 'OWNER' : 'OFFLINE', Palette.dim),
           };
 
     return Panel(
@@ -4420,55 +4564,23 @@ class _Utf8Limit extends TextInputFormatter {
   ) => utf8.encode(newValue.text).length <= max ? newValue : oldValue;
 }
 
-Future<void> joinGroup() async {
+Future<void> newGroup(List<String> peers) async {
   final context = navigatorKey.currentContext;
   if (context == null) {
     return;
   }
 
-  final vigil = Vigil.instance;
-  final current = vigil.status.chats.group;
-  final join = await sheet<(String, String)>(
+  final picked = await sheet<(String, List<String>)>(
     context,
-    (context) => _GroupPrompt(swap: current != null),
+    (context) => _GroupForm(peers: peers),
   );
 
-  if (join == null) {
+  if (picked == null) {
     return;
-  }
-
-  final (raw, given) = join;
-  final hex = raw.toLowerCase().padLeft(4, '0');
-  final label = given.trim();
-
-  if (raw.isEmpty) {
-    return;
-  }
-
-  if (hex == '0000') {
-    notify('Group 0000 is where chats signal, pick another one.');
-    return;
-  }
-
-  final chat = 'g$hex';
-
-  if (current != null && current != chat) {
-    if (!await confirm(
-      title: 'Switch groups',
-      text:
-          'You can be in one group at a time, joining ${vigil.name(chat)} '
-          'leaves ${vigil.name(current)}.',
-      action: 'Join',
-    )) {
-      return;
-    }
   }
 
   try {
-    await vigil.joinGroup(hex);
-    if (label.isNotEmpty) {
-      await vigil.rename(chat, label);
-    }
+    final chat = await Vigil.instance.createGroup(picked.$1, picked.$2);
 
     await push(ChatPage(peer: chat), opaque: false);
   } on VigilError catch (e) {
@@ -4476,80 +4588,185 @@ Future<void> joinGroup() async {
   }
 }
 
-class _GroupPrompt extends StatefulWidget {
-  const _GroupPrompt({required this.swap});
+class _GroupForm extends StatefulWidget {
+  const _GroupForm({
+    required this.peers,
+    this.edit = false,
+    this.name = '',
+    this.members = const [],
+  });
 
-  final bool swap;
+  final List<String> peers;
+  final bool edit;
+  final String name;
+  final List<String> members;
 
   @override
-  State<_GroupPrompt> createState() => _GroupPromptState();
+  State<_GroupForm> createState() => _GroupFormState();
 }
 
-class _GroupPromptState extends State<_GroupPrompt> {
+class _GroupFormState extends State<_GroupForm> {
+  late final _name = TextEditingController(text: widget.name);
   final _id = TextEditingController();
-  final _name = TextEditingController();
+  late final _picked = {...widget.members};
+  late final _peers = {...widget.peers, ...widget.members}.toList()..sort();
 
   @override
   void dispose() {
-    _id.dispose();
     _name.dispose();
+    _id.dispose();
     super.dispose();
+  }
+
+  void _add() {
+    final hex = _id.text.toLowerCase().padLeft(2, '0');
+
+    if (_id.text.isEmpty) {
+      return;
+    }
+
+    if (hex == '00' || hex == 'ff') {
+      notify('KEK IDs go from 01 to fe.');
+      return;
+    }
+
+    if (hex == ownPeer()) {
+      notify('That is you.');
+      return;
+    }
+
+    setState(() {
+      if (!_peers.contains(hex)) {
+        _peers
+          ..add(hex)
+          ..sort();
+      }
+
+      _picked.add(hex);
+      _id.clear();
+    });
   }
 
   @override
   Widget build(BuildContext context) {
+    final vigil = Vigil.instance;
+
     return Column(
       mainAxisSize: MainAxisSize.min,
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        sheetTitle(widget.swap ? 'Swap group' : 'Join a group'),
+        sheetTitle(widget.edit ? 'Edit group' : 'New group'),
         const SizedBox(height: 8),
         const Text(
-          'A group is a 4 digit hex id, everyone in your flock who joins '
-          'the same id is in it. You can be in one group at a time.',
+          'Every member gets the name and the list of members. Messages wait '
+          'for members that are away.',
           style: Styles.detail,
         ),
         const SizedBox(height: 16),
-        Text('GROUP ID', style: Styles.key),
-        const SizedBox(height: 6),
-        Pre(
-          child: TextField(
-            controller: _id,
-            autofocus: true,
-            maxLength: 4,
-            style: Styles.pre,
-            cursorColor: Palette.amber,
-            inputFormatters: [
-              FilteringTextInputFormatter.allow(RegExp('[0-9A-Fa-f]')),
-            ],
-            decoration: InputDecoration.collapsed(
-              hintText: '1a2b',
-              hintStyle: Styles.pre.copyWith(color: Palette.dim),
-            ).copyWith(counterText: ''),
-          ),
-        ),
-        const SizedBox(height: 14),
         Text('NAME', style: Styles.key),
         const SizedBox(height: 6),
         Pre(
           child: TextField(
             controller: _name,
-            maxLength: 32,
+            autofocus: !widget.edit,
             enableIMEPersonalizedLearning: false,
             textCapitalization: TextCapitalization.words,
+            inputFormatters: [_Utf8Limit(_groupNameMax)],
             style: Styles.pre,
             cursorColor: Palette.amber,
             decoration: InputDecoration.collapsed(
-              hintText: 'Only on this device',
+              hintText: 'Seen by every member',
               hintStyle: Styles.pre.copyWith(color: Palette.dim),
-            ).copyWith(counterText: ''),
+            ),
           ),
+        ),
+        const SizedBox(height: 14),
+        Text('MEMBERS', style: Styles.key),
+        const SizedBox(height: 6),
+        ConstrainedBox(
+          constraints: BoxConstraints(
+            maxHeight: MediaQuery.sizeOf(context).height * 0.35,
+          ),
+          child: SingleChildScrollView(
+            child: Column(
+              children: [
+                for (final id in _peers)
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: 8),
+                    child: Panel(
+                      padding: const EdgeInsets.fromLTRB(16, 10, 12, 10),
+                      onTap: () => setState(() {
+                        if (!_picked.remove(id)) {
+                          _picked.add(id);
+                        }
+                      }),
+                      child: Row(
+                        children: [
+                          Avatar(id),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                PeerName(id, style: Styles.cardTitle),
+                                if (vigil.name(id) != 'Peer $id')
+                                  Text('Peer $id', style: Styles.detail),
+                              ],
+                            ),
+                          ),
+                          Glyph(
+                            _picked.contains(id)
+                                ? GlyphKind.close
+                                : GlyphKind.plus,
+                            color: _picked.contains(id)
+                                ? Palette.amber
+                                : Palette.dim,
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+              ],
+            ),
+          ),
+        ),
+        Row(
+          children: [
+            Expanded(
+              child: Pre(
+                child: TextField(
+                  controller: _id,
+                  maxLength: 2,
+                  style: Styles.pre,
+                  cursorColor: Palette.amber,
+                  inputFormatters: [
+                    FilteringTextInputFormatter.allow(RegExp('[0-9A-Fa-f]')),
+                  ],
+                  onSubmitted: (_) => _add(),
+                  decoration: InputDecoration.collapsed(
+                    hintText: 'Add by KEK ID',
+                    hintStyle: Styles.pre.copyWith(color: Palette.dim),
+                  ).copyWith(counterText: ''),
+                ),
+              ),
+            ),
+            const SizedBox(width: 8),
+            Btn(label: 'Add', kind: BtnKind.secondary, onTap: _add),
+          ],
         ),
         const SizedBox(height: 20),
         Btn(
-          label: 'Join',
+          label: widget.edit ? 'Save' : 'Create group',
           expand: true,
-          onTap: () => Navigator.of(context).pop((_id.text, _name.text)),
+          onTap: () {
+            if (_picked.isEmpty) {
+              notify('Pick at least one member.');
+              return;
+            }
+
+            Navigator.of(
+              context,
+            ).pop((_name.text.trim(), (_picked.toList()..sort())));
+          },
         ),
       ],
     );

@@ -35,7 +35,7 @@ sequenceDiagram
     Note over RP: write to chat vault
     RP->>RC: vigil_chat_stored(token)
     RC-->>SC: ACK(id)
-    SC->>SP: event "delivered" (ref), group: "acks"
+    SC->>SP: event "delivered" (ref)
     Note over SC: msg freed, blob ref dropped
 ```
 
@@ -55,16 +55,30 @@ kind: 1 image, 2 file, 3 voice, 4 avatar
 ```
 
 ```
-blob in a topic (one-to-one only, kind has 0x80 set)
+blob in a topic (kind has 0x80 set)
 +------+-----+----------------+----------+----------------------+
 | kind | len | name[126]      | topic    | data (1 .. 4 MiB)    |
 +------+-----+----------------+----------+----------------------+
   1      1     126              8          VIGIL_CHAT_DATA_MAX
 ```
 
+```
+blob in a group (kind has 0x40 set)
++------+-----+----------------+-------+----+--------+----------------------+
+| kind | len | name[126]      | owner | id | serial | data (1 .. 4 MiB)    |
++------+-----+----------------+-------+----+--------+----------------------+
+  1      1     126              1       8    4        VIGIL_CHAT_DATA_MAX
+```
+
+The serial is as in a group frame, see [chat.md](chat.md). A parcel the
+platform holds is taken and wiped but not stored, so its sender sends the
+parcel again once the core lets go of it after 60 s.
+
 A peer without `TOPIC` does not know kind 0x80 and drops data in a topic,
-see [chat.md](chat.md). Data in topic 0, in a group, or an avatar in a
-topic is dropped too.
+a peer without `GROUP` drops data in a group the same way, see
+[chat.md](chat.md). Data in topic 0, in group 0, from owner 0, or an
+avatar in a topic or group is dropped too. With both bits set the group
+comes before the topic.
 
 ```
 chunk packet, 1172 bytes (told apart from a frame by its length)
@@ -107,27 +121,17 @@ flowchart TD
     CI -- same peer + ref held --> D3[0, copy dropped]
     CI -- not accepting, no room<br/>or 1024 commands queued --> X
     CI -- room --> E2[blob on blobs list]
-    E2 --> F[CHAT_COMMAND_DATA / GROUP_DATA]
-    F --> G{one-to-one or group}
-    G -- peer --> H{ref in peer outbox<br/>or peer is us?}
+    E2 --> F[CHAT_COMMAND_DATA]
+    F --> H{ref in peer outbox<br/>or peer is us?}
     H -- yes --> D2[blob ref dropped]
     H -- no --> H1[chat_data_msg<br/>msg on peer outbox]
-    H1 -- peer has a tunnel --> J
-    G -- group --> I[chat_group_data<br/>msg per member tunnel<br/>shared tally]
-    I --> J[chat_msg_queue<br/>msg id = tun->msgid++]
+    H1 -- peer has a tunnel --> J[chat_msg_queue<br/>msg id = tun->msgid++]
     J --> K[chat_xfer_run<br/>chat_tunnel_manage, tunnel online]
 ```
 
-One blob, many messages. Each message holds a reference, the blob is
-zeroed and freed with the last one.
-
-```
-            blob (refs = 3)
-           /      |       \
-   msg peer 02  msg peer 05  msg peer 09      group of three
-       |            |            |
-   tunnel 02    tunnel 05    tunnel 09        one xfer each
-```
+Each message holds a reference to its blob, the blob is zeroed and freed
+with the last one. The platform hands a parcel in a group to the core once
+for every member, each as a blob of its own on the outbox of that member.
 
 ### Picking what to send
 
@@ -178,14 +182,14 @@ stateDiagram-v2
     Sending --> Done: DATA_ACK, base == count
     Done --> Done: chunk 0 every 2 s
     Done --> Sending: DATA_ACK, base < count, latest 0<br/>bits cleared, rate 200, from chunk 0
-    Done --> [*]: ACK(id), event "delivered" or tally "acks"
+    Done --> [*]: ACK(id), event "delivered"
     Sending --> [*]: ACK(id)
     Sending --> [*]: vigil_chat_forget / tunnel gone / avatar dropped
     Done --> [*]: vigil_chat_forget / tunnel gone / avatar dropped
 ```
 
-First chunk out: event `sent`, one-to-one chats only. An avatar gets no
-`sent`, `delivered` or `acks`, its `ACK` only drops the avatar message.
+First chunk out: event `sent`. An avatar gets no `sent` or `delivered`,
+its `ACK` only drops the avatar message.
 
 The avatar xfer is dropped when our avatar changes or a heartbeat from the
 peer carries a new `avatar_have` or uid. The avatar is then pushed again
@@ -268,21 +272,23 @@ stateDiagram-v2
 ```
 
 `vigil_chat_data_take()` returns -1 for an unknown token or a buffer
-smaller than the data. It copies out the data only, the 128 byte head
-and the topic stay in the core.
+smaller than the data. It copies out the data only, the 128 byte head,
+the group and the topic stay in the core.
 
 ## Platform contract
 
 ```
 event                                 platform
 ────────────────────────────────────  ──────────────────────────────────────
-"data"   peer group token size          vigil_chat_data_take(token, buf, size)
-         kind name nick signed          store in chat vault
-         topic if in a topic            zero buf
+"data"   peer token size kind name      vigil_chat_data_take(token, buf, size)
+         nick signed                    store in chat vault
+         owner group serial if in a     zero buf
+         group
+         topic if in a topic
          kind: image | voice | file
                                         vigil_chat_stored(token)
 
-"avatar" peer group token size          same, avatar store
+"avatar" peer token size               same, avatar store
                                         on stored: hash kept as avatar_held
 
 "avatar" token 0, size 0                peer has no FEATURE_AVATAR,

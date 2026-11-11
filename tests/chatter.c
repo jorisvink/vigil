@@ -17,22 +17,30 @@
 /*
  * chatter - run a Gospel configuration on a regular host and chat.
  *
- *	$ ./tests/chatter [-n nick] [-m peer:text] [-g group] [-G text]
+ *	$ ./tests/chatter [-n nick] [-m peer:text] [-g id:name:members]
+ *	    [-j owner:id[:members]] [-G text] [-L] [-K peer]
  *	    [-i peer:file] [-I file] [-f peer:file] [-F file] [-o dir]
  *	    [-t peer] [-T] [-O peer] [-e count] [-x secs] [-l count]
  *	    [-r author:hash] [-c topic:name] [-C peer:topic] [-P file]
  *	    [-D datadir] <gospel>
  *
  * With -m we send the text to the given peer, -m may be given more
- * than once. With -g we join the given group and with -G we send the
- * text to it once a member is online, -G may be given more than once.
+ * than once. With -g we own the group with the given id and name, its
+ * members are a comma separated list of peer ids, and send its roster to
+ * them. With -j we are in the group with the given owner and id and learn
+ * its members from its roster, or take them from the list given. With -G
+ * we send the text to every other member of our group, -G may be given
+ * more than once. With -L we leave
+ * our group, or end it if we own it, once our messages to it went out.
+ * With -K we remove the given peer from the group we own.
  * With -t we keep typing to the given peer and with -T to our group.
  * With -O we keep the chat with the given peer open.
  * With -r every -m and -G is a reply to the message with the given hash
  * written by the given author, 0 is us.
  * With -c we set up the given topic with every peer we send to and all of
- * our messages and data go in it. With -C we remove the given topic with
- * the given peer, -C may be given more than once.
+ * our messages and data go in it, in a group only its owner sets it up.
+ * With -C we remove the given topic with the given peer, -C may be given
+ * more than once.
  * With -i we send the image in the given file to the given peer and with
  * -I to our group, -f and -F do the same for any file. All of them may be
  * given more than once. Data we get is written to the directory given
@@ -42,9 +50,8 @@
  * up after that many seconds. With -l we act as if we failed to store
  * the first count messages we got.
  *
- * Exits 0 if all our messages were delivered, all our group messages
- * were acked by every member and we got all the messages we waited for,
- * 1 otherwise.
+ * Exits 0 if all our messages were delivered, to every member for those
+ * in our group, and we got all the messages we waited for, 1 otherwise.
  */
 
 #include <sys/types.h>
@@ -59,14 +66,9 @@
 
 #include "vigil.h"
 
-/* Where the status tells us the chat session, our group and our traffic. */
+/* Where the status tells us the chat session and our traffic. */
 #define CHATTER_SESSION		"\"chat\":{\"session\":"
-#define CHATTER_GROUP		"\"group\":{"
 #define CHATTER_GOSPEL		"\"gospel\":{"
-
-/* What the tally of a message to our group looks like, and when it is done. */
-#define CHATTER_GROUP_ACKS	"\"group\":\"%04lx\",\"type\":\"acks\""
-#define CHATTER_GROUP_DONE	",\"pending\":0}"
 
 /* The milliseconds we stay around once we are done. */
 #define CHATTER_LINGER		3000
@@ -80,12 +82,19 @@
 static void	usage(void) __attribute__((noreturn));
 
 static void	*chatter_core_run(void *);
+static void	chatter_group_send(int *);
 static void	chatter_avatar(const char *);
 static void	chatter_data_take(const char *);
 static int	chatter_avatar_take(const char *);
-static void	chatter_events_handle(int *, int *, int *);
+static void	chatter_group_event(const char *);
+static void	chatter_events_handle(int *, int *);
+static int	chatter_members_parse(const char *);
+static void	chatter_roster_send(u_int8_t, int *);
 static size_t	chatter_config_read(const char *, char *, size_t);
-static void	chatter_data_send(u_int8_t, u_int64_t, int, const char *);
+static void	chatter_data_send(u_int8_t, u_int64_t, int, const char *, int);
+
+static const char	*chatter_field(const char *, const char *,
+			    const char *);
 
 /* The Gospel configuration. */
 static size_t		gospel_len;
@@ -102,9 +111,19 @@ static int		message_count = 0;
 static u_int8_t		message_peer[CHATTER_MESSAGES_MAX];
 static const char	*message_text[CHATTER_MESSAGES_MAX];
 
-/* The group we join and the messages we send to it. */
-static long		group = 0;
+/* Our group, its members, the messages we send to it and what we do after. */
+static u_int8_t		local = 0;
+static u_int8_t		owner = 0;
+static u_int64_t	group = 0;
+static int		group_ended = 0;
+static int		group_known = 0;
+static int		group_leave = 0;
+static u_int8_t		group_kick = 0;
+static u_int32_t	group_serial = 0;
 static int		group_count = 0;
+static int		group_rosters = 0;
+static const char	*group_name = "";
+static u_int8_t		members[VIGIL_CHAT_GROUP_ROSTER];
 static const char	*group_text[CHATTER_MESSAGES_MAX];
 
 /* The data we send to peers and to our group, where the data we get goes. */
@@ -120,6 +139,9 @@ static const char	*outdir = NULL;
 /* Who we keep typing to. */
 static long		typing_peer = 0;
 static int		typing_group = 0;
+
+/* How many copies of messages to our group we expect to be delivered. */
+static int		group_wanted = 0;
 
 /* Who we keep a chat open with. */
 static long		open_peer = 0;
@@ -138,8 +160,10 @@ static u_int64_t	remove_topic[CHATTER_MESSAGES_MAX];
 static void
 usage(void)
 {
-	fprintf(stderr, "usage: chatter [-n nick] [-m peer:text] [-g group] "
-	    "[-G text] [-i peer:file] [-I file] [-f peer:file] [-F file] "
+	fprintf(stderr, "usage: chatter [-n nick] [-m peer:text] "
+	    "[-g id:name:members] [-j owner:id[:members]] [-G text] [-L] "
+	    "[-K peer] "
+	    "[-i peer:file] [-I file] [-f peer:file] [-F file] "
 	    "[-a peer:file] [-A file] "
 	    "[-o dir] [-t peer] [-T] [-O peer] [-e count] [-x secs] "
 	    "[-l count] [-r author:hash] [-c topic:name] [-C peer:topic] "
@@ -156,19 +180,18 @@ main(int argc, char **argv)
 	char		summary[4096];
 	long		peer, session;
 	int		ch, idx, expect, quit, delivered;
-	int		got, sent, gsent, gdone, wanted, gwanted;
+	int		got, sent, gsent, gwanted, wanted;
 
 	quit = 60;
 	got = 0;
 	sent = 0;
 	gsent = 0;
-	gdone = 0;
 	expect = 0;
 	session = 0;
 	delivered = 0;
 
 	while ((ch = getopt(argc, argv,
-	    "a:A:c:C:D:e:f:F:g:G:i:I:l:m:n:o:O:P:r:t:Tx:")) != -1) {
+	    "a:A:c:C:D:e:f:F:g:G:i:I:j:K:l:Lm:n:o:O:P:r:t:Tx:")) != -1) {
 		switch (ch) {
 		case 'c':
 			topic = strtoull(optarg, &ep, 16);
@@ -203,19 +226,56 @@ main(int argc, char **argv)
 			expect = atoi(optarg);
 			break;
 		case 'g':
-			group = strtol(optarg, &ep, 16);
-			if (*ep != '\0')
+			group = strtoull(optarg, &ep, 16);
+			if (*ep != ':' || group == 0)
 				usage();
-			if (group <= 0 || group > 0xffff)
+			group_name = ep + 1;
+			ep = strchr(group_name, ':');
+			if (ep == NULL)
 				usage();
+			*(ep++) = '\0';
+			if (strlen(group_name) > VIGIL_CHAT_GROUP_NAME_MAX)
+				usage();
+			if (chatter_members_parse(ep) == -1)
+				usage();
+			group_known = 1;
+			break;
+		case 'j':
+			peer = strtol(optarg, &ep, 16);
+			if (*ep != ':')
+				usage();
+			if (peer <= 0 || peer >= KYRKA_PEERS_PER_FLOCK)
+				usage();
+			owner = peer;
+			group = strtoull(ep + 1, &ep, 16);
+			if (group == 0)
+				usage();
+			if (*ep == ':') {
+				if (chatter_members_parse(ep + 1) == -1)
+					usage();
+				group_known = 1;
+			} else if (*ep != '\0') {
+				usage();
+			}
 			break;
 		case 'G':
 			if (group_count == CHATTER_MESSAGES_MAX)
 				usage();
 			if (strlen(optarg) == 0 ||
-			    strlen(optarg) > VIGIL_CHAT_MESSAGE_MAX)
+			    strlen(optarg) > VIGIL_CHAT_GROUP_REPLY_MAX)
 				usage();
 			group_text[group_count++] = optarg;
+			break;
+		case 'K':
+			peer = strtol(optarg, &ep, 16);
+			if (*ep != '\0')
+				usage();
+			if (peer <= 0 || peer >= KYRKA_PEERS_PER_FLOCK)
+				usage();
+			group_kick = peer;
+			break;
+		case 'L':
+			group_leave = 1;
 			break;
 		case 'm':
 			if (message_count == CHATTER_MESSAGES_MAX)
@@ -326,14 +386,32 @@ main(int argc, char **argv)
 	if (group_data_count > 0 && group == 0)
 		usage();
 
+	if (group_leave && group == 0)
+		usage();
+
+	if (group_kick != 0 && group == 0)
+		usage();
+
+	if (group_kick != 0 && !group_known)
+		usage();
+
 	for (idx = 0; idx < message_count; idx++) {
 		if (topic != 0 &&
 		    strlen(message_text[idx]) > VIGIL_CHAT_TOPIC_MAX)
 			usage();
 	}
 
+	for (idx = 0; idx < group_count; idx++) {
+		if (topic != 0 &&
+		    strlen(group_text[idx]) > VIGIL_CHAT_GROUP_TOPIC_MAX)
+			usage();
+	}
+
 	wanted = message_count + data_count + remove_count;
-	gwanted = group_count + group_data_count;
+	gwanted = group_count + group_data_count + group_leave;
+
+	if (group_kick != 0)
+		gwanted++;
 
 	if (topic != 0)
 		wanted += message_count + data_count;
@@ -346,6 +424,17 @@ main(int argc, char **argv)
 	if (vigil_config_check(gospel, gospel_len,
 	    summary, sizeof(summary)) == -1)
 		fatal("%s", summary);
+
+	if ((ep = strstr(summary, "\"spi\":\"")) == NULL)
+		fatal("no spi in %s", summary);
+
+	local = strtoul(ep + 7, NULL, 16) & 0xff;
+
+	if (group_known && owner == 0)
+		owner = local;
+
+	if (group_known)
+		members[local / 8] |= 1 << (local % 8);
 
 	signal(SIGPIPE, SIG_IGN);
 
@@ -417,62 +506,48 @@ main(int argc, char **argv)
 
 					chatter_data_send(data_peer[idx],
 					    500 + idx, data_kind[idx],
-					    data_path[idx]);
+					    data_path[idx], 0);
 				}
 
-				if (group != 0 && vigil_chat_group(group) == -1)
-					fatal("failed to join group %04lx", group);
+				if (group_known && owner == local)
+					chatter_roster_send(0, &wanted);
 
 				if (typing_peer != 0)
-					vigil_chat_typing(typing_peer, 1);
+					vigil_chat_typing(typing_peer,
+					    topic, 1);
 
 				if (open_peer != 0)
 					vigil_chat_open(open_peer, 1);
 
 				if (typing_group)
-					vigil_chat_group_typing(1);
+					vigil_chat_group_typing(owner, group,
+					    topic);
 
 				sent = 1;
 				gsent = 0;
 			}
 
-			if (gsent == 0 && gwanted > 0 &&
-			    (ep = strstr(p, CHATTER_GROUP)) != NULL &&
-			    strstr(ep, "\"online\":true") != NULL) {
-				for (idx = 0; idx < group_count; idx++) {
-					if (reply_hash != 0 &&
-					    vigil_chat_group_reply(1000 + idx,
-					    reply_author, reply_hash,
-					    group_text[idx],
-					    strlen(group_text[idx])) == -1)
-						fatal("vigil_chat_group_reply");
-
-					if (reply_hash == 0 &&
-					    vigil_chat_group_send(1000 + idx,
-					    group_text[idx],
-					    strlen(group_text[idx])) == -1)
-						fatal("vigil_chat_group_send");
-				}
-
-				for (idx = 0; idx < group_data_count; idx++) {
-					chatter_data_send(0, 1500 + idx,
-					    group_data_kind[idx],
-					    group_data_path[idx]);
-				}
-
+			if (gsent == 0 && gwanted > 0 && group_known &&
+			    !group_ended) {
+				chatter_group_send(&wanted);
 				gsent = 1;
 			}
 		}
 
-		chatter_events_handle(&got, &delivered, &gdone);
+		chatter_events_handle(&got, &delivered);
+
+		if (group_rosters > 0 && owner == local) {
+			wanted += group_rosters;
+			group_rosters = 0;
+		}
 
 		if (sent && delivered >= wanted &&
-		    gdone >= gwanted && got >= expect)
+		    (gwanted == 0 || gsent) && got >= expect)
 			break;
 	}
 
-	printf("chatter: got %d/%d, delivered %d/%d, group acked %d/%d\n",
-	    got, expect, delivered, wanted, gdone, gwanted);
+	printf("chatter: got %d/%d, delivered %d/%d, group copies %d\n",
+	    got, expect, delivered, wanted, group_wanted);
 
 	if (vigil_status(p, VIGIL_STATUS_MAX) > 0 &&
 	    (ep = strstr(p, CHATTER_GOSPEL)) != NULL)
@@ -487,7 +562,7 @@ main(int argc, char **argv)
 
 	free(p);
 
-	if (got >= expect && delivered >= wanted && gdone >= gwanted)
+	if (got >= expect && delivered >= wanted && (gwanted == 0 || gsent))
 		return (0);
 
 	return (1);
@@ -539,15 +614,13 @@ chatter_core_run(void *arg)
  * unless we still have to lose some.
  */
 static void
-chatter_events_handle(int *got, int *delivered, int *gdone)
+chatter_events_handle(int *got, int *delivered)
 {
 	u_int64_t	token;
-	char		*p, *ep;
-	char		acks[64];
+	char		*p;
 	char		buf[VIGIL_CHAT_EVENTS_MAX];
 
 	PRECOND(got != NULL);
-	PRECOND(gdone != NULL);
 	PRECOND(delivered != NULL);
 
 	if (vigil_chat_events(buf, sizeof(buf)) == 0)
@@ -555,6 +628,9 @@ chatter_events_handle(int *got, int *delivered, int *gdone)
 
 	if (strcmp(buf, "[]"))
 		printf("chatter: %s\n", buf);
+
+	for (p = buf; (p = strstr(p, "{\"peer\":")) != NULL; p++)
+		chatter_group_event(p);
 
 	for (p = buf; (p = strstr(p, "\"token\":")) != NULL; p++) {
 		if (chatter_avatar_take(p) != -1)
@@ -577,27 +653,250 @@ chatter_events_handle(int *got, int *delivered, int *gdone)
 	for (p = buf; (p = strstr(p, "\"delivered\"")) != NULL; p++)
 		(*delivered)++;
 
-	(void)snprintf(acks, sizeof(acks), CHATTER_GROUP_ACKS, group);
-
-	for (p = buf; (p = strstr(p, acks)) != NULL; p++) {
-		ep = strchr(p, '}');
-		if (ep == NULL)
-			break;
-
-		if (!strncmp(ep - strlen(CHATTER_GROUP_DONE) + 1,
-		    CHATTER_GROUP_DONE, strlen(CHATTER_GROUP_DONE)))
-			(*gdone)++;
-	}
-
 	fflush(stdout);
 }
 
 /*
- * Send the file at path as the given kind of data to the given peer, or
- * to our group if the peer is 0. It goes under the last part of its path.
+ * Parse a comma separated list of peer ids into our members.
+ */
+static int
+chatter_members_parse(const char *list)
+{
+	long		peer;
+	char		*ep;
+
+	PRECOND(list != NULL);
+
+	memset(members, 0, sizeof(members));
+
+	while (*list != '\0') {
+		peer = strtol(list, &ep, 16);
+		if (ep == list)
+			return (-1);
+
+		if (peer <= 0 || peer >= KYRKA_PEERS_PER_FLOCK)
+			return (-1);
+
+		members[peer / 8] |= 1 << (peer % 8);
+
+		if (*ep == ',')
+			ep++;
+		else if (*ep != '\0')
+			return (-1);
+
+		list = ep;
+	}
+
+	return (0);
+}
+
+/*
+ * Send the roster of the group we own to every member, and to the given
+ * peer too if it is not 0.
  */
 static void
-chatter_data_send(u_int8_t peer, u_int64_t ref, int kind, const char *path)
+chatter_roster_send(u_int8_t also, int *wanted)
+{
+	int			idx, state;
+	static u_int64_t	ref = 2000;
+
+	PRECOND(wanted != NULL);
+
+	if (group_ended)
+		state = VIGIL_CHAT_GROUP_ENDED;
+	else
+		state = VIGIL_CHAT_GROUP_OPEN;
+
+	group_serial++;
+
+	for (idx = 1; idx < KYRKA_PEERS_PER_FLOCK; idx++) {
+		if (idx == local)
+			continue;
+
+		if (idx != also && !(members[idx / 8] & (1 << (idx % 8))))
+			continue;
+
+		if (vigil_chat_group_roster(idx, ref, group, group_serial,
+		    state, members, group_name, strlen(group_name)) == -1)
+			fatal("vigil_chat_group_roster");
+
+		ref++;
+		(*wanted)++;
+	}
+}
+
+/*
+ * Send our messages and data to every other member of our group, then
+ * leave or end it or remove a member if we were asked to.
+ */
+static void
+chatter_group_send(int *wanted)
+{
+	int		idx, peer;
+
+	PRECOND(wanted != NULL);
+
+	for (peer = 1; peer < KYRKA_PEERS_PER_FLOCK; peer++) {
+		if (peer == local)
+			continue;
+
+		if (!(members[peer / 8] & (1 << (peer % 8))))
+			continue;
+
+		if (topic != 0 && owner == local) {
+			if (vigil_chat_group_topic(peer, 1800, group,
+			    group_serial, topic, CHATTER_TOPIC_COLOR,
+			    topic_name, strlen(topic_name)) == -1)
+				fatal("vigil_chat_group_topic");
+			(*wanted)++;
+		}
+
+		for (idx = 0; idx < group_count; idx++) {
+			if (vigil_chat_group_send(peer, 1000 + idx, owner,
+			    group, group_serial, topic, reply_author,
+			    reply_hash, group_text[idx],
+			    strlen(group_text[idx])) == -1)
+				fatal("vigil_chat_group_send");
+			(*wanted)++;
+			group_wanted++;
+		}
+
+		for (idx = 0; idx < group_data_count; idx++) {
+			chatter_data_send(peer, 1500 + idx,
+			    group_data_kind[idx], group_data_path[idx], 1);
+			(*wanted)++;
+			group_wanted++;
+		}
+	}
+
+	if (group_kick != 0) {
+		members[group_kick / 8] &= ~(1 << (group_kick % 8));
+		chatter_roster_send(group_kick, wanted);
+	}
+
+	if (!group_leave)
+		return;
+
+	if (owner == local) {
+		group_ended = 1;
+		chatter_roster_send(0, wanted);
+		return;
+	}
+
+	if (vigil_chat_group_leave(owner, 1900, group) == -1)
+		fatal("vigil_chat_group_leave");
+
+	(*wanted)++;
+}
+
+/*
+ * Take the roster of our group or a member leaving it from the event at p.
+ */
+static void
+chatter_group_event(const char *p)
+{
+	long		peer;
+	u_int64_t	id;
+	char		*ep;
+	const char	*end, *field;
+
+	PRECOND(p != NULL);
+
+	end = strchr(p, '}');
+	if (end == NULL)
+		return;
+
+	field = chatter_field(p, end, "\"group\":\"");
+	if (field == NULL)
+		return;
+
+	id = strtoull(field + 9, NULL, 16);
+	if (id != group)
+		return;
+
+	peer = strtol(p + 9, NULL, 16);
+
+	if (chatter_field(p, end, "\"type\":\"leave\"") != NULL) {
+		if (owner != local)
+			return;
+
+		printf("chatter: %02lx left our group\n", peer);
+		members[peer / 8] &= ~(1 << (peer % 8));
+		chatter_roster_send(0, &group_rosters);
+		return;
+	}
+
+	if (chatter_field(p, end, "\"type\":\"roster\"") == NULL)
+		return;
+
+	if (peer != owner)
+		return;
+
+	field = chatter_field(p, end, "\"members\":[");
+	if (field == NULL)
+		return;
+
+	memset(members, 0, sizeof(members));
+	field += strlen("\"members\":[");
+
+	while (*field == '"') {
+		peer = strtol(field + 1, &ep, 16);
+		members[peer / 8] |= 1 << (peer % 8);
+
+		field = ep + 1;
+		if (*field != ',')
+			break;
+
+		field++;
+	}
+
+	group_known = 1;
+
+	field = chatter_field(p, end, "\"serial\":");
+	if (field != NULL)
+		group_serial = strtoul(field + 9, NULL, 10);
+
+	if (chatter_field(p, end, "\"ended\":true") != NULL) {
+		printf("chatter: our group ended\n");
+		group_ended = 1;
+	}
+
+	if (!(members[local / 8] & (1 << (local % 8)))) {
+		printf("chatter: we are no longer in our group\n");
+		group_ended = 1;
+	}
+}
+
+/*
+ * Returns where name is in the event at p that ends at end, NULL if the
+ * event does not have it.
+ */
+static const char *
+chatter_field(const char *p, const char *end, const char *name)
+{
+	const char	*field;
+
+	PRECOND(p != NULL);
+	PRECOND(end != NULL);
+	PRECOND(name != NULL);
+
+	field = strstr(p, name);
+	if (field == NULL)
+		return (NULL);
+
+	if (field > end)
+		return (NULL);
+
+	return (field);
+}
+
+/*
+ * Send the file at path as the given kind of data to the given peer, in
+ * our group if ingroup is set. It goes under the last part of its path.
+ */
+static void
+chatter_data_send(u_int8_t peer, u_int64_t ref, int kind, const char *path,
+    int ingroup)
 {
 	struct stat	st;
 	FILE		*fp;
@@ -632,9 +931,9 @@ chatter_data_send(u_int8_t peer, u_int64_t ref, int kind, const char *path)
 
 	fclose(fp);
 
-	if (peer == 0) {
-		ret = vigil_chat_group_data_send(ref, kind, name,
-		    data, st.st_size);
+	if (ingroup) {
+		ret = vigil_chat_group_data_send(peer, ref, owner, group,
+		    group_serial, topic, kind, name, data, st.st_size);
 	} else if (topic != 0) {
 		ret = vigil_chat_topic_data_send(peer, ref, topic, kind, name,
 		    data, st.st_size);

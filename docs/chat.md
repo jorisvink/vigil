@@ -1,9 +1,9 @@
 # Chats
 
 Text messages travel as frames over a tunnel of their own between two
-phones. One-to-one chats and group chats work the same way, a group chat
-has one tunnel with every member. Images, files, voice messages and
-avatars use the same tunnels, see [parcel.md](parcel.md).
+phones. A group chat uses the same tunnels, a message in a group is sent
+to every member on its own. Images, files, voice messages and avatars use
+the same tunnels, see [parcel.md](parcel.md).
 
 | Term      | What                                                            |
 |-----------|-----------------------------------------------------------------|
@@ -13,6 +13,8 @@ avatars use the same tunnels, see [parcel.md](parcel.md).
 | token     | the number a received message gets, for `vigil_chat_stored()`   |
 | outbox    | the messages for a peer that were not acked yet                 |
 | seen slot | a message we received, so we can tell a resend from a new one   |
+| owner     | the peer that set up a group, only the owner changes its roster  |
+| roster    | the name and members of a group, as its owner sends it           |
 | tally     | how many members acked a group message and how many we wait for |
 
 ## Overview
@@ -55,7 +57,7 @@ frame, 523 bytes
   8          2     1      len bytes used, the rest zero
 
 type  1 text, 2 ack, 3 heartbeat, 4 data ack, 5 reply, 6 topic,
-      7 topic text
+      7 topic text, 8 group
 id    the message id, the id of the message acked for an ack,
       ffffffffffffffff for a heartbeat
 ```
@@ -99,23 +101,56 @@ hash    as in a reply, 0 if the text replies to nothing
 ```
 
 ```
-heartbeat data
-+-----+----------+--------+----------+--------------+---------------+-------------+
-| uid | nick[16] | typing | features | instance[64] | signature[64] | avatar_have |
-+-----+----------+--------+----------+--------------+---------------+-------------+
-  8     16         1        1          64             64              8
+group data
++-------+----+--------+------+--------------------------------------+
+| owner | id | serial | type | data                                 |
++-------+----+--------+------+--------------------------------------+
+  1       8    4        1      up to 498
 
-uid          random for each tunnel, a new one means the peer started over
-nick         our nickname, empty if we have none
-typing       1 while we type in this chat
-features     0x01 DATA, 0x02 REPLY, 0x04 NAME, 0x08 AVATAR, 0x10 TOPIC
-instance     our name, signed by our flock, zero without NAME
-signature    the signature of our flock over our instance, zero without NAME
-avatar_have  the hash of the avatar of this peer that we hold, 0 if none
+owner   the peer id of the owner of the group
+id      the random id the owner gave the group, not 0
+serial  the serial of the roster the sender knows, for a roster the
+        serial of that roster, it goes up with every change the owner
+        makes
+type    1 text, 5 reply, 6 topic, 7 topic text, 9 roster, 10 leave
+data    as in a frame of that type, the roster, or empty for a leave
 ```
 
-We send `DATA`, `REPLY` and `TOPIC` always, `NAME` when our flock signed
-our name and `AVATAR` while we have an avatar.
+```
+roster data
++-------+-------------+------------+
+| state | members[32] | name       |
++-------+-------------+------------+
+  1       32            up to 32
+
+state    0 open, 1 ended
+members  bit n set = peer n is a member, the owner too
+name     the name of the group, may be empty
+```
+
+```
+heartbeat data
++-----+----------+--------+----------+--------------+---------------+-------------+--------------+--------------+--------------+
+| uid | nick[16] | typing | features | instance[64] | signature[64] | avatar_have | typing_owner | typing_group | typing_topic |
++-----+----------+--------+----------+--------------+---------------+-------------+--------------+--------------+--------------+
+  8     16         1        1          64             64              8             1              8              8
+
+uid           random for each tunnel, a new one means the peer started over
+nick          our nickname, empty if we have none
+typing        1 while we type in this chat
+features      0x01 DATA, 0x02 REPLY, 0x04 NAME, 0x08 AVATAR, 0x10 TOPIC,
+              0x20 GROUP
+instance      our name, signed by our flock, zero without NAME
+signature     the signature of our flock over our instance, zero without NAME
+avatar_have   the hash of the avatar of this peer that we hold, 0 if none
+typing_owner  the owner of the group we type in
+typing_group  the id of the group we type in, 0 if none
+typing_topic  the topic we type in, of this chat or of the group, 0 if
+              none
+```
+
+We send `DATA`, `REPLY`, `TOPIC` and `GROUP` always, `NAME` when our flock
+signed our name and `AVATAR` while we have an avatar.
 
 ## Tunnels
 
@@ -193,7 +228,7 @@ a topic with `vigil_chat_topic()` under a random 64-bit id, and removes the
 topic with the same call and no name. Texts and parcels go in a topic with
 `vigil_chat_topic_send()` and `vigil_chat_topic_data_send()`. Each of these
 is a message on the outbox like any other, acked once the peer stored the
-message.
+message. Topics in a group are described under Groups.
 
 Anything in a topic waits for a heartbeat from the peer like a reply does.
 A peer without `TOPIC` gets:
@@ -203,8 +238,6 @@ topic                an empty text frame, acked and dropped
 topic text           a text or reply frame
 parcel in a topic    the parcel, which the peer drops
 ```
-
-Topic frames in a group tunnel are acked and dropped.
 
 ## Receiving
 
@@ -233,35 +266,92 @@ start over, the tunnel then forgets all 64.
 
 ## Groups
 
-`vigil_chat_group(id)` joins a group and leaves the one we were in, id 0
-leaves. The group is a liturgy of its own on the cathedral. Every member
-in it gets a tunnel, and while the group liturgy has timed out we only
-keep the tunnels that are online.
+A group is owned by the peer that set it up and is known by its owner and
+a random 64-bit id. Everything in a group travels over the one-to-one
+tunnels, as a group frame on the outbox of each member like any other
+message. There is no liturgy and no tunnel of its own for a group.
+
+```mermaid
+sequenceDiagram
+    participant O as Owner
+    participant A as Member A
+    participant B as Member B
+
+    O->>A: roster (serial 1, A B O)
+    O->>B: roster (serial 1, A B O)
+    A->>O: text
+    A->>B: text
+    B->>O: leave
+    O->>A: roster (serial 2, A O)
+```
 
 ```
-            group message, ref 7
-           /         |         \
-   copy, member 02  copy, 05  copy, 09        one tally:
-       |               |          |           acked 0, pending 3
-   tunnel 02       tunnel 05  tunnel 09
+call                                   what goes out
+─────────────────────────────────────  ──────────────────────────────────────
+vigil_chat_group_roster(peer, ...)     the roster, from the owner only
+vigil_chat_group_send(peer, ...)       a text or reply in the group, or in
+                                       a topic of the group
+vigil_chat_group_topic(peer, ...)      a topic of the group, from the owner
+                                       only
+vigil_chat_group_data_send(peer, ...)  a parcel in the group
+vigil_chat_group_leave(owner, ...)     a leave, to the owner only
 ```
 
-A group message is copied once for every member that has a tunnel at that
-moment. Members that join later do not get the message, and a message sent
-while no member has a tunnel goes nowhere. Each copy is sent again
-every 5 s like a one-to-one message. An `ACK` moves a member from pending
-to acked, a member whose tunnel closes is no longer pending. The platform
-gets an `acks` event with both counts each time they change.
+The platform keeps the roster and calls these once for every member, each
+copy waits on the outbox of that member and is sent again like a
+one-to-one message until it is acked. A member that is away gets its
+copies once it is around again. The platform counts the `delivered`
+events of the copies of a message into its tally.
 
-Group messages get no `sent` or `delivered` events.
+The core does not keep rosters, it only checks what it can see in a
+frame:
+
+```
+frame        dropped (acked) when
+───────────  ─────────────────────────────────────────────────
+any          id 0, owner 0 or ff, an unknown type
+roster       it does not come from its owner, a bad state or name
+topic        it does not come from its owner
+leave        we do not own the group
+```
+
+The platform holds on to the roster it got last and compares the serial
+of every message in the group with it:
+
+```
+message                               platform
+────────────────────────────────────  ──────────────────────────────────
+no roster for the group yet           held: not stored, not acked
+serial above the one of our roster    held: not stored, not acked
+group ended, left or removed from     dropped: acked, not stored
+serial at or below ours, the sender   dropped: acked, not stored
+is not in our roster
+serial at or below ours, the sender   stored and acked
+is in our roster
+```
+
+A held message is sent again by its sender until the roster that has its
+serial reached us, it is then stored or dropped against that roster. A
+member that was just added therefore reaches members that did not hear of
+it yet, and a peer that is not in any roster never gets anything stored.
+
+A roster with a serial at or below the last one the platform has is
+dropped. A member that leaves sends a leave to the owner, the owner then
+sends the new roster to every member that is left. A member that is no
+longer in a roster was removed. An ended roster, or the owner leaving,
+freezes the group, nobody can send in it anymore.
+
+A group has topics like a one-to-one chat. Only the owner sets one up or
+removes one, every member can write in it.
+
+A peer without `GROUP` gets an empty text frame for anything in a group,
+which the peer acks and drops. Group frames wait for a heartbeat like a
+reply does.
 
 A message in a group that names us is marked as a mention. That is `@`
 followed by our nickname, our signed name or our peer id in hex, in any
 case, with no letter, digit, `-` or `_` right before the `@` or right after
 the name.
-
-The platform gets `joined` and `left` events for members. The first member
-list after joining, or after the group liturgy timed out, gives no events.
 
 ## Names
 
@@ -282,19 +372,25 @@ platform calls                              core
 vigil_chat_send(peer, ref, text, len)       queue a message, -1 if not
 vigil_chat_reply(peer, ref, author, hash,   running or 1024 commands wait
     text, len)
-vigil_chat_group_send(ref, text, len)
-vigil_chat_group_reply(ref, author, hash,
+vigil_chat_group_send(peer, ref, owner,
+    group, serial, topic, author, hash,
     text, len)
+vigil_chat_group_topic(peer, ref, group,    queue a topic of a group we own,
+    serial, topic, color, name, len)        no name removes the topic
 vigil_chat_topic_send(peer, ref, topic,
     author, hash, text, len)
+vigil_chat_group_roster(peer, ref, group,   queue the roster of a group we
+    serial, state, members, name, len)      own
+vigil_chat_group_leave(owner, ref, group)   queue a leave for the owner
 vigil_chat_topic(peer, ref, topic, color,   queue a topic, no name removes
     name, len)                              the topic
 vigil_chat_stored(token)                    ACK the message to the sender
 vigil_chat_forget(peer)                     drop the outbox of the peer
-vigil_chat_group(id)                        join a group, 0 leaves
 vigil_chat_open(peer, on)                   keep signaling the peer
-vigil_chat_typing(peer, on)                 typing in a one-to-one chat
-vigil_chat_group_typing(on)                 typing in the group
+vigil_chat_typing(peer, topic, on)          typing in a one-to-one chat,
+                                            in a topic if not 0
+vigil_chat_group_typing(owner, group,       typing in a group and topic,
+    topic)                                  group 0 for none
 vigil_chat_nick(name)                       our nickname, empty for none
 vigil_chat_events(buf, len)                 the events as a JSON array,
                                             buf holds at least 64 KiB
@@ -302,10 +398,12 @@ vigil_chat_events(buf, len)                 the events as a JSON array,
 
 The calls for parcels and avatars are in [parcel.md](parcel.md).
 
-An author of 0 in a reply means us.
+An author of 0 in a reply means us. A hash of 0 in a group message means
+it replies to nothing.
 
 ```
-event        fields, besides "peer" and "group" for group events
+event        fields, besides "peer", and "owner", "group" and "serial"
+             in a group
 ───────────  ─────────────────────────────────────────────────────────────
 message      token, nick, signed, text, mention if it names us,
              author and hash if it is a reply, topic if it is
@@ -314,15 +412,17 @@ topic        token, topic, color, name     a topic was set up, an empty
                                            name removed it
 sent         ref                       first time a message went out
 delivered    ref                       the peer stored the message
-acks         ref, acked, pending       a group message
-joined       nick                      a member joined our group
-left         nick                      a member left our group
+roster       token, ended, members,    the roster of a group, from
+             name                      its owner
+leave        token                     a member left a group we own
 name         nick, signed              who the peer is
 data         see parcel.md
 avatar       see parcel.md
-ambry        generation                the ambry generation of a tunnel,
-                                       once per generation in a group
+ambry        generation                the ambry generation of a tunnel
 ```
+
+The platform stores a roster or leave and calls `vigil_chat_stored()`
+with its token like for a message.
 
 At most 256 events wait for the platform. A message that does not fit is
 not acked, so our peer sends the message again.
@@ -335,6 +435,10 @@ not acked, so our peer sends the message again.
 | VIGIL_CHAT_REPLY_MAX      | 503 B  | text in a reply                         |
 | VIGIL_CHAT_TOPIC_MAX      | 495 B  | text in a topic                         |
 | VIGIL_CHAT_TOPIC_NAME_MAX | 32 B   | name of a topic                         |
+| VIGIL_CHAT_GROUP_MAX      | 498 B  | text in a group                         |
+| VIGIL_CHAT_GROUP_REPLY_MAX| 489 B  | text in a reply in a group              |
+| VIGIL_CHAT_GROUP_TOPIC_MAX| 481 B  | text in a topic in a group              |
+| VIGIL_CHAT_GROUP_NAME_MAX | 32 B   | name of a group                         |
 | VIGIL_CHAT_NICK_MAX       | 16     | nickname length                         |
 | CHAT_HEARTBEAT            | 12 s   | between heartbeats                      |
 | CHAT_RESEND               | 5 s    | before an unacked message goes again    |

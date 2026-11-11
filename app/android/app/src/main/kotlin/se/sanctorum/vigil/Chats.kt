@@ -14,13 +14,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 
 object Chats {
-    private data class Receipt(
-        val chat: String,
-        val ref: Long,
-        val kind: String,
-        val acked: Int = 0,
-        val pending: Int = 0
-    )
+    private data class Receipt(val peer: String, val ref: Long, val kind: String)
 
     private var vault: ChatVault? = null
     private var session = 0L
@@ -48,6 +42,10 @@ object Chats {
     var opened = ""
         private set
     var requested = ""
+
+    @Volatile
+    var local = ""
+        private set
 
     fun vault(context: Context): ChatVault =
         vault ?: ChatVault(context.applicationContext).also { vault = it }
@@ -79,6 +77,8 @@ object Chats {
         val chat = status?.optJSONObject("chat") ?: return
         val vault = vault(service)
 
+        local = chat.optString("id")
+
         if (chat.optLong("session") != session) {
             resubmit = 0L
             waiting.clear()
@@ -98,7 +98,6 @@ object Chats {
                     avatar?.fill(0)
                 }
 
-                check(Vigil.chatGroup(group(service))) { "failed to join our group" }
                 handover(vault, null)
                 session = chat.optLong("session")
             } catch (e: Exception) {
@@ -128,7 +127,7 @@ object Chats {
             val event = events.getJSONObject(i)
             val peer = event.getString("peer").toInt(16)
             val id = event.optString("group").ifEmpty { null }
-                ?.let { ChatVault.groupChat(it.toInt(16)) } ?: Calls.hex(peer)
+                ?.let { ChatVault.groupChat(event.getString("owner"), it) } ?: Calls.hex(peer)
 
             try {
                 when (event.getString("type")) {
@@ -138,6 +137,14 @@ object Chats {
 
                         val nick = event.optString("nick")
                         val quote = ChatVault.quote(event.optString("author"), event.optString("hash"))
+
+                        when (check(vault, id, peer, event)) {
+                            ChatVault.GROUP_DROP -> {
+                                stored(event.getLong("token"))
+                                continue
+                            }
+                            ChatVault.GROUP_HOLD -> continue
+                        }
 
                         vault.deliver(id, peer, nick, text, time, quote = quote, topic = event.optString("topic"))
                         stored(event.getLong("token"))
@@ -156,6 +163,18 @@ object Chats {
                         val data = Vigil.chatDataTake(token, event.getInt("size"))
                             ?: throw IllegalStateException("data $token is gone")
 
+                        when (check(vault, id, peer, event)) {
+                            ChatVault.GROUP_DROP -> {
+                                data.fill(0)
+                                stored(token)
+                                continue
+                            }
+                            ChatVault.GROUP_HOLD -> {
+                                data.fill(0)
+                                continue
+                            }
+                        }
+
                         try {
                             vault.deliver(
                                 id, peer, nick, "", time, data = data, media = media, name = name,
@@ -173,6 +192,14 @@ object Chats {
                         }
                     }
                     "topic" -> {
+                        when (check(vault, id, peer, event)) {
+                            ChatVault.GROUP_DROP -> {
+                                stored(event.getLong("token"))
+                                continue
+                            }
+                            ChatVault.GROUP_HOLD -> continue
+                        }
+
                         vault.deliver(
                             id, peer, event.optString("nick"), event.getString("name"),
                             System.currentTimeMillis(), "topic", topic = event.getString("topic"),
@@ -204,27 +231,132 @@ object Chats {
 
                         avatarChanged()
                     }
-                    "joined", "left" -> vault.deliver(
-                        id, peer, event.optString("nick"), "", System.currentTimeMillis(),
-                        event.getString("type")
-                    )
+                    "roster" -> {
+                        roster(service, vault, id, peer, event)
+                        stored(event.getLong("token"))
+                    }
+                    "leave" -> {
+                        left(vault, id, Calls.hex(peer))
+                        stored(event.getLong("token"))
+                    }
                     "ambry" -> vault.deliver(
                         id, peer, "", event.getString("generation"), System.currentTimeMillis(),
                         "ambry"
                     )
                     "sent", "delivered" ->
-                        receipt(vault, Receipt(id, event.getLong("ref"), event.getString("type")))
-                    "acks" -> receipt(
-                        vault,
-                        Receipt(
-                            id, event.getLong("ref"), "acks",
-                            event.getInt("acked"), event.getInt("pending")
-                        )
-                    )
+                        receipt(vault, Receipt(Calls.hex(peer), event.getLong("ref"), event.getString("type")))
                 }
                 changed()
             } catch (e: Exception) {
                 Log.e(TAG, "failed to store a chat event", e)
+            }
+        }
+    }
+
+    private fun check(vault: ChatVault, chat: String, peer: Int, event: JSONObject): Int {
+        if (ChatVault.group(chat) == null) {
+            return ChatVault.GROUP_STORE
+        }
+
+        return vault.groupCheck(chat, Calls.hex(peer), event.getInt("serial"))
+    }
+
+    private fun roster(context: Context, vault: ChatVault, chat: String, peer: Int, event: JSONObject) {
+        val owner = Calls.hex(peer)
+        val info = vault.groupInfo(chat)
+        val serial = event.getInt("serial")
+        val time = System.currentTimeMillis()
+
+        if (info != null && Integer.compareUnsigned(serial, info.getInt("serial")) <= 0) {
+            return
+        }
+
+        if (info != null && info.getString("state") in listOf("left", "ended")) {
+            return
+        }
+
+        val list = event.getJSONArray("members")
+        val members = (0 until list.length()).map { list.getString(it) }
+        val before = info?.let { ChatVault.members(it) } ?: emptyList()
+        val name = event.getString("name")
+        val state = when {
+            event.getBoolean("ended") -> "ended"
+            local !in members -> "removed"
+            else -> "open"
+        }
+
+        vault.groupSave(
+            chat,
+            JSONObject()
+                .put("owner", owner)
+                .put("id", chat.substring(3))
+                .put("name", name)
+                .put("members", JSONArray(members))
+                .put("serial", serial)
+                .put("state", state)
+        )
+
+        if (info == null || info.getString("state") == "removed") {
+            if (state == "open") {
+                vault.deliver(chat, peer, "", name, time, "added")
+            }
+        } else {
+            for (member in members.filter { it !in before && it != local }) {
+                vault.deliver(chat, member.toInt(16), "", "", time, "joined")
+            }
+
+            for (member in before.filter { it !in members && it != local }) {
+                vault.deliver(chat, member.toInt(16), "", "", time, "left")
+            }
+
+            if (name != info.optString("name")) {
+                vault.deliver(chat, peer, "", name, time, "renamed")
+            }
+        }
+
+        if (state != "open") {
+            vault.deliver(chat, peer, "", "", time, state)
+            vault.groupDrop(chat, before + members)
+        } else {
+            vault.groupDrop(chat, before.filter { it !in members })
+        }
+
+        namesChanged()
+    }
+
+    private fun left(vault: ChatVault, chat: String, member: String) {
+        val info = vault.groupInfo(chat) ?: return
+
+        if (info.getString("owner") != local || info.getString("state") != "open") {
+            return
+        }
+
+        val members = ChatVault.members(info)
+
+        if (member !in members) {
+            return
+        }
+
+        info.put("members", JSONArray(members.filter { it != member }))
+        info.put("serial", info.getInt("serial") + 1)
+
+        vault.groupSave(chat, info)
+        vault.groupDrop(chat, listOf(member))
+        vault.deliver(chat, member.toInt(16), "", "", System.currentTimeMillis(), "left")
+
+        submit(vault, vault.rosterQueue(chat, info, local))
+        namesChanged()
+    }
+
+    fun submit(vault: ChatVault, entries: JSONArray) {
+        for (i in 0 until entries.length()) {
+            val entry = entries.getJSONObject(i)
+            val ref = entry.getLong("ref")
+
+            if (submit(vault, entry)) {
+                waiting.remove(ref)
+            } else {
+                refused(ref)
             }
         }
     }
@@ -248,7 +380,6 @@ object Chats {
 
         for (i in 0 until outbox.length()) {
             val entry = outbox.getJSONObject(i)
-            val chat = entry.getString("peer")
             val ref = entry.getLong("ref")
 
             refs.add(ref)
@@ -257,61 +388,81 @@ object Chats {
                 continue
             }
 
-            val topic = ChatVault.topicId(entry.optString("tp"))
-
-            if (entry.optString("op") == "topic") {
-                val sent = Vigil.chatTopic(
-                    chat.toInt(16), ref, topic, entry.getInt("color"), entry.getString("name").toByteArray()
-                )
-
-                if (sent) {
-                    waiting.remove(ref)
-                } else {
-                    refused(ref)
-                }
-                continue
-            }
-
-            if (!entry.has("data")) {
-                val quote = ChatVault.quote(entry.optString("qa"), entry.optString("qh"))
-
-                val sent = Vigil.chatSend(
-                    chat.toInt(16), ref, entry.getString("text").toByteArray(),
-                    quote?.peer ?: 0, quote?.digest ?: 0L, topic
-                )
-
-                if (sent) {
-                    waiting.remove(ref)
-                } else {
-                    refused(ref)
-                }
-                continue
-            }
-
-            val data = vault.data(chat, entry.getString("data")) ?: continue
-
-            try {
-                val sent = Vigil.chatDataSend(
-                    chat.toInt(16), ref, ChatVault.kind(entry.getString("media")),
-                    entry.getString("name").toByteArray(), data, topic
-                )
-
-                if (sent) {
-                    waiting.remove(ref)
-                } else {
-                    refused(ref)
-                }
-            } finally {
-                data.fill(0)
+            if (submit(vault, entry)) {
+                waiting.remove(ref)
+            } else {
+                refused(ref)
             }
         }
 
         waiting.retainAll(refs)
     }
 
+    private fun submit(vault: ChatVault, entry: JSONObject): Boolean {
+        val peer = entry.getString("peer").toInt(16)
+        val chat = entry.optString("chat", entry.getString("peer"))
+        val group = ChatVault.group(chat)
+        val ref = entry.getLong("ref")
+        val topic = ChatVault.topicId(entry.optString("tp"))
+
+        when (entry.optString("op")) {
+            "topic" -> {
+                val name = entry.getString("name").toByteArray()
+                val color = entry.getInt("color")
+
+                if (group != null) {
+                    return Vigil.chatGroupTopic(peer, ref, group.id, entry.optInt("gs"), topic, color, name)
+                }
+
+                return Vigil.chatTopic(peer, ref, topic, color, name)
+            }
+            "roster" -> {
+                val list = entry.getJSONArray("members")
+
+                return Vigil.chatGroupRoster(
+                    peer, ref, group!!.id, entry.getInt("serial"), entry.getBoolean("ended"),
+                    ChatVault.roster((0 until list.length()).map { list.getString(it) }),
+                    entry.getString("name").toByteArray()
+                )
+            }
+            "leave" -> return Vigil.chatGroupLeave(peer, ref, group!!.id)
+        }
+
+        val quote = ChatVault.quote(entry.optString("qa"), entry.optString("qh"))
+
+        if (!entry.has("data")) {
+            val text = entry.getString("text").toByteArray()
+
+            if (group != null) {
+                return Vigil.chatGroupSend(
+                    peer, ref, group.owner, group.id, entry.optInt("gs"), topic, text, quote?.peer ?: 0,
+                    quote?.digest ?: 0L
+                )
+            }
+
+            return Vigil.chatSend(peer, ref, text, quote?.peer ?: 0, quote?.digest ?: 0L, topic)
+        }
+
+        val data = vault.data(chat, entry.getString("data")) ?: return true
+        val kind = ChatVault.kind(entry.getString("media"))
+        val name = entry.getString("name").toByteArray()
+
+        try {
+            if (group != null) {
+                return Vigil.chatGroupDataSend(
+                    peer, ref, group.owner, group.id, entry.optInt("gs"), topic, kind, name, data
+                )
+            }
+
+            return Vigil.chatDataSend(peer, ref, kind, name, data, topic)
+        } finally {
+            data.fill(0)
+        }
+    }
+
     private fun receipt(vault: ChatVault, receipt: Receipt) {
         try {
-            vault.receipt(receipt.chat, receipt.ref, receipt.kind, receipt.acked, receipt.pending)
+            vault.receipt(receipt.peer, receipt.ref, receipt.kind)
             changed()
         } catch (e: Exception) {
             Log.w(TAG, "failed to store a receipt, trying again", e)
@@ -325,16 +476,25 @@ object Chats {
         opened = if (on) id else ""
 
         peer(id)?.let { Vigil.chatOpen(it, on) }
+
         if (on) {
             seen(context, id)
         }
     }
 
-    fun typing(id: String, on: Boolean) {
-        if (ChatVault.group(id) != null) {
-            Vigil.chatGroupTyping(on)
+    fun typing(id: String, on: Boolean, topic: String = "") {
+        val group = ChatVault.group(id)
+        val where = ChatVault.topicId(topic)
+
+        if (group == null) {
+            peer(id)?.let { Vigil.chatTyping(it, where, on) }
+            return
+        }
+
+        if (on) {
+            Vigil.chatGroupTyping(group.owner, group.id, where)
         } else {
-            peer(id)?.let { Vigil.chatTyping(it, on) }
+            Vigil.chatGroupTyping(0, 0L, 0L)
         }
     }
 
@@ -359,8 +519,6 @@ object Chats {
         val pending = requested
         requested = ""
 
-        val group = group(context)
-
         return JSONObject()
             .put("version", version)
             .put("avatars", avatars)
@@ -368,7 +526,6 @@ object Chats {
             .put("unseen", unseen.values.sum())
             .put("hardware", vault(context).hardware)
             .put("open", pending.ifEmpty { JSONObject.NULL })
-            .put("group", if (group != 0) ChatVault.groupChat(group) else JSONObject.NULL)
     }
 
     @Synchronized
@@ -382,7 +539,7 @@ object Chats {
     }
 
     @Synchronized
-    private fun namesChanged() {
+    fun namesChanged() {
         names++
     }
 
@@ -396,20 +553,6 @@ object Chats {
     fun nick(context: Context): String = prefs(context).getString("nick", "") ?: ""
 
     fun preview(context: Context): Boolean = prefs(context).getBoolean("preview", false)
-
-    fun group(context: Context): Int = prefs(context).getInt("group", 0)
-
-    fun join(context: Context, group: Int) {
-        require(group in 0..0xffff) { "A group is 1 to 4 hex digits." }
-
-        prefs(context).edit().putInt("group", group).apply()
-
-        if (!Vigil.chatGroup(group)) {
-            session = 0L
-        }
-
-        changed()
-    }
 
     fun settings(context: Context, nick: String?, preview: Boolean?): JSONObject {
         if (nick != null) {
@@ -581,8 +724,13 @@ object Chats {
         summary(context)
     }
 
-    private fun notification(id: String): Int =
-        ChatVault.group(id)?.let { GROUP_NOTIFICATION_BASE + it } ?: (NOTIFICATION_BASE + id.toInt(16))
+    private fun notification(id: String): Int {
+        if (ChatVault.group(id) != null) {
+            return GROUP_NOTIFICATION_BASE + (id.hashCode() and 0xffff)
+        }
+
+        return NOTIFICATION_BASE + id.toInt(16)
+    }
 
     private fun prefs(context: Context) =
         context.getSharedPreferences("chats", Context.MODE_PRIVATE)

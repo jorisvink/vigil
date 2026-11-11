@@ -121,7 +121,7 @@ enum TunnelLink {
     private static func patience(_ message: String) -> TimeInterval {
         if message == "status" { return 0 }
 
-        for slow in ["chat-group-send ", "chat-group-data ", "done "] where message.hasPrefix(slow) {
+        for slow in ["done "] where message.hasPrefix(slow) {
             return 60
         }
 

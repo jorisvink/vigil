@@ -16,7 +16,7 @@ object PeerNames {
 
         for (key in names.keys()) {
             val name = names.optString(key).trim().take(MAX)
-            if (key.matches(Regex("[0-9a-f]{2}|g[0-9a-f]{4}")) && name.isNotEmpty()) {
+            if (key.matches(Regex("[0-9a-f]{2}")) && name.isNotEmpty()) {
                 clean.put(key, name)
             }
         }
@@ -29,8 +29,17 @@ object PeerNames {
         load(context).optString(Calls.hex(peer)).ifEmpty { "Peer ${Calls.hex(peer)}" }
 
     fun chat(context: Context, chat: String): String {
-        val group = ChatVault.group(chat) ?: return name(context, chat.toInt(16))
-        return load(context).optString(chat).ifEmpty { "Group %04x".format(group) }
+        if (ChatVault.group(chat) == null) {
+            return name(context, chat.toInt(16))
+        }
+
+        val info = try {
+            Chats.vault(context).groupInfo(chat)
+        } catch (e: Exception) {
+            null
+        }
+
+        return info?.optString("name")?.ifEmpty { null } ?: "Group"
     }
 
     private fun prefs(context: Context) =

@@ -75,7 +75,7 @@ object Vigil {
     external fun chatOpen(peer: Int, on: Boolean)
 
     @JvmStatic
-    external fun chatTyping(peer: Int, on: Boolean)
+    external fun chatTyping(peer: Int, topic: Long, on: Boolean)
 
     @JvmStatic
     external fun chatNick(name: String): Boolean
@@ -84,13 +84,26 @@ object Vigil {
     external fun chatAvatar(data: ByteArray?): Boolean
 
     @JvmStatic
-    external fun chatGroup(group: Int): Boolean
+    external fun chatGroupTyping(owner: Int, group: Long, topic: Long)
 
     @JvmStatic
-    external fun chatGroupTyping(on: Boolean)
+    external fun chatGroupSend(
+        peer: Int, ref: Long, owner: Int, group: Long, serial: Int, topic: Long, text: ByteArray, author: Int,
+        hash: Long
+    ): Boolean
 
     @JvmStatic
-    external fun chatGroupSend(ref: Long, text: ByteArray, author: Int, hash: Long): Boolean
+    external fun chatGroupTopic(
+        peer: Int, ref: Long, group: Long, serial: Int, topic: Long, color: Int, name: ByteArray
+    ): Boolean
+
+    @JvmStatic
+    external fun chatGroupRoster(
+        peer: Int, ref: Long, group: Long, serial: Int, ended: Boolean, members: ByteArray, name: ByteArray
+    ): Boolean
+
+    @JvmStatic
+    external fun chatGroupLeave(owner: Int, ref: Long, group: Long): Boolean
 
     @JvmStatic
     external fun chatEvents(): ByteArray
@@ -99,7 +112,10 @@ object Vigil {
     external fun chatDataSend(peer: Int, ref: Long, kind: Int, name: ByteArray, data: ByteArray, topic: Long): Boolean
 
     @JvmStatic
-    external fun chatGroupDataSend(ref: Long, kind: Int, name: ByteArray, data: ByteArray): Boolean
+    external fun chatGroupDataSend(
+        peer: Int, ref: Long, owner: Int, group: Long, serial: Int, topic: Long, kind: Int, name: ByteArray,
+        data: ByteArray
+    ): Boolean
 
     @JvmStatic
     external fun chatDataTake(token: Long, size: Int): ByteArray?

@@ -22,7 +22,7 @@ devices address you. It is also how Vigil knows who sent a message.
 
 ## Separate keys for each purpose
 
-Calls, one-to-one chats and group chats each use their own flock domain,
+Calls and chats each use their own flock domain,
 see [keys.md](keys.md). Every call and every chat tunnel also has its own
 tunnel id, made from the ids of the two devices. The cathedral hands out
 a separate ambry for each of those.
@@ -145,13 +145,20 @@ picture is chosen by the sender and not checked by anyone.
 
 ## Group chats
 
-A group chat is a liturgy in the group chat domain. Every member tells
-the cathedral it is in the group id, and the cathedral returns the list
-of members that are online in that group.
+Anyone can set up a group chat, give it a name and pick its members. The
+one who set it up owns it. Every member gets the name and the list of
+members from the owner. Only the owner can rename the group, add or
+remove members, or end it.
 
-There is no group key. Each device sets up a separate tunnel to every
-other member, with its own keys. A group message is sent over each of
-those tunnels in turn. The sender sees how many members received it.
+There is no group key. A group message is sent to every other member
+over the same tunnel as a one-to-one chat with that member, each with its
+own keys. A member that is away gets the message once it is around again.
+The sender sees how many members received it and how many are still
+pending.
+
+A member can leave a group. The owner then takes that member off the list
+and tells the others. When the owner ends or leaves the group, it stays
+on every phone to read, but nobody can send in it anymore.
 
 ## Delivery
 
@@ -167,9 +174,9 @@ If the platform code does not confirm within 10 seconds, the core hands
 the message over again. Duplicates are recognised and dropped. A message
 is never acknowledged if it was only received and then lost.
 
-One-to-one messages wait in an outbox until they are delivered. They are
-sent again when the peer comes back, even after the app was restarted.
-Group messages are only sent to members who are online at that moment.
+Messages wait in an outbox until they are delivered. They are sent again
+when the peer comes back, even after the app was restarted. A group
+message waits for every member on its own.
 
 ## Notifications
 

@@ -258,6 +258,18 @@ class ChatPeer {
   int get queued => json['queued'] as int? ?? 0;
   String get nick => json['nick'] as String? ?? '';
   String get signed => json['signed'] as String? ?? '';
+
+  String get typingTopic => json['typing_topic'] as String? ?? '';
+
+  String get typingGroup {
+    final group = json['typing_group'] as String?;
+
+    if (group == null) {
+      return '';
+    }
+
+    return 'g${json['typing_owner']}$group';
+  }
 }
 
 class ChatStatus {
@@ -275,23 +287,6 @@ class ChatStatus {
       .toList();
 
   ChatPeer? peer(String id) => peers.where((p) => p.id == id).firstOrNull;
-
-  ChatGroup? get group => json['group'] is Map<String, dynamic>
-      ? ChatGroup(json['group'] as Map<String, dynamic>)
-      : null;
-}
-
-class ChatMember {
-  ChatMember(this.json);
-
-  final Map<String, dynamic> json;
-
-  String get id => json['id'] as String? ?? '00';
-  bool get online => json['online'] as bool? ?? false;
-  String get link => json['link'] as String? ?? 'none';
-  bool get typing => json['typing'] as bool? ?? false;
-  String get nick => json['nick'] as String? ?? '';
-  String get signed => json['signed'] as String? ?? '';
 }
 
 class ChatGroup {
@@ -299,17 +294,18 @@ class ChatGroup {
 
   final Map<String, dynamic> json;
 
-  String get id => json['id'] as String? ?? '0000';
-  String get chat => 'g$id';
-  bool get alive => json['alive'] as bool? ?? false;
+  String get owner => json['owner'] as String? ?? '00';
+  String get id => json['id'] as String? ?? '';
+  String get chat => 'g$owner$id';
+  String get name => json['name'] as String? ?? '';
+  String get state => json['state'] as String? ?? 'open';
+  bool get open => state == 'open';
 
-  List<ChatMember> get members =>
-      (json['members'] as List<dynamic>? ?? const [])
-          .map((m) => ChatMember(m as Map<String, dynamic>))
-          .toList();
+  List<String> get members =>
+      (json['members'] as List<dynamic>? ?? const []).cast<String>();
 }
 
-bool isGroup(String chat) => chat.length == 5 && chat.startsWith('g');
+bool isGroup(String chat) => chat.length == 19 && chat.startsWith('g');
 
 class Chats {
   Chats(this.json);
@@ -324,7 +320,6 @@ class Chats {
   int get unseen => json['unseen'] as int? ?? 0;
   bool get hardware => json['hardware'] as bool? ?? true;
   String? get open => json['open'] as String?;
-  String? get group => json['group'] as String?;
 }
 
 class ChatMessage {
@@ -529,6 +524,7 @@ class Vigil {
   DateTime _connectingSince = DateTime.now();
 
   Map<String, String> _names = const {};
+  Map<String, ChatGroup> _groups = const {};
   final Map<String, Future<Uint8List?>> _data = {};
   static const _dataMax = 24;
   final Map<String, String> _nicks = {};
@@ -567,11 +563,17 @@ class Vigil {
     }
 
     if (isGroup(peer)) {
-      return 'Group ${peer.substring(1)}';
+      final group = _groups[peer]?.name ?? '';
+
+      return group.isEmpty ? 'Group' : group;
     }
 
     return 'Peer $peer';
   }
+
+  Map<String, ChatGroup> get groups => _groups;
+
+  ChatGroup? group(String chat) => _groups[chat];
 
   String mentionName(String peer) => _signed[peer] ?? _nicks[peer] ?? peer;
 
@@ -586,7 +588,7 @@ class Vigil {
         if (chat.nick.isNotEmpty) chat.nick,
         if (chat.signed.isNotEmpty) chat.signed,
       ],
-      for (final m in chat?.group?.members ?? const <ChatMember>[]) m.id,
+      for (final g in _groups.values) ...g.members,
     };
   }
 
@@ -1134,8 +1136,8 @@ class Vigil {
   Future<void> openChat(String peer, bool on) =>
       _invoke('chatOpen', {'peer': peer, 'on': on});
 
-  Future<void> typing(String peer, bool on) =>
-      _invoke('chatTyping', {'peer': peer, 'on': on});
+  Future<void> typing(String peer, bool on, {String topic = ''}) =>
+      _invoke('chatTyping', {'peer': peer, 'on': on, 'topic': topic});
 
   Future<void> deleteChat(String peer) async {
     await _invoke('chatDelete', peer);
@@ -1147,8 +1149,31 @@ class Vigil {
     await refresh();
   }
 
-  Future<void> joinGroup(String group) async {
-    await _invoke('chatGroup', group);
+  Future<String> createGroup(String name, List<String> members) async {
+    final chat = await _invoke('groupCreate', {
+      'name': name,
+      'members': members,
+    });
+
+    await refresh();
+    return chat;
+  }
+
+  Future<void> editGroup(
+    String chat, {
+    String? name,
+    List<String>? members,
+  }) async {
+    await _invoke('groupEdit', {
+      'peer': chat,
+      'name': name,
+      'members': members,
+    });
+    await refresh();
+  }
+
+  Future<void> leaveGroup(String chat) async {
+    await _invoke('groupLeave', chat);
     await refresh();
   }
 
@@ -1248,13 +1273,6 @@ class Vigil {
       _signedSeen(p.id, p.signed);
     }
 
-    for (final m in _last.chat?.group?.members ?? const <ChatMember>[]) {
-      if (m.nick.isNotEmpty) {
-        _nicks[m.id] = m.nick;
-      }
-      _signedSeen(m.id, m.signed);
-    }
-
     _status.add(_last);
   }
 
@@ -1268,6 +1286,13 @@ class Vigil {
     _namesLoading = true;
 
     try {
+      final groups = jsonDecode(await _invoke('chatGroups', null));
+
+      _groups = {
+        for (final entry in (groups as Map<String, dynamic>).entries)
+          entry.key: ChatGroup(entry.value as Map<String, dynamic>),
+      };
+
       final raw = jsonDecode(await _invoke('chatNames', null));
 
       for (final entry in (raw as Map<String, dynamic>).entries) {

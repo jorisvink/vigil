@@ -273,27 +273,8 @@ class _GospelPageState extends State<GospelPage> with WidgetsBindingObserver {
     ];
   }
 
-  List<ChatSummary> _list(Status status, List<ChatSummary>? chats) {
-    final group = status.chats.group;
-    final list = chats ?? const <ChatSummary>[];
-
-    if (chats == null) {
-      return list;
-    }
-
-    if (group == null) {
-      return list;
-    }
-
-    if (list.any((c) => c.peer == group)) {
-      return list;
-    }
-
-    return [
-      ChatSummary({'peer': group, 'unread': 0}),
-      ...list,
-    ];
-  }
+  List<ChatSummary> _list(Status status, List<ChatSummary>? chats) =>
+      chats ?? const <ChatSummary>[];
 }
 
 class _GospelPanel extends StatelessWidget {
@@ -734,6 +715,6 @@ class _LiturgyRow extends StatelessWidget {
         return 'Chat signaling';
     }
 
-    return Vigil.instance.name('g${l.group}');
+    return 'Liturgy ${l.group}';
   }
 }

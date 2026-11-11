@@ -108,7 +108,8 @@ GCM(k, aad, m) = nonce || AES256-GCM(k, nonce, aad, m) || tag
                  nonce is 96-bit, selected uniformly at random
 
 label(chat)    = the peer id as one byte for a one-to-one chat,
-                 the ASCII chat id ("g0001") for a group chat
+                 the ASCII chat id ("g" owner id, "gfe1122334455667788")
+                 for a group chat
 seq            = position of a record in its log, 64-bit big endian
 ```
 
