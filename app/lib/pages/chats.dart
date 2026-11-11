@@ -2310,8 +2310,8 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
                                             _history == null
                                                 ? ''
                                                 : group
-                                                ? 'Messages wait for every member '
-                                                      'of ${vigil.name(peer)} until '
+                                                ? 'Each member of ${vigil.name(peer)} '
+                                                      'gets your messages as soon as '
                                                       'they are around.'
                                                 : topic != null
                                                 ? 'Write the first message in '
