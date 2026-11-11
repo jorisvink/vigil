@@ -113,11 +113,16 @@ record in the log. This means:
 - A record from another conversation cannot be inserted.
 
 The number of records is stored together with the conversation key, in
-its protected form. So are the number of unread messages and a copy of
-the last message, which the chat list shows. If the log has fewer records than expected, someone
+its protected form. So are the number of unread messages, a copy of the
+last message and the topics of the chat with their own unread counts and
+last messages, which the chat list shows. If the log has fewer records than expected, someone
 removed messages from the end. The app then shows a warning. If a record
 cannot be decrypted, the app shows the messages before it and warns that
 the chat was damaged or tampered with.
+
+Topics of a one-to-one chat live in the same log under the same key. A
+message in a topic is a record marked with the id of that topic, and
+setting up or removing a topic is a record of its own.
 
 Images and files are stored as separate files next to the log. Each is
 encrypted with the conversation key. The encryption is bound to the
@@ -173,6 +178,10 @@ operation fails with a message asking you to unlock the device.
 Deleting a chat removes its conversation key, overwrites the log and
 attachment files with zeros and deletes them. Waiting outbox messages
 for that chat are removed too.
+
+Removing a topic overwrites the images and files sent in it with zeros
+and deletes them. Its text messages stay in the log, out of sight,
+until the chat is deleted.
 
 Flash storage may keep old copies of overwritten data. The real
 protection is that the conversation key is gone. Without it the old data

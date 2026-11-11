@@ -348,6 +348,7 @@ class ChatMessage {
   bool get pinned => json['pinned'] as bool? ?? false;
   bool get quoted => json['quoted'] as bool? ?? false;
   int get reply => json['reply'] as int? ?? 0;
+  String get topic => json['tp'] as String? ?? '';
   DateTime get time =>
       DateTime.fromMillisecondsSinceEpoch(json['time'] as int? ?? 0);
 }
@@ -358,6 +359,25 @@ class ChatSummary {
   final Map<String, dynamic> json;
 
   String get peer => json['peer'] as String? ?? '00';
+  int get unread => json['unread'] as int? ?? 0;
+  ChatMessage? get last => json['last'] is Map<String, dynamic>
+      ? ChatMessage(json['last'] as Map<String, dynamic>)
+      : null;
+
+  late final List<ChatTopic> topics =
+      (json['topics'] as List<dynamic>? ?? const [])
+          .map((t) => ChatTopic(t as Map<String, dynamic>))
+          .toList();
+}
+
+class ChatTopic {
+  ChatTopic(this.json);
+
+  final Map<String, dynamic> json;
+
+  String get id => json['id'] as String? ?? '';
+  String get name => json['name'] as String? ?? '';
+  int get color => json['color'] as int? ?? 0;
   int get unread => json['unread'] as int? ?? 0;
   ChatMessage? get last => json['last'] is Map<String, dynamic>
       ? ChatMessage(json['last'] as Map<String, dynamic>)
@@ -378,6 +398,11 @@ class ChatHistory {
   late final List<ChatMessage> messages =
       (json['messages'] as List<dynamic>? ?? const [])
           .map((m) => ChatMessage(m as Map<String, dynamic>))
+          .toList();
+
+  late final List<ChatTopic> topics =
+      (json['topics'] as List<dynamic>? ?? const [])
+          .map((t) => ChatTopic(t as Map<String, dynamic>))
           .toList();
 }
 
@@ -901,13 +926,27 @@ class Vigil {
             as Map<String, dynamic>,
       );
 
-  Future<void> send(String peer, String text, {int reply = 0}) async {
-    await _invoke('chatSend', {'peer': peer, 'text': text, 'reply': reply});
+  Future<void> send(
+    String peer,
+    String text, {
+    int reply = 0,
+    String topic = '',
+  }) async {
+    await _invoke('chatSend', {
+      'peer': peer,
+      'text': text,
+      'reply': reply,
+      'topic': topic,
+    });
     await refresh();
   }
 
-  Future<void> sendImage(String peer, String path) async {
-    await _invoke('chatImageSend', {'peer': peer, 'path': path});
+  Future<void> sendImage(String peer, String path, {String topic = ''}) async {
+    await _invoke('chatImageSend', {
+      'peer': peer,
+      'path': path,
+      'topic': topic,
+    });
     await refresh();
   }
 
@@ -928,20 +967,48 @@ class Vigil {
     }
   }
 
-  Future<void> sendImageData(String peer, Uint8List data) async {
-    await _invoke('chatImageData', {'peer': peer, 'data': data});
+  Future<void> sendImageData(
+    String peer,
+    Uint8List data, {
+    String topic = '',
+  }) async {
+    await _invoke('chatImageData', {
+      'peer': peer,
+      'data': data,
+      'topic': topic,
+    });
     await refresh();
   }
 
-  Future<void> sendFile(String peer) async {
-    await _invoke('chatFileSend', peer);
+  Future<void> sendFile(String peer, {String topic = ''}) async {
+    await _invoke('chatFileSend', {'peer': peer, 'topic': topic});
     await refresh();
   }
 
   Future<void> recordVoice(String peer) => _invoke('voiceRecord', peer);
 
-  Future<void> sendVoice(String peer) async {
-    await _invoke('voiceSend', peer);
+  Future<void> sendVoice(String peer, {String topic = ''}) async {
+    await _invoke('voiceSend', {'peer': peer, 'topic': topic});
+    await refresh();
+  }
+
+  Future<String> createTopic(String peer, String name, int color) async {
+    final id = await _invoke('chatTopic', {
+      'peer': peer,
+      'name': name,
+      'color': color,
+    });
+    await refresh();
+    return id;
+  }
+
+  Future<void> removeTopic(String peer, String topic) async {
+    await _invoke('chatTopic', {
+      'peer': peer,
+      'topic': topic,
+      'name': '',
+      'color': 0,
+    });
     await refresh();
   }
 
@@ -1051,7 +1118,8 @@ class Vigil {
     await refresh();
   }
 
-  Future<void> read(String peer) => _invoke('chatRead', peer);
+  Future<void> read(String peer, {String topic = ''}) =>
+      _invoke('chatRead', {'peer': peer, 'topic': topic});
 
   Future<void> favorite(String peer, int ref, bool on) async {
     await _invoke('chatFavorite', {'peer': peer, 'ref': ref, 'on': on});

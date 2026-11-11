@@ -365,7 +365,8 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
                     let quote = ChatVault.quote(event["author"] as? String, event["hash"] as? String)
 
                     try vault.deliver(chat: chat, peer: peer, nick: nick, text: text,
-                                      time: Int64(Date().timeIntervalSince1970 * 1000), quote: quote)
+                                      time: Int64(Date().timeIntervalSince1970 * 1000), quote: quote,
+                                      topic: event["topic"] as? String ?? "")
                     stored((event["token"] as? NSNumber)?.uint64Value ?? 0)
 
                     if defaults.string(forKey: "chatOpen") != chat,
@@ -374,6 +375,15 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
                         notifyChat(chat, peer, nick, event["signed"] as? String ?? "", text,
                                    badge: unseen.values.reduce(0, +))
                     }
+                case "topic":
+                    guard let topic = event["topic"] as? String else { continue }
+
+                    try vault.deliver(chat: chat, peer: peer, nick: event["nick"] as? String ?? "",
+                                      text: event["name"] as? String ?? "",
+                                      time: Int64(Date().timeIntervalSince1970 * 1000), kind: kind,
+                                      topic: topic,
+                                      color: Int(event["color"] as? String ?? "", radix: 16) ?? 0)
+                    stored((event["token"] as? NSNumber)?.uint64Value ?? 0)
                 case "joined", "left":
                     try vault.deliver(chat: chat, peer: peer, nick: event["nick"] as? String ?? "",
                                       text: "", time: Int64(Date().timeIntervalSince1970 * 1000),
@@ -399,7 +409,8 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
 
                     try vault.deliver(chat: chat, peer: peer, nick: nick, text: "",
                                       time: Int64(Date().timeIntervalSince1970 * 1000),
-                                      data: Data(bytes[0..<taken]), media: media, name: name)
+                                      data: Data(bytes[0..<taken]), media: media, name: name,
+                                      topic: event["topic"] as? String ?? "")
                     stored(token)
                     TunnelKeychain.wipe(&bytes)
 
@@ -549,6 +560,20 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
 
             if let only, !only.contains(ref) { continue }
 
+            let topic = (entry["tp"] as? String).flatMap { UInt64($0, radix: 16) } ?? 0
+
+            if entry["op"] as? String == "topic" {
+                guard topic != 0 else { continue }
+
+                let name = Array((entry["name"] as? String ?? "").utf8).map { CChar(bitPattern: $0) }
+                let color = UInt32(truncatingIfNeeded: (entry["color"] as? NSNumber)?.intValue ?? 0)
+
+                guard name.count <= Int(VIGIL_CHAT_TOPIC_NAME_MAX) else { continue }
+
+                submitted(ref, vigil_chat_topic(peer, ref, topic, color, name, name.count))
+                continue
+            }
+
             if entry["data"] != nil {
                 let data: Data
 
@@ -569,8 +594,14 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
                 let media = entry["media"] as? String ?? "file"
                 let name = entry["name"] as? String ?? "file"
 
-                let sent = data.withUnsafeBytes {
-                    vigil_chat_data_send(peer, ref, ChatVault.kind(media), name, $0.baseAddress, data.count)
+                let sent = data.withUnsafeBytes { (raw) -> Int32 in
+                    if topic != 0 {
+                        return vigil_chat_topic_data_send(peer, ref, topic, ChatVault.kind(media), name,
+                                                          raw.baseAddress, data.count)
+                    }
+
+                    return vigil_chat_data_send(peer, ref, ChatVault.kind(media), name, raw.baseAddress,
+                                                data.count)
                 }
 
                 submitted(ref, sent)
@@ -580,6 +611,16 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             guard let text = entry["text"] as? String else { continue }
 
             let bytes = Array(text.utf8).map { CChar(bitPattern: $0) }
+
+            if topic != 0 {
+                let quote = ChatVault.quote(entry["qa"] as? String, entry["qh"] as? String)
+
+                guard !bytes.isEmpty, bytes.count <= Int(VIGIL_CHAT_TOPIC_MAX) else { continue }
+
+                submitted(ref, vigil_chat_topic_send(peer, ref, topic, quote?.peer ?? 0, quote?.digest ?? 0,
+                                                     bytes, bytes.count))
+                continue
+            }
 
             if let quote = ChatVault.quote(entry["qa"] as? String, entry["qh"] as? String) {
                 guard !bytes.isEmpty, bytes.count <= Int(VIGIL_CHAT_REPLY_MAX) else { continue }

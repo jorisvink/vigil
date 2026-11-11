@@ -139,7 +139,7 @@ object Chats {
                         val nick = event.optString("nick")
                         val quote = ChatVault.quote(event.optString("author"), event.optString("hash"))
 
-                        vault.deliver(id, peer, nick, text, time, quote = quote)
+                        vault.deliver(id, peer, nick, text, time, quote = quote, topic = event.optString("topic"))
                         stored(event.getLong("token"))
 
                         if (alerts(service, id, event.optBoolean("mention"))) {
@@ -157,7 +157,10 @@ object Chats {
                             ?: throw IllegalStateException("data $token is gone")
 
                         try {
-                            vault.deliver(id, peer, nick, "", time, data = data, media = media, name = name)
+                            vault.deliver(
+                                id, peer, nick, "", time, data = data, media = media, name = name,
+                                topic = event.optString("topic")
+                            )
                         } finally {
                             data.fill(0)
                         }
@@ -168,6 +171,14 @@ object Chats {
                             unseen[id] = (unseen[id] ?: 0) + 1
                             notify(service, id, peer, nick, event.optString("signed"), summary(media, name), time)
                         }
+                    }
+                    "topic" -> {
+                        vault.deliver(
+                            id, peer, event.optString("nick"), event.getString("name"),
+                            System.currentTimeMillis(), "topic", topic = event.getString("topic"),
+                            color = event.getString("color").toInt(16)
+                        )
+                        stored(event.getLong("token"))
                     }
                     "name" -> {
                         vault.peerName(peer, event.optString("nick"), event.optString("signed"))
@@ -246,12 +257,27 @@ object Chats {
                 continue
             }
 
+            val topic = ChatVault.topicId(entry.optString("tp"))
+
+            if (entry.optString("op") == "topic") {
+                val sent = Vigil.chatTopic(
+                    chat.toInt(16), ref, topic, entry.getInt("color"), entry.getString("name").toByteArray()
+                )
+
+                if (sent) {
+                    waiting.remove(ref)
+                } else {
+                    refused(ref)
+                }
+                continue
+            }
+
             if (!entry.has("data")) {
                 val quote = ChatVault.quote(entry.optString("qa"), entry.optString("qh"))
 
                 val sent = Vigil.chatSend(
                     chat.toInt(16), ref, entry.getString("text").toByteArray(),
-                    quote?.peer ?: 0, quote?.digest ?: 0L
+                    quote?.peer ?: 0, quote?.digest ?: 0L, topic
                 )
 
                 if (sent) {
@@ -267,7 +293,7 @@ object Chats {
             try {
                 val sent = Vigil.chatDataSend(
                     chat.toInt(16), ref, ChatVault.kind(entry.getString("media")),
-                    entry.getString("name").toByteArray(), data
+                    entry.getString("name").toByteArray(), data, topic
                 )
 
                 if (sent) {

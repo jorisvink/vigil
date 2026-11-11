@@ -36,7 +36,7 @@ final class VigilPlugin: NSObject, FlutterPlugin, UIDocumentPickerDelegate,
     private var loaded: NETunnelProviderManager?
 
     private static let silence: TimeInterval = 10
-    private var picking: (String, FlutterResult)?
+    private var picking: (String, String, FlutterResult)?
     private var saving: (URL, FlutterResult)?
     private var preview: OpenItem?
 
@@ -320,16 +320,18 @@ final class VigilPlugin: NSObject, FlutterPlugin, UIDocumentPickerDelegate,
                 result(FlutterError(code: "failed", message: "\(error)", details: nil))
             }
         case "chatFileSend":
-            let hex = call.arguments as? String ?? ""
+            let args = call.arguments as? [String: Any] ?? [:]
+            let hex = args["peer"] as? String ?? ""
 
-            guard ChatVault.chat(hex) != nil, picking == nil, saving == nil, let top = Self.top() else {
+            guard ChatVault.chat(hex) != nil, picking == nil, saving == nil, let top = Self.top(),
+                  let topic = try? Self.topic(hex, args["topic"]) else {
                 result(FlutterError(code: "invalid", message: "Cannot pick a file now.", details: nil))
                 return
             }
 
             let picker = UIDocumentPickerViewController(forOpeningContentTypes: [.item], asCopy: true)
             picker.delegate = self
-            picking = (hex, result)
+            picking = (hex, topic, result)
             top.present(picker, animated: true)
         case "voiceRecord", "voiceSend", "voiceCancel", "voicePlay", "voiceStop", "voiceSeek", "voiceSpeed",
              "voicePosition":
@@ -351,7 +353,7 @@ final class VigilPlugin: NSObject, FlutterPlugin, UIDocumentPickerDelegate,
             }
         case "chatSend", "chatImageSend", "chatRead", "chatOpen", "chatTyping",
              "chatImageData", "chatDelete", "chatSettings", "chatGroup", "chatFavorite",
-             "chatPin", "chatMute":
+             "chatPin", "chatMute", "chatTopic":
             result(Self.reply { try chat(call) })
         case "flag":
             let args = call.arguments as? [String: Any] ?? [:]
@@ -843,7 +845,10 @@ final class VigilPlugin: NSObject, FlutterPlugin, UIDocumentPickerDelegate,
                 }
 
                 defer { data.resetBytes(in: 0..<data.count) }
-                result(try dataSend(hex, media: "voice", name: VigilVoice.name(), data: data))
+
+                let topic = try Self.topic(hex, args["topic"])
+
+                result(try dataSend(hex, media: "voice", name: VigilVoice.name(), data: data, topic: topic))
             case "voiceCancel":
                 if var data = voice.finish() {
                     data.resetBytes(in: 0..<data.count)
@@ -879,7 +884,8 @@ final class VigilPlugin: NSObject, FlutterPlugin, UIDocumentPickerDelegate,
         }
     }
 
-    private func dataSend(_ hex: String, media: String, name: String, data: Data) throws -> String {
+    private func dataSend(_ hex: String, media: String, name: String, data: Data,
+                          topic: String = "") throws -> String {
         let group = ChatVault.group(hex)
         let defaults = ChatVault.defaults
 
@@ -896,7 +902,7 @@ final class VigilPlugin: NSObject, FlutterPlugin, UIDocumentPickerDelegate,
                 description: "Gospel is not running, group files only go to members that are around.")
         }
 
-        let (ref, file) = try ChatVault.shared.sendData(hex, media: media, name: name, data: data)
+        let (ref, file) = try ChatVault.shared.sendData(hex, media: media, name: name, data: data, topic: topic)
 
         if group != nil {
             let label = Data(name.utf8).base64EncodedString()
@@ -918,7 +924,7 @@ final class VigilPlugin: NSObject, FlutterPlugin, UIDocumentPickerDelegate,
             return
         }
 
-        guard let (hex, result) = picking else { return }
+        guard let (hex, topic, result) = picking else { return }
         picking = nil
 
         guard let url = urls.first else {
@@ -936,7 +942,8 @@ final class VigilPlugin: NSObject, FlutterPlugin, UIDocumentPickerDelegate,
             }
 
             let data = try Data(contentsOf: url)
-            result(try dataSend(hex, media: "file", name: Self.fileName(url.lastPathComponent), data: data))
+            result(try dataSend(hex, media: "file", name: Self.fileName(url.lastPathComponent), data: data,
+                                topic: topic))
         } catch let error as ChatVault.Failure {
             result(FlutterError(code: "invalid", message: error.description, details: nil))
         } catch let error as ChatVault.Locked {
@@ -954,7 +961,7 @@ final class VigilPlugin: NSObject, FlutterPlugin, UIDocumentPickerDelegate,
             return
         }
 
-        picking?.1(nil)
+        picking?.2(nil)
         picking = nil
     }
 
@@ -1293,6 +1300,7 @@ final class VigilPlugin: NSObject, FlutterPlugin, UIDocumentPickerDelegate,
             return json(try vault.messages(hex, epoch: epoch, stamp: stamp))
         case "chatSend":
             let text = args["text"] as? String ?? ""
+            let topic = try Self.topic(hex, args["topic"])
             let size = text.utf8.count
             var max = Int(VIGIL_CHAT_MESSAGE_MAX)
             var quote: ChatVault.Quote?
@@ -1300,6 +1308,10 @@ final class VigilPlugin: NSObject, FlutterPlugin, UIDocumentPickerDelegate,
             if let reply = (args["reply"] as? NSNumber)?.int64Value, reply != 0 {
                 quote = try vault.quoted(hex, ref: reply)
                 max = Int(VIGIL_CHAT_REPLY_MAX)
+            }
+
+            if !topic.isEmpty {
+                max = Int(VIGIL_CHAT_TOPIC_MAX)
             }
 
             guard size > 0, size <= max else {
@@ -1315,7 +1327,7 @@ final class VigilPlugin: NSObject, FlutterPlugin, UIDocumentPickerDelegate,
                     description: "Gospel is not running, group messages only go to members that are around.")
             }
 
-            let ref = try vault.send(hex, text: text, quote: quote)
+            let ref = try vault.send(hex, text: text, quote: quote, topic: topic)
             let encoded = Data(text.utf8).base64EncodedString()
 
             if group != nil, let quote {
@@ -1330,16 +1342,41 @@ final class VigilPlugin: NSObject, FlutterPlugin, UIDocumentPickerDelegate,
 
             return "\(ref)"
         case "chatImageSend":
+            let topic = try Self.topic(hex, args["topic"])
             let image = try Self.jpeg(args["path"] as? String ?? "")
-            return try dataSend(hex, media: "image", name: Self.photoName(), data: image)
+            return try dataSend(hex, media: "image", name: Self.photoName(), data: image, topic: topic)
         case "chatImageData":
+            let topic = try Self.topic(hex, args["topic"])
+
             guard let image = (args["data"] as? FlutterStandardTypedData)?.data else {
                 throw ChatVault.Failure(description: "That is not an image.")
             }
 
-            return try dataSend(hex, media: "image", name: Self.photoName(), data: image)
+            return try dataSend(hex, media: "image", name: Self.photoName(), data: image, topic: topic)
+        case "chatTopic":
+            let name = (args["name"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            let color = ((args["color"] as? NSNumber)?.intValue ?? 0) & 0xffffff
+            var topic = try Self.topic(hex, args["topic"])
+
+            guard group == nil else {
+                throw ChatVault.Failure(description: "Groups have no topics.")
+            }
+
+            guard name.utf8.count <= Int(VIGIL_CHAT_TOPIC_NAME_MAX) else {
+                throw ChatVault.Failure(description: "A topic name is at most \(VIGIL_CHAT_TOPIC_NAME_MAX) bytes.")
+            }
+
+            if topic.isEmpty {
+                topic = String(format: "%016llx", UInt64.random(in: 1...UInt64.max))
+            }
+
+            _ = try vault.topic(hex, topic: topic, name: name, color: color)
+            VigilCall.shared.send?("chat")
+            version += 1
+
+            return topic
         case "chatRead":
-            try vault.read(hex)
+            try vault.read(hex, topic: try Self.topic(hex, args["topic"]))
             seen(hex)
             version += 1
             return ""
@@ -1576,6 +1613,20 @@ final class VigilPlugin: NSObject, FlutterPlugin, UIDocumentPickerDelegate,
         var buf = [CChar](repeating: 0, count: 1024)
         guard vigil_voice_status(&buf, buf.count) > 0 else { return "{\"running\":false}" }
         return String(cString: buf)
+    }
+
+    private static func topic(_ hex: String, _ value: Any?) throws -> String {
+        guard let topic = value as? String, !topic.isEmpty else { return "" }
+
+        guard ChatVault.group(hex) == nil else {
+            throw ChatVault.Failure(description: "Groups have no topics.")
+        }
+
+        guard topic.count == 16, let id = UInt64(topic, radix: 16), id != 0 else {
+            throw ChatVault.Failure(description: "There is no topic \(topic).")
+        }
+
+        return topic
     }
 
     private static func reply(_ body: () throws -> String) -> Any {

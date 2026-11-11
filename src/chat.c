@@ -51,6 +51,7 @@
 #define CHAT_EVENT_AVATAR		8
 #define CHAT_EVENT_NAME			9
 #define CHAT_EVENT_AMBRY		10
+#define CHAT_EVENT_TOPIC		11
 
 /* Time between heartbeats we send to our peers. */
 #define CHAT_HEARTBEAT			(12 * 1000)
@@ -95,7 +96,8 @@
 
 /* Max size of a packet we put on the wire. */
 #define CHAT_WIRE_MAX			\
-    (VIGIL_CHAT_DATA_MAX + sizeof(struct vigil_chat_data_head))
+    (VIGIL_CHAT_DATA_MAX + sizeof(struct vigil_chat_data_head) + \
+    sizeof(u_int64_t))
 
 /* Max size for a single chunk of data. */
 #define CHAT_CHUNKS_MAX			\
@@ -168,6 +170,16 @@ struct chat_quote {
 };
 
 /*
+ * The topic a message is in, an id of 0 means none. A message that sets a
+ * topic carries the name of the topic as its text, no name removes it.
+ */
+struct chat_topic {
+	int			set;
+	u_int64_t		id;
+	u_int32_t		color;
+};
+
+/*
  * A message we can send to the peer. These wait in the outbox of our peer
  * until they are ack'd and potentially on the sendq of the active tunnel
  * for said peer.
@@ -183,6 +195,7 @@ struct chat_msg {
 
 	struct chat_blob	*blob;
 	struct chat_quote	quote;
+	struct chat_topic	topic;
 	struct chat_tally	*tally;
 
 	struct vigil_chat_frame	frame;
@@ -271,6 +284,7 @@ struct chat_rxfer {
 struct chat_parcel {
 	u_int64_t		age;
 	u_int64_t		token;
+	u_int64_t		topic;
 
 	size_t			size;
 	u_int8_t		*data;
@@ -386,6 +400,7 @@ struct chat_command {
 	size_t				len;
 	struct chat_blob		*blob;
 	struct chat_quote		quote;
+	struct chat_topic		topic;
 	u_int8_t			data[VIGIL_CHAT_MESSAGE_MAX];
 
 	TAILQ_ENTRY(chat_command)	list;
@@ -408,6 +423,7 @@ struct chat_event {
 	int				mention;
 
 	struct chat_quote		quote;
+	struct chat_topic		topic;
 	char				name[VIGIL_INSTANCE_MAX];
 	char				nick[VIGIL_CHAT_NICK_MAX + 1];
 	char				text[VIGIL_CHAT_MESSAGE_MAX + 1];
@@ -481,7 +497,11 @@ static void	chat_hb_recv(struct chat_tunnel *, struct vigil_chat_frame *);
 static void	chat_purgatory_input(struct kyrka_packet *, u_int64_t, void *);
 static void	chat_hb_name(struct chat_peer *, const struct vigil_chat_hb *);
 static void	chat_text_recv(struct chat_tunnel *, u_int64_t,
-		    const struct chat_quote *, u_int8_t *, u_int16_t);
+		    const struct chat_quote *, const struct chat_topic *,
+		    u_int8_t *, u_int16_t);
+static int	chat_text_report(struct chat_tunnel *, u_int64_t,
+		    const struct chat_quote *, const struct chat_topic *,
+		    const u_int8_t *, size_t);
 
 static void	chat_ack_recv(struct chat_tunnel *, u_int64_t);
 static void	chat_ack_queue(struct chat_tunnel *, u_int64_t);
@@ -493,10 +513,12 @@ static void		chat_frame_send(struct chat_tunnel *,
 static void	chat_msg_free(struct chat_msg *);
 static void	chat_msg_resend(struct chat_tunnel *);
 static void	chat_msg_queue(struct chat_tunnel *, struct chat_msg *);
+static int	chat_msg_waits(struct chat_tunnel *, struct chat_msg *);
 
 static void	chat_outbox_free(struct chat_peer *);
 static void	chat_outbox_add(struct chat_peer *, u_int64_t,
-		    const struct chat_quote *, const u_int8_t *, size_t);
+		    const struct chat_quote *, const struct chat_topic *,
+		    const u_int8_t *, size_t);
 static void	chat_outbox_lookup(struct chat_tunnel *,
 		    struct chat_msg_list **);
 static void	chat_outbox_data(struct chat_peer *, u_int64_t,
@@ -508,14 +530,20 @@ static void	chat_command_free(struct chat_command *);
 static void	chat_command_next(struct chat_command **);
 static int	chat_command_insert(struct chat_command *);
 static int	chat_command_queue(int, u_int8_t, u_int64_t,
-		    const struct chat_quote *, const void *, size_t);
+		    const struct chat_quote *, const struct chat_topic *,
+		    const void *, size_t);
 
 static void	chat_reply_frame(struct vigil_chat_frame *,
 		    const struct chat_msg *);
 static void	chat_reply_recv(struct chat_tunnel *, u_int64_t,
 		    u_int8_t *, u_int16_t);
-static int	chat_reply_report(struct chat_tunnel *, u_int64_t,
-		    const struct chat_quote *, const u_int8_t *, size_t);
+
+static void	chat_topic_frame(struct chat_tunnel *,
+		    struct vigil_chat_frame *, const struct chat_msg *);
+static void	chat_topic_recv(struct chat_tunnel *, u_int64_t,
+		    u_int8_t *, u_int16_t);
+static void	chat_topic_text_recv(struct chat_tunnel *, u_int64_t,
+		    u_int8_t *, u_int16_t);
 
 static void	chat_blob_release(struct chat_blob *);
 static int	chat_blob_room(u_int8_t, u_int64_t, size_t);
@@ -532,8 +560,10 @@ static void	chat_data_discard(struct chat_tunnel *, struct chat_rxfer *);
 static int	chat_data_report(struct chat_tunnel *, struct chat_parcel *);
 static void	chat_data_ack(struct chat_tunnel *, u_int64_t,
 		    struct chat_rxfer *, u_int32_t);
-static int	chat_data_queue(int, u_int8_t, u_int64_t, int, const char *,
-		    const void *, size_t);
+static int	chat_data_queue(int, u_int8_t, u_int64_t, u_int64_t, int,
+		    const char *, const void *, size_t);
+static int	chat_data_topic(struct chat_tunnel *, struct chat_rxfer *,
+		    u_int8_t, u_int64_t *);
 
 static const char	*chat_data_kind_name(int);
 static struct chat_msg	*chat_data_msg(u_int64_t, struct chat_blob *);
@@ -844,7 +874,7 @@ vigil_chat_send(u_int8_t peer, u_int64_t ref, const char *text, size_t len)
 	PRECOND(len > 0 && len <= VIGIL_CHAT_MESSAGE_MAX);
 
 	ret = chat_command_queue(CHAT_COMMAND_SEND,
-	    peer, ref, NULL, text, len);
+	    peer, ref, NULL, NULL, text, len);
 
 	return (ret);
 }
@@ -869,7 +899,64 @@ vigil_chat_reply(u_int8_t peer, u_int64_t ref, u_int8_t author,
 	quote.author = author;
 
 	ret = chat_command_queue(CHAT_COMMAND_SEND,
-	    peer, ref, &quote, text, len);
+	    peer, ref, &quote, NULL, text, len);
+
+	return (ret);
+}
+
+/*
+ * Queue the given topic for the given peer, no name removes the topic.
+ */
+int
+vigil_chat_topic(u_int8_t peer, u_int64_t ref, u_int64_t id, u_int32_t color,
+    const char *name, size_t len)
+{
+	int			ret;
+	struct chat_topic	topic;
+
+	PRECOND(peer > 0 && peer < KYRKA_PEERS_PER_FLOCK);
+	PRECOND(id != 0);
+	PRECOND(name != NULL || len == 0);
+	PRECOND(len <= VIGIL_CHAT_TOPIC_NAME_MAX);
+
+	memset(&topic, 0, sizeof(topic));
+
+	topic.id = id;
+	topic.set = 1;
+	topic.color = color & 0xffffff;
+
+	ret = chat_command_queue(CHAT_COMMAND_SEND,
+	    peer, ref, NULL, &topic, name, len);
+
+	return (ret);
+}
+
+/*
+ * Queue a message in the given topic for the given peer, author and hash
+ * are as in vigil_chat_reply() and a hash of 0 means it replies to nothing.
+ */
+int
+vigil_chat_topic_send(u_int8_t peer, u_int64_t ref, u_int64_t id,
+    u_int8_t author, u_int64_t hash, const char *text, size_t len)
+{
+	int			ret;
+	struct chat_quote	quote;
+	struct chat_topic	topic;
+
+	PRECOND(peer > 0 && peer < KYRKA_PEERS_PER_FLOCK);
+	PRECOND(id != 0);
+	PRECOND(text != NULL);
+	PRECOND(len > 0 && len <= VIGIL_CHAT_TOPIC_MAX);
+
+	memset(&quote, 0, sizeof(quote));
+	memset(&topic, 0, sizeof(topic));
+
+	topic.id = id;
+	quote.hash = hash;
+	quote.author = author;
+
+	ret = chat_command_queue(CHAT_COMMAND_SEND,
+	    peer, ref, &quote, &topic, text, len);
 
 	return (ret);
 }
@@ -880,7 +967,12 @@ vigil_chat_reply(u_int8_t peer, u_int64_t ref, u_int8_t author,
 int
 vigil_chat_group(u_int16_t id)
 {
-	return (chat_command_queue(CHAT_COMMAND_GROUP, 0, id, NULL, NULL, 0));
+	int		ret;
+
+	ret = chat_command_queue(CHAT_COMMAND_GROUP,
+	    0, id, NULL, NULL, NULL, 0);
+
+	return (ret);
 }
 
 /*
@@ -907,7 +999,7 @@ vigil_chat_group_send(u_int64_t ref, const char *text, size_t len)
 	PRECOND(len > 0 && len <= VIGIL_CHAT_MESSAGE_MAX);
 
 	ret = chat_command_queue(CHAT_COMMAND_GROUP_SEND,
-	    0, ref, NULL, text, len);
+	    0, ref, NULL, NULL, text, len);
 
 	return (ret);
 }
@@ -930,7 +1022,7 @@ vigil_chat_group_reply(u_int64_t ref, u_int8_t author, u_int64_t hash,
 	quote.author = author;
 
 	ret = chat_command_queue(CHAT_COMMAND_GROUP_SEND,
-	    0, ref, &quote, text, len);
+	    0, ref, &quote, NULL, text, len);
 
 	return (ret);
 }
@@ -950,7 +1042,7 @@ vigil_chat_data_send(u_int8_t peer, u_int64_t ref, int kind, const char *name,
 	PRECOND(len > 0 && len <= VIGIL_CHAT_DATA_MAX);
 
 	ret = chat_data_queue(CHAT_COMMAND_DATA,
-	    peer, ref, kind, name, data, len);
+	    peer, ref, 0, kind, name, data, len);
 
 	return (ret);
 }
@@ -969,7 +1061,28 @@ vigil_chat_group_data_send(u_int64_t ref, int kind, const char *name,
 	PRECOND(len > 0 && len <= VIGIL_CHAT_DATA_MAX);
 
 	ret = chat_data_queue(CHAT_COMMAND_GROUP_DATA,
-	    0, ref, kind, name, data, len);
+	    0, ref, 0, kind, name, data, len);
+
+	return (ret);
+}
+
+/*
+ * Send data to our peer in the given topic.
+ */
+int
+vigil_chat_topic_data_send(u_int8_t peer, u_int64_t ref, u_int64_t id,
+    int kind, const char *name, const void *data, size_t len)
+{
+	int		ret;
+
+	PRECOND(peer > 0 && peer < KYRKA_PEERS_PER_FLOCK);
+	PRECOND(id != 0);
+	PRECOND(name != NULL);
+	PRECOND(data != NULL);
+	PRECOND(len > 0 && len <= VIGIL_CHAT_DATA_MAX);
+
+	ret = chat_data_queue(CHAT_COMMAND_DATA,
+	    peer, ref, id, kind, name, data, len);
 
 	return (ret);
 }
@@ -980,6 +1093,7 @@ vigil_chat_group_data_send(u_int64_t ref, int kind, const char *name,
 ssize_t
 vigil_chat_data_take(u_int64_t token, void *buf, size_t len)
 {
+	size_t			off;
 	size_t			left;
 	struct chat_parcel	*parcel;
 
@@ -997,12 +1111,17 @@ vigil_chat_data_take(u_int64_t token, void *buf, size_t len)
 		return (-1);
 	}
 
-	if (parcel->size < sizeof(struct vigil_chat_data_head)) {
+	off = sizeof(struct vigil_chat_data_head);
+
+	if (parcel->topic != 0)
+		off += sizeof(parcel->topic);
+
+	if (parcel->size < off) {
 		vigil_unlock(&lock);
 		return (-1);
 	}
 
-	left = parcel->size - sizeof(struct vigil_chat_data_head);
+	left = parcel->size - off;
 
 	if (left > len) {
 		vigil_unlock(&lock);
@@ -1013,7 +1132,7 @@ vigil_chat_data_take(u_int64_t token, void *buf, size_t len)
 	parcel_bytes -= parcel->size;
 	vigil_unlock(&lock);
 
-	memcpy(buf, parcel->data + sizeof(struct vigil_chat_data_head), left);
+	memcpy(buf, parcel->data + off, left);
 	chat_parcel_free(parcel);
 
 	return (left);
@@ -1044,7 +1163,8 @@ vigil_chat_forget(u_int8_t peer)
 	if (!vigil_atomic_read(&accepting))
 		return (0);
 
-	ret = chat_command_queue(CHAT_COMMAND_FORGET, peer, 0, NULL, NULL, 0);
+	ret = chat_command_queue(CHAT_COMMAND_FORGET,
+	    peer, 0, NULL, NULL, NULL, 0);
 
 	return (ret);
 }
@@ -1057,7 +1177,8 @@ vigil_chat_stored(u_int64_t token)
 {
 	int		ret;
 
-	ret = chat_command_queue(CHAT_COMMAND_STORED, 0, token, NULL, NULL, 0);
+	ret = chat_command_queue(CHAT_COMMAND_STORED,
+	    0, token, NULL, NULL, NULL, 0);
 
 	return (ret);
 }
@@ -2508,10 +2629,16 @@ chat_heaven_input(struct kyrka_packet *pkt, u_int64_t seq, void *udata)
 
 	switch (frame->type) {
 	case VIGIL_CHAT_TYPE_TEXT:
-		chat_text_recv(tun, id, NULL, frame->data, len);
+		chat_text_recv(tun, id, NULL, NULL, frame->data, len);
 		break;
 	case VIGIL_CHAT_TYPE_REPLY:
 		chat_reply_recv(tun, id, frame->data, len);
+		break;
+	case VIGIL_CHAT_TYPE_TOPIC:
+		chat_topic_recv(tun, id, frame->data, len);
+		break;
+	case VIGIL_CHAT_TYPE_TOPIC_TEXT:
+		chat_topic_text_recv(tun, id, frame->data, len);
 		break;
 	case VIGIL_CHAT_TYPE_ACK:
 		chat_ack_recv(tun, id);
@@ -2872,9 +2999,12 @@ chat_frame_send(struct chat_tunnel *tun, struct chat_msg *msg)
 		msg->pending = 0;
 		memcpy(frame, &msg->frame, sizeof(*frame));
 
-		if (msg->quote.hash != 0 &&
-		    (tun->features & VIGIL_CHAT_FEATURE_REPLY))
+		if (msg->topic.id != 0) {
+			chat_topic_frame(tun, frame, msg);
+		} else if (msg->quote.hash != 0 &&
+		    (tun->features & VIGIL_CHAT_FEATURE_REPLY)) {
 			chat_reply_frame(frame, msg);
+		}
 
 		if (msg->frame.type == VIGIL_CHAT_TYPE_TEXT) {
 			msg->age = vigil->now;
@@ -2897,7 +3027,7 @@ chat_frame_send(struct chat_tunnel *tun, struct chat_msg *msg)
 		hb = (struct vigil_chat_hb *)frame->data;
 		hb->uid = tun->local_uid;
 		hb->features = VIGIL_CHAT_FEATURE_DATA |
-		    VIGIL_CHAT_FEATURE_REPLY;
+		    VIGIL_CHAT_FEATURE_REPLY | VIGIL_CHAT_FEATURE_TOPIC;
 
 		if (named) {
 			hb->features |= VIGIL_CHAT_FEATURE_NAME;
@@ -3145,7 +3275,8 @@ chat_name_report(struct chat_peer *peer)
  */
 static void
 chat_text_recv(struct chat_tunnel *tun, u_int64_t id,
-    const struct chat_quote *quote, u_int8_t *data, u_int16_t len)
+    const struct chat_quote *quote, const struct chat_topic *topic,
+    u_int8_t *data, u_int16_t len)
 {
 	int			ret;
 	u_int32_t		idx;
@@ -3157,9 +3288,17 @@ chat_text_recv(struct chat_tunnel *tun, u_int64_t id,
 	PRECOND(data != NULL);
 	PRECOND(len <= VIGIL_CHAT_MESSAGE_MAX);
 
+	/* An empty text is dropped, a topic without a name was removed. */
 	if (len == 0) {
-		chat_ack_queue(tun, id);
-		return;
+		if (topic == NULL) {
+			chat_ack_queue(tun, id);
+			return;
+		}
+
+		if (!topic->set) {
+			chat_ack_queue(tun, id);
+			return;
+		}
 	}
 
 	hash = chat_frame_hash(data, len);
@@ -3185,13 +3324,7 @@ chat_text_recv(struct chat_tunnel *tun, u_int64_t id,
 	tokens++;
 	chat_utf8_normalize(data, len);
 
-	if (quote != NULL) {
-		ret = chat_reply_report(tun, tokens, quote, data, len);
-	} else {
-		ret = chat_event_queue(CHAT_EVENT_MESSAGE,
-		    tun->peer, tun->group, tokens, data, len);
-	}
-
+	ret = chat_text_report(tun, tokens, quote, topic, data, len);
 	if (ret == -1)
 		return;
 
@@ -3239,11 +3372,11 @@ chat_reply_recv(struct chat_tunnel *tun, u_int64_t id, u_int8_t *data,
 		quote.author = 0;
 
 	if (quote.hash == 0) {
-		chat_text_recv(tun, id, NULL, reply->text, len - head);
+		chat_text_recv(tun, id, NULL, NULL, reply->text, len - head);
 		return;
 	}
 
-	chat_text_recv(tun, id, &quote, reply->text, len - head);
+	chat_text_recv(tun, id, &quote, NULL, reply->text, len - head);
 }
 
 /*
@@ -3273,18 +3406,175 @@ chat_reply_frame(struct vigil_chat_frame *frame, const struct chat_msg *msg)
 }
 
 /*
- * Queue a message event for a reply we got, returns -1 if there are
- * too many.
+ * Our peer set up or removed a topic, hand it over like a message. One we
+ * cannot use is acked right away so our peer stops sending it.
+ */
+static void
+chat_topic_recv(struct chat_tunnel *tun, u_int64_t id, u_int8_t *data,
+    u_int16_t len)
+{
+	size_t			head;
+	struct vigil_chat_topic	*wire;
+	struct chat_topic	topic;
+
+	PRECOND(tun != NULL);
+	PRECOND(id != 0);
+	PRECOND(data != NULL);
+	PRECOND(len <= VIGIL_CHAT_MESSAGE_MAX);
+
+	wire = (struct vigil_chat_topic *)data;
+	head = sizeof(*wire) - sizeof(wire->name);
+
+	if (len < head)
+		return;
+
+	if (tun->group != 0) {
+		chat_ack_queue(tun, id);
+		return;
+	}
+
+	if (len - head > sizeof(wire->name)) {
+		chat_ack_queue(tun, id);
+		return;
+	}
+
+	memset(&topic, 0, sizeof(topic));
+
+	topic.set = 1;
+	topic.id = be64toh(wire->id);
+	topic.color = be32toh(wire->color) & 0xffffff;
+
+	if (topic.id == 0) {
+		chat_ack_queue(tun, id);
+		return;
+	}
+
+	chat_text_recv(tun, id, NULL, &topic, wire->name, len - head);
+}
+
+/*
+ * We got a message in a topic from our peer, hand it over like any other
+ * message. One we cannot use is acked right away so our peer stops sending
+ * it.
+ */
+static void
+chat_topic_text_recv(struct chat_tunnel *tun, u_int64_t id, u_int8_t *data,
+    u_int16_t len)
+{
+	size_t				head;
+	struct vigil_chat_topic_text	*wire;
+	struct chat_quote		quote;
+	struct chat_topic		topic;
+
+	PRECOND(tun != NULL);
+	PRECOND(id != 0);
+	PRECOND(data != NULL);
+	PRECOND(len <= VIGIL_CHAT_MESSAGE_MAX);
+
+	wire = (struct vigil_chat_topic_text *)data;
+	head = sizeof(*wire) - sizeof(wire->text);
+
+	if (len < head)
+		return;
+
+	if (tun->group != 0) {
+		chat_ack_queue(tun, id);
+		return;
+	}
+
+	memset(&quote, 0, sizeof(quote));
+	memset(&topic, 0, sizeof(topic));
+
+	quote.author = wire->author;
+	quote.hash = be64toh(wire->hash);
+	topic.id = be64toh(wire->topic);
+
+	if (topic.id == 0) {
+		chat_ack_queue(tun, id);
+		return;
+	}
+
+	if (quote.author == (vigil->gospel->spi & 0xff))
+		quote.author = 0;
+
+	if (quote.hash == 0) {
+		chat_text_recv(tun, id, NULL, &topic, wire->text, len - head);
+		return;
+	}
+
+	chat_text_recv(tun, id, &quote, &topic, wire->text, len - head);
+}
+
+/*
+ * Turn the given frame into one for the topic of its message. A peer that
+ * does not take topics gets the message as it is, and an empty text for a
+ * topic it cannot know about.
+ */
+static void
+chat_topic_frame(struct chat_tunnel *tun, struct vigil_chat_frame *frame,
+    const struct chat_msg *msg)
+{
+	u_int16_t			len;
+	struct vigil_chat_topic_text	*text;
+	struct vigil_chat_topic		*topic;
+
+	PRECOND(tun != NULL);
+	PRECOND(frame != NULL);
+	PRECOND(msg != NULL);
+	PRECOND(msg->topic.id != 0);
+
+	len = be16toh(msg->frame.len);
+
+	if (!(tun->features & VIGIL_CHAT_FEATURE_TOPIC)) {
+		if (msg->topic.set) {
+			frame->len = 0;
+			memset(frame->data, 0, sizeof(frame->data));
+		} else if (msg->quote.hash != 0 &&
+		    (tun->features & VIGIL_CHAT_FEATURE_REPLY)) {
+			chat_reply_frame(frame, msg);
+		}
+		return;
+	}
+
+	if (msg->topic.set) {
+		topic = (struct vigil_chat_topic *)frame->data;
+
+		PRECOND(len <= sizeof(topic->name));
+
+		topic->id = htobe64(msg->topic.id);
+		topic->color = htobe32(msg->topic.color);
+		memcpy(topic->name, msg->frame.data, len);
+
+		frame->type = VIGIL_CHAT_TYPE_TOPIC;
+		frame->len = htobe16(len + sizeof(*topic) - sizeof(topic->name));
+		return;
+	}
+
+	text = (struct vigil_chat_topic_text *)frame->data;
+
+	PRECOND(len <= sizeof(text->text));
+
+	text->topic = htobe64(msg->topic.id);
+	text->author = msg->quote.author;
+	text->hash = htobe64(msg->quote.hash);
+	memcpy(text->text, msg->frame.data, len);
+
+	frame->type = VIGIL_CHAT_TYPE_TOPIC_TEXT;
+	frame->len = htobe16(len + sizeof(*text) - sizeof(text->text));
+}
+
+/*
+ * Queue an event for a message we got, a message that sets a topic is a
+ * topic event. Returns -1 if there are too many.
  */
 static int
-chat_reply_report(struct chat_tunnel *tun, u_int64_t token,
-    const struct chat_quote *quote, const u_int8_t *data, size_t len)
+chat_text_report(struct chat_tunnel *tun, u_int64_t token,
+    const struct chat_quote *quote, const struct chat_topic *topic,
+    const u_int8_t *data, size_t len)
 {
 	struct chat_event	*evt;
 
 	PRECOND(tun != NULL);
-	PRECOND(quote != NULL);
-	PRECOND(quote->hash != 0);
 	PRECOND(data != NULL);
 	PRECOND(len <= VIGIL_CHAT_MESSAGE_MAX);
 
@@ -3297,12 +3587,21 @@ chat_reply_report(struct chat_tunnel *tun, u_int64_t token,
 	evt->peer = tun->peer->id;
 	evt->type = CHAT_EVENT_MESSAGE;
 
+	if (quote != NULL)
+		memcpy(&evt->quote, quote, sizeof(*quote));
+
+	if (topic != NULL)
+		memcpy(&evt->topic, topic, sizeof(*topic));
+
+	if (evt->topic.set)
+		evt->type = CHAT_EVENT_TOPIC;
+
 	memcpy(evt->text, data, len);
-	memcpy(&evt->quote, quote, sizeof(*quote));
 	memcpy(evt->name, tun->peer->name, sizeof(evt->name));
 	memcpy(evt->nick, tun->peer->nick, sizeof(evt->nick));
 
-	chat_mention_check(evt);
+	if (evt->type == CHAT_EVENT_MESSAGE)
+		chat_mention_check(evt);
 
 	return (chat_event_insert(evt));
 }
@@ -3363,7 +3662,7 @@ chat_msg_resend(struct chat_tunnel *tun)
 		if ((vigil->now - msg->age) < CHAT_RESEND)
 			continue;
 
-		if (msg->quote.hash != 0 && !tun->heard)
+		if (chat_msg_waits(tun, msg))
 			continue;
 
 		msg->pending = 1;
@@ -3389,8 +3688,7 @@ chat_msg_queue(struct chat_tunnel *tun, struct chat_msg *msg)
 		return;
 	}
 
-	/* Replies wait until we know if our peer takes them. */
-	if (msg->quote.hash != 0 && !tun->heard) {
+	if (chat_msg_waits(tun, msg)) {
 		msg->age = 0;
 		return;
 	}
@@ -3400,17 +3698,43 @@ chat_msg_queue(struct chat_tunnel *tun, struct chat_msg *msg)
 }
 
 /*
+ * Returns 1 if the given message waits until we know what our peer takes,
+ * replies and anything in a topic do.
+ */
+static int
+chat_msg_waits(struct chat_tunnel *tun, struct chat_msg *msg)
+{
+	PRECOND(tun != NULL);
+	PRECOND(msg != NULL);
+
+	if (tun->heard)
+		return (0);
+
+	if (msg->quote.hash != 0)
+		return (1);
+
+	if (msg->topic.id != 0)
+		return (1);
+
+	return (0);
+}
+
+/*
  * Add a message to the outbox of the given peer unless we have it.
  */
 static void
 chat_outbox_add(struct chat_peer *peer, u_int64_t ref,
-    const struct chat_quote *quote, const u_int8_t *data, size_t len)
+    const struct chat_quote *quote, const struct chat_topic *topic,
+    const u_int8_t *data, size_t len)
 {
 	struct chat_msg		*msg;
 
 	PRECOND(peer != NULL);
+	PRECOND(quote != NULL);
+	PRECOND(topic != NULL);
 	PRECOND(data != NULL);
-	PRECOND(len > 0 && len <= VIGIL_CHAT_MESSAGE_MAX);
+	PRECOND(len > 0 || topic->set);
+	PRECOND(len <= VIGIL_CHAT_MESSAGE_MAX);
 
 	TAILQ_FOREACH(msg, &peer->outbox, wlist) {
 		if (msg->ref == ref)
@@ -3427,6 +3751,7 @@ chat_outbox_add(struct chat_peer *peer, u_int64_t ref,
 
 	memcpy(msg->frame.data, data, len);
 	memcpy(&msg->quote, quote, sizeof(*quote));
+	memcpy(&msg->topic, topic, sizeof(*topic));
 
 	TAILQ_INSERT_TAIL(&peer->outbox, msg, wlist);
 
@@ -3510,7 +3835,8 @@ chat_tunnel_ack(struct chat_tunnel *tun, u_int64_t token)
  */
 static int
 chat_command_queue(int type, u_int8_t peer, u_int64_t value,
-    const struct chat_quote *quote, const void *data, size_t len)
+    const struct chat_quote *quote, const struct chat_topic *topic,
+    const void *data, size_t len)
 {
 	struct chat_command	*cmd;
 
@@ -3534,6 +3860,9 @@ chat_command_queue(int type, u_int8_t peer, u_int64_t value,
 	if (quote != NULL)
 		memcpy(&cmd->quote, quote, sizeof(*quote));
 
+	if (topic != NULL)
+		memcpy(&cmd->topic, topic, sizeof(*topic));
+
 	if (len > 0)
 		memcpy(cmd->data, data, len);
 
@@ -3546,10 +3875,11 @@ chat_command_queue(int type, u_int8_t peer, u_int64_t value,
  * Data we already hold is not copied again.
  */
 static int
-chat_data_queue(int type, u_int8_t peer, u_int64_t value, int kind,
-    const char *name, const void *data, size_t len)
+chat_data_queue(int type, u_int8_t peer, u_int64_t value, u_int64_t topic,
+    int kind, const char *name, const void *data, size_t len)
 {
 	int				ret;
+	size_t				off;
 	size_t				size;
 	struct chat_command		*cmd;
 	struct vigil_chat_data_head	head;
@@ -3575,6 +3905,9 @@ chat_data_queue(int type, u_int8_t peer, u_int64_t value, int kind,
 
 	size = sizeof(head) + len;
 
+	if (topic != 0)
+		size += sizeof(topic);
+
 	vigil_lock(&lock);
 	ret = chat_blob_room(peer, value, size);
 	vigil_unlock(&lock);
@@ -3589,6 +3922,9 @@ chat_data_queue(int type, u_int8_t peer, u_int64_t value, int kind,
 	head.kind = kind;
 	head.len = strlen(name);
 	memcpy(head.name, name, head.len);
+
+	if (topic != 0)
+		head.kind |= VIGIL_CHAT_DATA_TOPIC;
 
 	blob = calloc(1, sizeof(*blob));
 	if (blob == NULL)
@@ -3605,8 +3941,16 @@ chat_data_queue(int type, u_int8_t peer, u_int64_t value, int kind,
 	if (blob->data == NULL)
 		fatal("malloc: failed to allocate chat data buffer");
 
+	off = sizeof(head);
 	memcpy(blob->data, &head, sizeof(head));
-	memcpy(blob->data + sizeof(head), data, len);
+
+	if (topic != 0) {
+		topic = htobe64(topic);
+		memcpy(blob->data + off, &topic, sizeof(topic));
+		off += sizeof(topic);
+	}
+
+	memcpy(blob->data + off, data, len);
 
 	cmd = calloc(1, sizeof(*cmd));
 	if (cmd == NULL)
@@ -3708,8 +4052,8 @@ chat_commands_run(void)
 				cmd->quote.author = local;
 
 			if (cmd->peer != local) {
-				chat_outbox_add(peer, cmd->value,
-				    &cmd->quote, cmd->data, cmd->len);
+				chat_outbox_add(peer, cmd->value, &cmd->quote,
+				    &cmd->topic, cmd->data, cmd->len);
 			}
 			break;
 		case CHAT_COMMAND_FORGET:
@@ -3767,8 +4111,7 @@ chat_event_queue(int type, struct chat_peer *peer, u_int16_t id,
 {
 	struct chat_event	*evt;
 
-	PRECOND(type == CHAT_EVENT_MESSAGE ||
-	    type == CHAT_EVENT_SENT ||
+	PRECOND(type == CHAT_EVENT_SENT ||
 	    type == CHAT_EVENT_DELIVERED ||
 	    type == CHAT_EVENT_JOINED ||
 	    type == CHAT_EVENT_LEFT ||
@@ -3793,9 +4136,6 @@ chat_event_queue(int type, struct chat_peer *peer, u_int16_t id,
 
 	if (len > 0)
 		memcpy(evt->text, data, len);
-
-	if (type == CHAT_EVENT_MESSAGE)
-		chat_mention_check(evt);
 
 	return (chat_event_insert(evt));
 }
@@ -3962,6 +4302,18 @@ chat_event_render(struct vigil_buf *buf, struct chat_event *evt, int first)
 			    ",\"author\":\"%02x\",\"hash\":\"%016" PRIx64 "\"",
 			    evt->quote.author, evt->quote.hash);
 		}
+
+		if (evt->topic.id != 0) {
+			vigil_buf_appendf(buf, ",\"topic\":\"%016" PRIx64 "\"",
+			    evt->topic.id);
+		}
+		break;
+	case CHAT_EVENT_TOPIC:
+		vigil_buf_appendf(buf,
+		    ",\"type\":\"topic\",\"token\":%" PRIu64
+		    ",\"topic\":\"%016" PRIx64 "\",\"color\":\"%06x\""
+		    ",\"name\":", evt->value, evt->topic.id, evt->topic.color);
+		vigil_buf_quote(buf, evt->text);
 		break;
 	case CHAT_EVENT_SENT:
 		vigil_buf_appendf(buf,
@@ -3994,6 +4346,11 @@ chat_event_render(struct vigil_buf *buf, struct chat_event *evt, int first)
 		vigil_buf_quote(buf, evt->nick);
 		vigil_buf_appendf(buf, ",\"signed\":");
 		vigil_buf_quote(buf, evt->name);
+
+		if (evt->topic.id != 0) {
+			vigil_buf_appendf(buf, ",\"topic\":\"%016" PRIx64 "\"",
+			    evt->topic.id);
+		}
 		break;
 	case CHAT_EVENT_NAME:
 		vigil_buf_appendf(buf, ",\"type\":\"name\",\"nick\":");
@@ -4330,6 +4687,7 @@ static struct chat_msg *
 chat_data_msg(u_int64_t ref, struct chat_blob *blob)
 {
 	int				len;
+	u_int8_t			kind;
 	struct chat_msg			*msg;
 	struct vigil_chat_data_head	*head;
 	char				what[VIGIL_CHAT_DATA_NAME_MAX + 16];
@@ -4342,10 +4700,11 @@ chat_data_msg(u_int64_t ref, struct chat_blob *blob)
 		fatal("calloc: failed to allocate chat message");
 
 	head = (struct vigil_chat_data_head *)blob->data;
+	kind = head->kind & ~VIGIL_CHAT_DATA_TOPIC;
 
-	if (head->kind == VIGIL_CHAT_DATA_IMAGE) {
+	if (kind == VIGIL_CHAT_DATA_IMAGE) {
 		(void)snprintf(what, sizeof(what), "an image");
-	} else if (head->kind == VIGIL_CHAT_DATA_VOICE) {
+	} else if (kind == VIGIL_CHAT_DATA_VOICE) {
 		(void)snprintf(what, sizeof(what), "a voice message");
 	} else {
 		(void)snprintf(what, sizeof(what), "the file %.*s",
@@ -5124,6 +5483,7 @@ chat_data_arrived(struct chat_tunnel *tun, struct chat_rxfer *xfer)
 {
 	u_int8_t			kind;
 	u_int64_t			held;
+	u_int64_t			topic;
 	struct chat_seen		*seen;
 	struct vigil_chat_data_head	*head;
 	struct chat_parcel		*parcel;
@@ -5134,9 +5494,21 @@ chat_data_arrived(struct chat_tunnel *tun, struct chat_rxfer *xfer)
 	PRECOND(xfer->size > sizeof(*head));
 
 	head = (struct vigil_chat_data_head *)xfer->data;
-	kind = head->kind;
+	kind = head->kind & ~VIGIL_CHAT_DATA_TOPIC;
 
-	if (chat_data_kind_valid(head->kind) == -1) {
+	topic = 0;
+
+	if (head->kind & VIGIL_CHAT_DATA_TOPIC) {
+		if (chat_data_topic(tun, xfer, kind, &topic) == -1) {
+			vigil_log(LOG_NOTICE,
+			    "[chat] %02x sent data in a bad topic",
+			    tun->peer->id);
+			chat_data_discard(tun, xfer);
+			return (0);
+		}
+	}
+
+	if (chat_data_kind_valid(kind) == -1) {
 		vigil_log(LOG_NOTICE, "[chat] %02x sent unknown data",
 		    tun->peer->id);
 		chat_data_discard(tun, xfer);
@@ -5191,6 +5563,7 @@ chat_data_arrived(struct chat_tunnel *tun, struct chat_rxfer *xfer)
 	if (parcel == NULL)
 		fatal("calloc: failed to allocate data");
 
+	parcel->topic = topic;
 	parcel->data = xfer->data;
 	parcel->size = xfer->size;
 	parcel->age = vigil->now;
@@ -5222,6 +5595,41 @@ chat_data_arrived(struct chat_tunnel *tun, struct chat_rxfer *xfer)
 
 	vigil_log(LOG_INFO, "[chat] %02x sent us data of %zu bytes",
 	    tun->peer->id, parcel->size);
+
+	return (0);
+}
+
+/*
+ * Take the topic the data on the given xfer is in, returns -1 if it is not
+ * one we can use.
+ */
+static int
+chat_data_topic(struct chat_tunnel *tun, struct chat_rxfer *xfer,
+    u_int8_t kind, u_int64_t *topic)
+{
+	size_t		off;
+
+	PRECOND(tun != NULL);
+	PRECOND(xfer != NULL);
+	PRECOND(xfer->data != NULL);
+	PRECOND(topic != NULL);
+
+	if (tun->group != 0)
+		return (-1);
+
+	if (kind == VIGIL_CHAT_DATA_AVATAR)
+		return (-1);
+
+	off = sizeof(struct vigil_chat_data_head);
+
+	if (xfer->size <= off + sizeof(*topic))
+		return (-1);
+
+	memcpy(topic, xfer->data + off, sizeof(*topic));
+	*topic = be64toh(*topic);
+
+	if (*topic == 0)
+		return (-1);
 
 	return (0);
 }
@@ -5270,14 +5678,18 @@ chat_data_report(struct chat_tunnel *tun, struct chat_parcel *parcel)
 	if (evt == NULL)
 		fatal("calloc: failed to allocate chat event");
 
-	evt->kind = head->kind;
 	evt->group = tun->group;
 	evt->peer = tun->peer->id;
 	evt->value = parcel->token;
 	evt->type = CHAT_EVENT_DATA;
+	evt->topic.id = parcel->topic;
 	evt->size = parcel->size - sizeof(*head);
+	evt->kind = head->kind & ~VIGIL_CHAT_DATA_TOPIC;
 
-	if (head->kind == VIGIL_CHAT_DATA_AVATAR)
+	if (parcel->topic != 0)
+		evt->size -= sizeof(parcel->topic);
+
+	if (evt->kind == VIGIL_CHAT_DATA_AVATAR)
 		evt->type = CHAT_EVENT_AVATAR;
 
 	memcpy(evt->text, head->name, head->len);

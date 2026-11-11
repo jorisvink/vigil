@@ -48,7 +48,8 @@ class ChatVault(context: Context) {
         var flags: Long,
         var unread: Long = -1,
         var last: String? = null,
-        var ambry: Int = 0
+        var ambry: Int = 0,
+        var topics: String? = null
     )
 
     private class History(val chat: String, val epoch: Long) {
@@ -62,6 +63,9 @@ class ChatVault(context: Context) {
         val stamps = mutableListOf<Long>()
         val index = mutableMapOf<Long, Int>()
         val digests = mutableMapOf<Int, String>()
+        val topics = linkedMapOf<String, JSONObject>()
+        val unreads = mutableMapOf<String, Long>()
+        var reads = mapOf<String, Long>()
     }
 
     private val dir = File(context.noBackupFilesDir, "chats").apply { mkdirs() }
@@ -101,7 +105,8 @@ class ChatVault(context: Context) {
     @Synchronized
     fun deliver(
         chat: String, peer: Int, nick: String, text: String, time: Long, kind: String = "",
-        data: ByteArray? = null, media: String = "", name: String = "", quote: Quote? = null
+        data: ByteArray? = null, media: String = "", name: String = "", quote: Quote? = null,
+        topic: String = "", color: Int = 0
     ) {
         val message = JSONObject()
             .put("chat", chat)
@@ -120,6 +125,11 @@ class ChatVault(context: Context) {
         if (quote != null) {
             message.put("qa", quote.author)
             message.put("qh", quote.hash)
+        }
+
+        if (topic.isNotEmpty()) {
+            message.put("tp", topic)
+            message.put("color", color)
         }
 
         val plain = message.toString().toByteArray()
@@ -162,6 +172,15 @@ class ChatVault(context: Context) {
                     continue
                 }
 
+                if (kind == "topic") {
+                    topicSet(
+                        chat, ref(), "in", message.getString("tp"), message.getString("text"),
+                        message.optInt("color"), message.getLong("time")
+                    )
+                    wipe(file)
+                    continue
+                }
+
                 val ref = ref()
                 val record = JSONObject()
                     .put("t", if (kind.isEmpty()) "msg" else "member")
@@ -176,6 +195,10 @@ class ChatVault(context: Context) {
                 if (message.has("qh")) {
                     record.put("qa", message.getString("qa"))
                     record.put("qh", message.getString("qh"))
+                }
+
+                if (message.has("tp")) {
+                    record.put("tp", message.getString("tp"))
                 }
 
                 val encoded = message.optString("data")
@@ -235,7 +258,7 @@ class ChatVault(context: Context) {
             val id = file.name.removeSuffix(KEY)
             val conversation = conversation(id, false) ?: continue
 
-            if (conversation.unread < 0) {
+            if (conversation.unread < 0 || conversation.topics == null) {
                 val full = History(id, 0)
 
                 load(id, conversation, full)
@@ -247,6 +270,7 @@ class ChatVault(context: Context) {
                     .put("peer", id)
                     .put("unread", conversation.unread)
                     .put("last", conversation.last?.let { JSONObject(it) } ?: JSONObject.NULL)
+                    .put("topics", JSONArray(conversation.topics ?: "[]"))
             )
         }
 
@@ -263,11 +287,13 @@ class ChatVault(context: Context) {
 
         load(chat, conversation, current)
 
-        if (fresh && conversation.unread < 0) {
+        if (fresh && (conversation.unread < 0 || conversation.topics == null)) {
             summarize(chat, conversation, current)
         }
 
         val list = JSONArray()
+        val topics = JSONArray()
+        val meta = topicMeta(conversation)
         val out = JSONObject()
             .put("unread", conversation.unread)
             .put("epoch", current.epoch)
@@ -287,7 +313,14 @@ class ChatVault(context: Context) {
             }
         }
 
+        for (topic in current.topics.values) {
+            val unread = meta[topic.getString("id")]?.optLong("unread") ?: 0L
+
+            topics.put(JSONObject(topic.toString()).put("unread", unread))
+        }
+
         out.put("messages", list)
+        out.put("topics", topics)
 
         if (current.damaged) {
             out.put("warning", "Part of this chat could not be read, it was damaged or tampered with.")
@@ -299,7 +332,7 @@ class ChatVault(context: Context) {
     }
 
     @Synchronized
-    fun send(chat: String, text: String, ref: Long = ref(), quote: Quote? = null): Long {
+    fun send(chat: String, text: String, ref: Long = ref(), quote: Quote? = null, topic: String = ""): Long {
         val time = System.currentTimeMillis()
         val record = JSONObject()
             .put("t", "msg")
@@ -312,6 +345,11 @@ class ChatVault(context: Context) {
         if (quote != null) {
             record.put("qa", quote.author).put("qh", quote.hash)
             entry.put("qa", quote.author).put("qh", quote.hash)
+        }
+
+        if (topic.isNotEmpty()) {
+            record.put("tp", topic)
+            entry.put("tp", topic)
         }
 
         append(chat, record)
@@ -345,30 +383,50 @@ class ChatVault(context: Context) {
     }
 
     @Synchronized
-    fun sendData(chat: String, media: String, name: String, data: ByteArray, ref: Long = ref()): Long {
+    fun sendData(
+        chat: String, media: String, name: String, data: ByteArray, ref: Long = ref(), topic: String = ""
+    ): Long {
         val file = dataWrite(chat, ref, data)
+        val record = JSONObject()
+            .put("t", "msg")
+            .put("dir", "out")
+            .put("ref", ref)
+            .put("text", "")
+            .put("data", file)
+            .put("media", media)
+            .put("name", name)
+            .put("time", System.currentTimeMillis())
+        val entry = JSONObject().put("peer", chat).put("ref", ref)
+            .put("data", file).put("media", media).put("name", name)
 
-        append(
-            chat,
-            JSONObject()
-                .put("t", "msg")
-                .put("dir", "out")
-                .put("ref", ref)
-                .put("text", "")
-                .put("data", file)
-                .put("media", media)
-                .put("name", name)
-                .put("time", System.currentTimeMillis())
-        )
+        if (topic.isNotEmpty()) {
+            record.put("tp", topic)
+            entry.put("tp", topic)
+        }
+
+        append(chat, record)
 
         if (group(chat) != null) {
             return ref
         }
 
         val list = outboxList()
+        list.put(entry)
+        outboxSave(list)
+
+        return ref
+    }
+
+    @Synchronized
+    fun topic(chat: String, topic: String, name: String, color: Int, ref: Long = ref()): Long {
+        require(group(chat) == null) { "Groups have no topics." }
+
+        topicSet(chat, ref, "out", topic, name, color, System.currentTimeMillis())
+
+        val list = outboxList()
         list.put(
-            JSONObject().put("peer", chat).put("ref", ref)
-                .put("data", file).put("media", media).put("name", name)
+            JSONObject().put("peer", chat).put("ref", ref).put("op", "topic")
+                .put("tp", topic).put("name", name).put("color", color)
         )
         outboxSave(list)
 
@@ -542,11 +600,34 @@ class ChatVault(context: Context) {
     }
 
     @Synchronized
-    fun read(chat: String) {
+    fun read(chat: String, topic: String = "") {
         val conversation = conversation(chat, false) ?: return
 
-        conversation.read = conversation.count
-        conversation.unread = 0
+        if (topic.isEmpty()) {
+            conversation.read = conversation.count
+            conversation.unread = 0
+            save(chat, conversation)
+            return
+        }
+
+        if (conversation.topics == null) {
+            val full = History(chat, 0)
+
+            load(chat, conversation, full)
+            summarize(chat, conversation, full)
+        }
+
+        val list = JSONArray(conversation.topics ?: return)
+
+        for (i in 0 until list.length()) {
+            val entry = list.getJSONObject(i)
+
+            if (entry.getString("id") == topic) {
+                entry.put("read", conversation.count).put("unread", 0)
+            }
+        }
+
+        conversation.topics = list.toString()
         save(chat, conversation)
     }
 
@@ -593,6 +674,43 @@ class ChatVault(context: Context) {
         }
     }
 
+    private fun topicSet(
+        chat: String, ref: Long, direction: String, topic: String, name: String, color: Int, time: Long
+    ) {
+        append(
+            chat,
+            JSONObject()
+                .put("t", "topic")
+                .put("ref", ref)
+                .put("dir", direction)
+                .put("tp", topic)
+                .put("name", name)
+                .put("color", color)
+                .put("time", time)
+        )
+
+        if (name.isNotEmpty()) {
+            return
+        }
+
+        val conversation = conversation(chat, false) ?: return
+        val full = History(chat, 0)
+
+        load(chat, conversation, full)
+
+        for (message in full.messages) {
+            if (message.optString("tp") != topic) {
+                continue
+            }
+
+            val data = message.optString("data")
+
+            if (data.isNotEmpty()) {
+                wipe(File(dir, data))
+            }
+        }
+    }
+
     private fun rotated(chat: String, text: String): Boolean {
         val conversation = conversation(chat, false) ?: return false
         val generation = text.toLong(16).toInt()
@@ -620,9 +738,77 @@ class ChatVault(context: Context) {
     }
 
     private fun summarize(chat: String, conversation: Conversation, full: History) {
+        val topics = JSONArray()
+
+        for (topic in full.topics.values) {
+            val id = topic.getString("id")
+            val entry = JSONObject(topic.toString())
+                .put("read", full.reads[id] ?: conversation.read)
+                .put("unread", full.unreads[id] ?: 0L)
+
+            full.messages.lastOrNull { it.optString("tp") == id }?.let { entry.put("last", it) }
+            topics.put(entry)
+        }
+
         conversation.unread = full.unread
-        conversation.last = full.messages.lastOrNull()?.toString()
+        conversation.last = full.messages.lastOrNull { !it.has("tp") }?.toString()
+        conversation.topics = topics.toString()
         save(chat, conversation)
+    }
+
+    private fun topicMeta(conversation: Conversation): Map<String, JSONObject> {
+        val list = JSONArray(conversation.topics ?: "[]")
+        val out = mutableMapOf<String, JSONObject>()
+
+        for (i in 0 until list.length()) {
+            val entry = list.getJSONObject(i)
+            out[entry.getString("id")] = entry
+        }
+
+        return out
+    }
+
+    private fun topicsUpdate(topics: String, record: JSONObject, count: Long): String {
+        val list = JSONArray(topics)
+        val kept = JSONArray()
+        val topic = record.getString("tp")
+        var found: JSONObject? = null
+
+        for (i in 0 until list.length()) {
+            val entry = list.getJSONObject(i)
+
+            if (entry.getString("id") == topic) {
+                found = entry
+            } else {
+                kept.put(entry)
+            }
+        }
+
+        if (record.optString("t") != "topic") {
+            found?.put("last", message(record))
+
+            if (record.optString("dir") == "in") {
+                found?.let { it.put("unread", it.optLong("unread") + 1) }
+            }
+
+            return list.toString()
+        }
+
+        if (record.optString("name").isEmpty()) {
+            return kept.toString()
+        }
+
+        val entry = JSONObject()
+            .put("id", topic)
+            .put("name", record.getString("name"))
+            .put("color", record.optInt("color"))
+            .put("read", found?.optLong("read") ?: count)
+            .put("unread", found?.optLong("unread") ?: 0L)
+
+        found?.optJSONObject("last")?.let { entry.put("last", it) }
+        kept.put(entry)
+
+        return kept.toString()
     }
 
     private fun load(chat: String, conversation: Conversation, current: History) {
@@ -644,6 +830,8 @@ class ChatVault(context: Context) {
 
         val key = SecretKeySpec(conversation.key, "AES")
         var offset = 0
+
+        current.reads = topicMeta(conversation).mapValues { it.value.optLong("read", conversation.read) }
 
         while (offset + 4 <= data.size) {
             val len = ByteBuffer.wrap(data, offset, 4).int
@@ -682,9 +870,16 @@ class ChatVault(context: Context) {
         when (record.optString("t")) {
             "msg" -> {
                 val message = message(record)
+                val topic = message.optString("tp")
 
-                if (message.getString("dir") == "in" && current.seq >= read) {
-                    current.unread++
+                if (message.getString("dir") == "in") {
+                    if (topic.isEmpty()) {
+                        if (current.seq >= read) {
+                            current.unread++
+                        }
+                    } else if (current.seq >= (current.reads[topic] ?: read)) {
+                        current.unreads[topic] = (current.unreads[topic] ?: 0L) + 1
+                    }
                 }
 
                 current.index[ref] = current.messages.size
@@ -713,6 +908,19 @@ class ChatVault(context: Context) {
                 it.put("state", if (pending == 0) "delivered" else "sent")
             }
             "fav" -> change(current, ref) { it.put("fav", record.optBoolean("on")) }
+            "topic" -> {
+                val topic = record.getString("tp")
+                val name = record.optString("name")
+
+                if (name.isEmpty()) {
+                    current.topics.remove(topic)
+                } else {
+                    current.topics[topic] = JSONObject()
+                        .put("id", topic)
+                        .put("name", name)
+                        .put("color", record.optInt("color"))
+                }
+            }
             "pin" -> {
                 val previous = current.pinned
 
@@ -768,6 +976,10 @@ class ChatVault(context: Context) {
             message.put("qh", record.getString("qh"))
         }
 
+        if (record.has("tp")) {
+            message.put("tp", record.getString("tp"))
+        }
+
         return message
     }
 
@@ -782,6 +994,10 @@ class ChatVault(context: Context) {
             val other = current.messages[i]
 
             if (other.has("kind")) {
+                continue
+            }
+
+            if (other.optString("tp") != message.optString("tp")) {
                 continue
             }
 
@@ -868,12 +1084,17 @@ class ChatVault(context: Context) {
         }
 
         val type = record.optString("t")
+        val topics = conversation.topics
 
-        if (type == "msg" || type == "member") {
+        if (record.has("tp")) {
+            if (topics != null) {
+                conversation.topics = topicsUpdate(topics, record, conversation.count)
+            }
+        } else if (type == "msg" || type == "member") {
             conversation.last = message(record).toString()
         }
 
-        if (type == "msg" && record.optString("dir") == "in" && conversation.unread >= 0) {
+        if (type == "msg" && !record.has("tp") && record.optString("dir") == "in" && conversation.unread >= 0) {
             conversation.unread++
         }
 
@@ -952,6 +1173,16 @@ class ChatVault(context: Context) {
             if (buffer.remaining() >= 4) {
                 conversation.ambry = buffer.int
             }
+
+            if (buffer.remaining() >= 4) {
+                val topics = ByteArray(buffer.int).also { buffer.get(it) }
+
+                if (topics.isNotEmpty()) {
+                    conversation.topics = String(topics)
+                }
+
+                topics.fill(0)
+            }
         }
 
         plain.fill(0)
@@ -965,6 +1196,7 @@ class ChatVault(context: Context) {
             conversation.count = framed
             conversation.unread = -1
             conversation.last = null
+            conversation.topics = null
             save(chat, conversation)
         }
 
@@ -980,7 +1212,8 @@ class ChatVault(context: Context) {
 
     private fun save(chat: String, conversation: Conversation) {
         val last = conversation.last?.toByteArray() ?: ByteArray(0)
-        val plain = ByteBuffer.allocate(72 + last.size)
+        val topics = conversation.topics?.toByteArray() ?: ByteArray(0)
+        val plain = ByteBuffer.allocate(76 + last.size + topics.size)
             .put(conversation.key)
             .putLong(conversation.count)
             .putLong(conversation.read)
@@ -989,6 +1222,8 @@ class ChatVault(context: Context) {
             .putInt(last.size)
             .put(last)
             .putInt(conversation.ambry)
+            .putInt(topics.size)
+            .put(topics)
             .array()
 
         try {
@@ -996,6 +1231,7 @@ class ChatVault(context: Context) {
         } finally {
             plain.fill(0)
             last.fill(0)
+            topics.fill(0)
         }
     }
 
@@ -1254,6 +1490,14 @@ class ChatVault(context: Context) {
             }
 
             return Quote(author, hash)
+        }
+
+        fun topicId(topic: String): Long {
+            if (topic.isEmpty()) {
+                return 0L
+            }
+
+            return java.lang.Long.parseUnsignedLong(topic, 16)
         }
 
         fun kind(media: String): Int =

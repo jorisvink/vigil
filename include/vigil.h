@@ -228,6 +228,27 @@ struct vigil_chat_reply {
 } __attribute__((packed));
 
 /*
+ * A topic in a one-to-one chat, its random id, its color and its name. A
+ * topic without a name was removed.
+ */
+struct vigil_chat_topic {
+	u_int64_t		id;
+	u_int32_t		color;
+	u_int8_t		name[VIGIL_CHAT_TOPIC_NAME_MAX];
+} __attribute__((packed));
+
+/*
+ * A message in a topic, author and hash are as in a reply and a hash of 0
+ * means it replies to nothing.
+ */
+struct vigil_chat_topic_text {
+	u_int64_t		topic;
+	u_int8_t		author;
+	u_int64_t		hash;
+	u_int8_t		text[VIGIL_CHAT_TOPIC_MAX];
+} __attribute__((packed));
+
+/*
  * What goes in front of the data we send, its kind and its name from sender.
  */
 struct vigil_chat_data_head {

@@ -20,7 +20,8 @@
  *	$ ./tests/chatter [-n nick] [-m peer:text] [-g group] [-G text]
  *	    [-i peer:file] [-I file] [-f peer:file] [-F file] [-o dir]
  *	    [-t peer] [-T] [-O peer] [-e count] [-x secs] [-l count]
- *	    [-r author:hash] [-P file] [-D datadir] <gospel>
+ *	    [-r author:hash] [-c topic:name] [-C peer:topic] [-P file]
+ *	    [-D datadir] <gospel>
  *
  * With -m we send the text to the given peer, -m may be given more
  * than once. With -g we join the given group and with -G we send the
@@ -29,6 +30,9 @@
  * With -O we keep the chat with the given peer open.
  * With -r every -m and -G is a reply to the message with the given hash
  * written by the given author, 0 is us.
+ * With -c we set up the given topic with every peer we send to and all of
+ * our messages and data go in it. With -C we remove the given topic with
+ * the given peer, -C may be given more than once.
  * With -i we send the image in the given file to the given peer and with
  * -I to our group, -f and -F do the same for any file. All of them may be
  * given more than once. Data we get is written to the directory given
@@ -69,6 +73,9 @@
 
 /* The maximum number of messages we send. */
 #define CHATTER_MESSAGES_MAX	16
+
+/* The color of the topic we set up. */
+#define CHATTER_TOPIC_COLOR	0x3366ff
 
 static void	usage(void) __attribute__((noreturn));
 
@@ -121,6 +128,13 @@ static long		open_peer = 0;
 static long		reply_author = 0;
 static u_int64_t	reply_hash = 0;
 
+/* The topic our messages go in and the topics we remove. */
+static u_int64_t	topic = 0;
+static const char	*topic_name = NULL;
+static int		remove_count = 0;
+static u_int8_t		remove_peer[CHATTER_MESSAGES_MAX];
+static u_int64_t	remove_topic[CHATTER_MESSAGES_MAX];
+
 static void
 usage(void)
 {
@@ -128,7 +142,8 @@ usage(void)
 	    "[-G text] [-i peer:file] [-I file] [-f peer:file] [-F file] "
 	    "[-a peer:file] [-A file] "
 	    "[-o dir] [-t peer] [-T] [-O peer] [-e count] [-x secs] "
-	    "[-l count] [-r author:hash] [-P file] [-D datadir] <gospel>\n");
+	    "[-l count] [-r author:hash] [-c topic:name] [-C peer:topic] "
+	    "[-P file] [-D datadir] <gospel>\n");
 	exit(1);
 }
 
@@ -153,8 +168,31 @@ main(int argc, char **argv)
 	delivered = 0;
 
 	while ((ch = getopt(argc, argv,
-	    "a:A:D:e:f:F:g:G:i:I:l:m:n:o:O:P:r:t:Tx:")) != -1) {
+	    "a:A:c:C:D:e:f:F:g:G:i:I:l:m:n:o:O:P:r:t:Tx:")) != -1) {
 		switch (ch) {
+		case 'c':
+			topic = strtoull(optarg, &ep, 16);
+			if (*ep != ':' || topic == 0)
+				usage();
+			topic_name = ep + 1;
+			if (strlen(topic_name) == 0 ||
+			    strlen(topic_name) > VIGIL_CHAT_TOPIC_NAME_MAX)
+				usage();
+			break;
+		case 'C':
+			if (remove_count == CHATTER_MESSAGES_MAX)
+				usage();
+			peer = strtol(optarg, &ep, 16);
+			if (*ep != ':')
+				usage();
+			if (peer <= 0 || peer >= KYRKA_PEERS_PER_FLOCK)
+				usage();
+			remove_peer[remove_count] = peer;
+			remove_topic[remove_count] = strtoull(ep + 1, &ep, 16);
+			if (*ep != '\0' || remove_topic[remove_count] == 0)
+				usage();
+			remove_count++;
+			break;
 		case 'P':
 			chatter_avatar(optarg);
 			break;
@@ -288,8 +326,17 @@ main(int argc, char **argv)
 	if (group_data_count > 0 && group == 0)
 		usage();
 
-	wanted = message_count + data_count;
+	for (idx = 0; idx < message_count; idx++) {
+		if (topic != 0 &&
+		    strlen(message_text[idx]) > VIGIL_CHAT_TOPIC_MAX)
+			usage();
+	}
+
+	wanted = message_count + data_count + remove_count;
 	gwanted = group_count + group_data_count;
+
+	if (topic != 0)
+		wanted += message_count + data_count;
 
 	if (typing_group && group == 0)
 		usage();
@@ -324,6 +371,22 @@ main(int argc, char **argv)
 				session = strtol(ep, NULL, 10);
 
 				for (idx = 0; idx < message_count; idx++) {
+					if (topic != 0 &&
+					    vigil_chat_topic(message_peer[idx],
+					    900 + idx, topic, CHATTER_TOPIC_COLOR,
+					    topic_name, strlen(topic_name)) == -1)
+						fatal("vigil_chat_topic");
+
+					if (topic != 0 &&
+					    vigil_chat_topic_send(message_peer[idx],
+					    idx + 1, topic, reply_author, reply_hash,
+					    message_text[idx],
+					    strlen(message_text[idx])) == -1)
+						fatal("vigil_chat_topic_send");
+
+					if (topic != 0)
+						continue;
+
 					if (reply_hash != 0 &&
 					    vigil_chat_reply(message_peer[idx],
 					    idx + 1, reply_author, reply_hash,
@@ -338,7 +401,20 @@ main(int argc, char **argv)
 						fatal("vigil_chat_send");
 				}
 
+				for (idx = 0; idx < remove_count; idx++) {
+					if (vigil_chat_topic(remove_peer[idx],
+					    980 + idx, remove_topic[idx], 0,
+					    NULL, 0) == -1)
+						fatal("vigil_chat_topic");
+				}
+
 				for (idx = 0; idx < data_count; idx++) {
+					if (topic != 0 &&
+					    vigil_chat_topic(data_peer[idx],
+					    950 + idx, topic, CHATTER_TOPIC_COLOR,
+					    topic_name, strlen(topic_name)) == -1)
+						fatal("vigil_chat_topic");
+
 					chatter_data_send(data_peer[idx],
 					    500 + idx, data_kind[idx],
 					    data_path[idx]);
@@ -558,6 +634,9 @@ chatter_data_send(u_int8_t peer, u_int64_t ref, int kind, const char *path)
 
 	if (peer == 0) {
 		ret = vigil_chat_group_data_send(ref, kind, name,
+		    data, st.st_size);
+	} else if (topic != 0) {
+		ret = vigil_chat_topic_data_send(peer, ref, topic, kind, name,
 		    data, st.st_size);
 	} else {
 		ret = vigil_chat_data_send(peer, ref, kind, name,

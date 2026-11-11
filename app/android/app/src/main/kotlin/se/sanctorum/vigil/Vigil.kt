@@ -60,7 +60,10 @@ object Vigil {
     external fun kyrkaVersion(): String
 
     @JvmStatic
-    external fun chatSend(peer: Int, ref: Long, text: ByteArray, author: Int, hash: Long): Boolean
+    external fun chatSend(peer: Int, ref: Long, text: ByteArray, author: Int, hash: Long, topic: Long): Boolean
+
+    @JvmStatic
+    external fun chatTopic(peer: Int, ref: Long, topic: Long, color: Int, name: ByteArray): Boolean
 
     @JvmStatic
     external fun chatForget(peer: Int): Boolean
@@ -93,7 +96,7 @@ object Vigil {
     external fun chatEvents(): ByteArray
 
     @JvmStatic
-    external fun chatDataSend(peer: Int, ref: Long, kind: Int, name: ByteArray, data: ByteArray): Boolean
+    external fun chatDataSend(peer: Int, ref: Long, kind: Int, name: ByteArray, data: ByteArray, topic: Long): Boolean
 
     @JvmStatic
     external fun chatGroupDataSend(ref: Long, kind: Int, name: ByteArray, data: ByteArray): Boolean

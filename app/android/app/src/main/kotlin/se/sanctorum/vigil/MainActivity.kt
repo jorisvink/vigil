@@ -29,6 +29,7 @@ import io.flutter.view.TextureRegistry
 import io.flutter.plugin.common.MethodCall
 import io.flutter.plugin.common.MethodChannel
 import java.security.KeyStore
+import java.security.SecureRandom
 import org.json.JSONObject
 
 /**
@@ -37,7 +38,7 @@ import org.json.JSONObject
 class MainActivity : FlutterActivity() {
     private lateinit var store: TunnelStore
     private var pending: Pair<MethodChannel.Result, () -> Unit>? = null
-    private var picking: Pair<String, MethodChannel.Result>? = null
+    private var picking: Triple<String, String, MethodChannel.Result>? = null
     private var saving: Triple<String, String, MethodChannel.Result>? = null
     private var microphone: Pair<Intent, MethodChannel.Result?>? = null
     private var textures: TextureRegistry? = null
@@ -262,6 +263,7 @@ class MainActivity : FlutterActivity() {
                 }
                 "chatSend" -> {
                     val id = chat(call.argument<String>("peer")!!)
+                    val topic = topic(id, call.argument<String>("topic"))
                     val text = call.argument<String>("text")!!
                     val reply = call.argument<Number>("reply")?.toLong() ?: 0L
 
@@ -275,6 +277,10 @@ class MainActivity : FlutterActivity() {
                         if (reply != 0L) {
                             quote = vault.quoted(id, reply)
                             max = REPLY_MAX
+                        }
+
+                        if (topic.isNotEmpty()) {
+                            max = TOPIC_MAX
                         }
 
                         require(bytes.isNotEmpty() && bytes.size <= max) {
@@ -293,9 +299,11 @@ class MainActivity : FlutterActivity() {
                             "Gospel is not running, group messages only go to members that are around."
                         }
 
-                        vault.send(id, text, ref, quote)
+                        vault.send(id, text, ref, quote, topic)
 
-                        if (group == null && !Vigil.chatSend(id.toInt(16), ref, bytes, author, hash)) {
+                        if (group == null &&
+                            !Vigil.chatSend(id.toInt(16), ref, bytes, author, hash, ChatVault.topicId(topic))
+                        ) {
                             Chats.refused(ref)
                         }
 
@@ -305,13 +313,14 @@ class MainActivity : FlutterActivity() {
                 }
                 "chatImageSend" -> {
                     val id = chat(call.argument<String>("peer")!!)
+                    val topic = topic(id, call.argument<String>("topic"))
                     val path = call.argument<String>("path")!!
 
                     background(result) {
                         val image = Images.jpeg(this, path)
 
                         try {
-                            dataSend(id, "image", Images.name(), image)
+                            dataSend(id, "image", Images.name(), image, topic)
                         } finally {
                             image.fill(0)
                         }
@@ -330,22 +339,24 @@ class MainActivity : FlutterActivity() {
                 }
                 "chatImageData" -> {
                     val id = chat(call.argument<String>("peer")!!)
+                    val topic = topic(id, call.argument<String>("topic"))
                     val image = call.argument<ByteArray>("data")!!
 
                     background(result) {
                         try {
-                            dataSend(id, "image", Images.name(), image)
+                            dataSend(id, "image", Images.name(), image, topic)
                         } finally {
                             image.fill(0)
                         }
                     }
                 }
                 "chatFileSend" -> {
-                    val id = chat(call.arguments as String)
+                    val id = chat(call.argument<String>("peer")!!)
+                    val topic = topic(id, call.argument<String>("topic"))
 
                     require(picking == null) { "Already picking a file." }
 
-                    picking = Pair(id, result)
+                    picking = Triple(id, topic, result)
                     startActivityForResult(
                         Intent(Intent.ACTION_OPEN_DOCUMENT).addCategory(Intent.CATEGORY_OPENABLE).setType("*/*"),
                         REQUEST_FILE
@@ -364,13 +375,14 @@ class MainActivity : FlutterActivity() {
                     result.success("")
                 }
                 "voiceSend" -> {
-                    val id = chat(call.arguments as String)
+                    val id = chat(call.argument<String>("peer")!!)
+                    val topic = topic(id, call.argument<String>("topic"))
 
                     background(result) {
                         val data = Voice.finish() ?: throw IllegalArgumentException("Nothing was recorded.")
 
                         try {
-                            dataSend(id, "voice", Voice.name(), data)
+                            dataSend(id, "voice", Voice.name(), data, topic)
                         } finally {
                             data.fill(0)
                         }
@@ -463,8 +475,8 @@ class MainActivity : FlutterActivity() {
                     }
                 }
                 "chatRead" -> {
-                    val id = chat(call.arguments as String)
-                    Chats.vault(this).read(id)
+                    val id = chat(call.argument<String>("peer")!!)
+                    Chats.vault(this).read(id, topic(id, call.argument<String>("topic")))
                     Chats.seen(this, id)
                     Chats.changed()
                     result.success("")
@@ -476,6 +488,33 @@ class MainActivity : FlutterActivity() {
                     )
                     Chats.changed()
                     result.success("")
+                }
+                "chatTopic" -> {
+                    val id = chat(call.argument<String>("peer")!!)
+                    val name = call.argument<String>("name")!!.trim()
+                    val color = call.argument<Number>("color")!!.toInt() and 0xffffff
+                    val topic = topic(id, call.argument<String>("topic")).ifEmpty {
+                        "%016x".format(SecureRandom().nextLong().takeIf { it != 0L } ?: 1L)
+                    }
+
+                    require(ChatVault.group(id) == null) { "Groups have no topics." }
+                    require(name.toByteArray().size <= TOPIC_NAME_MAX) {
+                        "A topic name is at most $TOPIC_NAME_MAX bytes."
+                    }
+
+                    background(result) {
+                        val vault = Chats.vault(this)
+                        val ref = vault.ref()
+
+                        vault.topic(id, topic, name, color, ref)
+
+                        if (!Vigil.chatTopic(id.toInt(16), ref, ChatVault.topicId(topic), color, name.toByteArray())) {
+                            Chats.refused(ref)
+                        }
+
+                        Chats.changed()
+                        topic
+                    }
                 }
                 "chatPin" -> {
                     val id = chat(call.argument<String>("peer")!!)
@@ -714,7 +753,7 @@ class MainActivity : FlutterActivity() {
         super.onActivityResult(requestCode, resultCode, data)
 
         if (requestCode == REQUEST_FILE) {
-            val (id, result) = picking ?: return
+            val (id, topic, result) = picking ?: return
             picking = null
 
             val uri = data?.data
@@ -724,7 +763,7 @@ class MainActivity : FlutterActivity() {
                 return
             }
 
-            background(result) { fileSend(id, uri) }
+            background(result) { fileSend(id, uri, topic) }
             return
         }
 
@@ -930,7 +969,7 @@ class MainActivity : FlutterActivity() {
         result?.success("")
     }
 
-    private fun dataSend(id: String, media: String, name: String, data: ByteArray): String {
+    private fun dataSend(id: String, media: String, name: String, data: ByteArray, topic: String = ""): String {
         val group = ChatVault.group(id)
         val kind = ChatVault.kind(media)
         val label = name.toByteArray()
@@ -945,8 +984,8 @@ class MainActivity : FlutterActivity() {
             "Gospel is not running or still sending other files, group files only go to members that are around."
         }
 
-        vault.sendData(id, media, name, data, ref)
-        if (group == null && !Vigil.chatDataSend(id.toInt(16), ref, kind, label, data)) {
+        vault.sendData(id, media, name, data, ref, topic)
+        if (group == null && !Vigil.chatDataSend(id.toInt(16), ref, kind, label, data, ChatVault.topicId(topic))) {
             Chats.refused(ref)
         }
 
@@ -955,7 +994,7 @@ class MainActivity : FlutterActivity() {
         return ref.toString()
     }
 
-    private fun fileSend(id: String, uri: Uri): String {
+    private fun fileSend(id: String, uri: Uri, topic: String): String {
         var name = "file"
         var size = -1L
 
@@ -993,7 +1032,7 @@ class MainActivity : FlutterActivity() {
         } ?: throw IllegalArgumentException("That file cannot be read.")
 
         try {
-            return dataSend(id, "file", Files.name(name), data)
+            return dataSend(id, "file", Files.name(name), data, topic)
         } finally {
             data.fill(0)
         }
@@ -1105,6 +1144,17 @@ class MainActivity : FlutterActivity() {
         return id
     }
 
+    private fun topic(id: String, topic: String?): String {
+        if (topic.isNullOrEmpty()) {
+            return ""
+        }
+
+        require(ChatVault.group(id) == null) { "Groups have no topics." }
+        require(topic.matches(Regex("[0-9a-f]{16}")) && topic != "0".repeat(16)) { "There is no topic $topic." }
+
+        return topic
+    }
+
     private fun granted(permission: String) =
         checkSelfPermission(permission) == PackageManager.PERMISSION_GRANTED
 
@@ -1124,6 +1174,8 @@ class MainActivity : FlutterActivity() {
         const val DATA_MAX = 4 * 1024 * 1024
         const val MESSAGE_MAX = 512
         const val REPLY_MAX = MESSAGE_MAX - 9
+        const val TOPIC_MAX = MESSAGE_MAX - 17
+        const val TOPIC_NAME_MAX = 32
         const val VIDEO_WIDTH = 960
         const val VIDEO_HEIGHT = 540
     }

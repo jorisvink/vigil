@@ -169,15 +169,22 @@
 #define VIGIL_CHAT_TYPE_HEARTBEAT	3
 #define VIGIL_CHAT_TYPE_DATA_ACK	4
 #define VIGIL_CHAT_TYPE_REPLY		5
+#define VIGIL_CHAT_TYPE_TOPIC		6
+#define VIGIL_CHAT_TYPE_TOPIC_TEXT	7
 
 /* The features we tell our peers about in our heartbeats. */
 #define VIGIL_CHAT_FEATURE_DATA		0x01
 #define VIGIL_CHAT_FEATURE_REPLY	0x02
 #define VIGIL_CHAT_FEATURE_NAME		0x04
 #define VIGIL_CHAT_FEATURE_AVATAR	0x08
+#define VIGIL_CHAT_FEATURE_TOPIC	0x10
 
 /* The maximum length of a reply, it carries who wrote what it replies to. */
 #define VIGIL_CHAT_REPLY_MAX		(VIGIL_CHAT_MESSAGE_MAX - 9)
+
+/* The maximum length of a message in a topic and of the name of a topic. */
+#define VIGIL_CHAT_TOPIC_MAX		(VIGIL_CHAT_MESSAGE_MAX - 17)
+#define VIGIL_CHAT_TOPIC_NAME_MAX	32
 
 /* The largest data we send or take and how much goes in each chunk. */
 #define VIGIL_CHAT_CHUNK_DATA		1152
@@ -244,6 +251,9 @@
 #define VIGIL_CHAT_DATA_VOICE		3
 #define VIGIL_CHAT_DATA_AVATAR		4
 #define VIGIL_CHAT_DATA_NAME_MAX	126
+
+/* Set on the kind of data in a topic, the topic follows the head. */
+#define VIGIL_CHAT_DATA_TOPIC		0x80
 
 /* The largest avatar we send or take. */
 #define VIGIL_CHAT_AVATAR_MAX		(32 * 1024)
@@ -319,6 +329,12 @@ int	vigil_chat_reply(u_int8_t, u_int64_t, u_int8_t, u_int64_t,
 	    const char *, size_t);
 int	vigil_chat_group_reply(u_int64_t, u_int8_t, u_int64_t,
 	    const char *, size_t);
+int	vigil_chat_topic(u_int8_t, u_int64_t, u_int64_t, u_int32_t,
+	    const char *, size_t);
+int	vigil_chat_topic_send(u_int8_t, u_int64_t, u_int64_t, u_int8_t,
+	    u_int64_t, const char *, size_t);
+int	vigil_chat_topic_data_send(u_int8_t, u_int64_t, u_int64_t, int,
+	    const char *, const void *, size_t);
 
 /* src/link.c */
 void	vigil_link_close(void);

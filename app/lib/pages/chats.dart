@@ -22,6 +22,16 @@ import 'call.dart';
 
 const _messageMax = 512;
 const _replyMax = _messageMax - 9;
+const _topicMax = _messageMax - 17;
+const _topicNameMax = 32;
+const _topicColors = [
+  0xffb000,
+  0x6ee7a0,
+  0x5ab4ff,
+  0xff6b6b,
+  0xc58cff,
+  0xe8e6e1,
+];
 const _voiceMax = Duration(minutes: 5);
 const _voiceMin = Duration(milliseconds: 700);
 const _voiceBars = 32;
@@ -665,10 +675,29 @@ class ChatRow extends StatelessWidget {
     final last = chat.last;
     final typing = status.chat?.peer(chat.peer)?.typing ?? false;
 
-    return _Swipe(
+    final row = _Swipe(
       label: 'Delete chat with ${vigil.name(chat.peer)}',
       onAction: () => removeChat(chat.peer),
-      child: _row(vigil, last, typing),
+      child: GestureDetector(
+        onLongPress: isGroup(chat.peer) ? null : () => manageTopics(chat.peer),
+        child: _row(vigil, last, typing),
+      ),
+    );
+
+    if (chat.topics.isEmpty) {
+      return row;
+    }
+
+    return Column(
+      children: [
+        row,
+        for (final (i, topic) in chat.topics.indexed)
+          _TopicBranch(
+            peer: chat.peer,
+            topic: topic,
+            end: i == chat.topics.length - 1,
+          ),
+      ],
     );
   }
 
@@ -713,23 +742,7 @@ class ChatRow extends StatelessWidget {
               ),
               const SizedBox(height: 6),
               if (chat.unread > 0)
-                Container(
-                  constraints: const BoxConstraints(minWidth: 20),
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 6,
-                    vertical: 3,
-                  ),
-                  color: Palette.amber,
-                  child: Text(
-                    '${chat.unread}',
-                    textAlign: TextAlign.center,
-                    style: Styles.detail.copyWith(
-                      color: Palette.bg,
-                      fontSize: 11,
-                      height: 1,
-                    ),
-                  ),
-                )
+                _Unread(count: chat.unread)
               else
                 const SizedBox(height: 17),
             ],
@@ -740,10 +753,378 @@ class ChatRow extends StatelessWidget {
   }
 }
 
-class ChatPage extends StatefulWidget {
-  const ChatPage({super.key, required this.peer});
+Color topicColor(int rgb) => Color(0xff000000 | rgb);
+
+Future<void> manageTopics(String peer) async {
+  final context = navigatorKey.currentContext;
+  if (context == null) {
+    return;
+  }
+
+  final vigil = Vigil.instance;
+  final List<ChatTopic> topics;
+
+  try {
+    topics = (await vigil.chat(peer)).topics;
+  } on VigilError catch (e) {
+    notify(e.message);
+    return;
+  }
+
+  if (!context.mounted) {
+    return;
+  }
+
+  final action = await sheet<String>(
+    context,
+    (context) => Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        sheetTitle('Topics'),
+        const SizedBox(height: 8),
+        Text(
+          'Topics are chats of their own with ${vigil.name(peer)}, both of '
+          'you see them and either of you can remove them.',
+          style: Styles.detail,
+        ),
+        const SizedBox(height: 16),
+        for (final topic in topics)
+          Padding(
+            padding: const EdgeInsets.only(bottom: 8),
+            child: Panel(
+              padding: const EdgeInsets.fromLTRB(16, 8, 4, 8),
+              onTap: () => Navigator.of(context).pop('open:${topic.id}'),
+              child: Row(
+                children: [
+                  _TopicMark(color: topic.color),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Text(
+                      topic.name,
+                      style: Styles.cardTitle,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+                  GlyphBtn(
+                    GlyphKind.close,
+                    label: 'Remove ${topic.name}',
+                    onTap: () =>
+                        Navigator.of(context).pop('remove:${topic.id}'),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        const SizedBox(height: 8),
+        Btn(
+          label: 'New topic',
+          glyph: GlyphKind.plus,
+          expand: true,
+          onTap: () => Navigator.of(context).pop('new'),
+        ),
+      ],
+    ),
+  );
+
+  if (action == null) {
+    return;
+  }
+
+  if (action == 'new') {
+    await _newTopic(peer);
+    return;
+  }
+
+  final id = action.substring(action.indexOf(':') + 1);
+  final topic = topics.where((t) => t.id == id).firstOrNull;
+
+  if (topic == null) {
+    return;
+  }
+
+  if (action.startsWith('open:')) {
+    await push(ChatPage(peer: peer, topic: topic), opaque: false);
+    return;
+  }
+
+  await _removeTopic(peer, topic);
+}
+
+Future<void> _removeTopic(String peer, ChatTopic topic) async {
+  final vigil = Vigil.instance;
+
+  if (!await confirm(
+    title: 'Remove topic',
+    text:
+        'This removes ${topic.name} for you and ${vigil.name(peer)}, the '
+        'files sent in it are wiped from this device.',
+    action: 'Remove',
+  )) {
+    return;
+  }
+
+  try {
+    await vigil.removeTopic(peer, topic.id);
+  } on VigilError catch (e) {
+    notify(e.message);
+  }
+}
+
+Future<void> _newTopic(String peer) async {
+  final context = navigatorKey.currentContext;
+  if (context == null) {
+    return;
+  }
+
+  final picked = await sheet<(String, int)>(
+    context,
+    (context) => const _TopicPrompt(),
+  );
+
+  if (picked == null) {
+    return;
+  }
+
+  final name = picked.$1.trim();
+
+  if (name.isEmpty) {
+    notify('A topic needs a name.');
+    return;
+  }
+
+  try {
+    await Vigil.instance.createTopic(peer, name, picked.$2);
+  } on VigilError catch (e) {
+    notify(e.message);
+  }
+}
+
+class _TopicMark extends StatelessWidget {
+  const _TopicMark({required this.color, this.size = 12});
+
+  final int color;
+  final double size;
+
+  @override
+  Widget build(BuildContext context) =>
+      Container(width: size, height: size, color: topicColor(color));
+}
+
+class _TopicPrompt extends StatefulWidget {
+  const _TopicPrompt();
+
+  @override
+  State<_TopicPrompt> createState() => _TopicPromptState();
+}
+
+class _TopicPromptState extends State<_TopicPrompt> {
+  final _name = TextEditingController();
+  int _color = _topicColors.first;
+
+  @override
+  void dispose() {
+    _name.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        sheetTitle('New topic'),
+        const SizedBox(height: 16),
+        Text('NAME', style: Styles.key),
+        const SizedBox(height: 6),
+        Pre(
+          child: TextField(
+            controller: _name,
+            autofocus: true,
+            enableIMEPersonalizedLearning: false,
+            textCapitalization: TextCapitalization.sentences,
+            style: Styles.pre,
+            cursorColor: Palette.amber,
+            inputFormatters: [
+              FilteringTextInputFormatter.deny(RegExp('[\\n\\t]')),
+              const _Utf8Limit(_topicNameMax),
+            ],
+            decoration: InputDecoration.collapsed(
+              hintText: 'Holiday plans',
+              hintStyle: Styles.pre.copyWith(color: Palette.dim),
+            ),
+          ),
+        ),
+        const SizedBox(height: 14),
+        Text('COLOR', style: Styles.key),
+        const SizedBox(height: 8),
+        Row(
+          children: [
+            for (final color in _topicColors)
+              Pressable(
+                label: 'Color',
+                onTap: () => setState(() => _color = color),
+                builder: (context, pressed) => Container(
+                  margin: const EdgeInsets.only(right: 10),
+                  padding: const EdgeInsets.all(3),
+                  decoration: BoxDecoration(
+                    border: Border.all(
+                      color: color == _color ? Palette.fg : Colors.transparent,
+                      width: 2,
+                    ),
+                  ),
+                  child: _TopicMark(color: color, size: 26),
+                ),
+              ),
+          ],
+        ),
+        const SizedBox(height: 20),
+        Btn(
+          label: 'Create',
+          expand: true,
+          onTap: () => Navigator.of(context).pop((_name.text, _color)),
+        ),
+      ],
+    );
+  }
+}
+
+class _TopicBranch extends StatelessWidget {
+  const _TopicBranch({
+    required this.peer,
+    required this.topic,
+    required this.end,
+  });
 
   final String peer;
+  final ChatTopic topic;
+  final bool end;
+
+  @override
+  Widget build(BuildContext context) {
+    final last = topic.last;
+    final unread = topic.unread;
+
+    return IntrinsicHeight(
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          SizedBox(
+            width: 34,
+            child: CustomPaint(painter: _BranchPainter(end: end)),
+          ),
+          Expanded(
+            child: Padding(
+              padding: const EdgeInsets.only(top: 6),
+              child: GestureDetector(
+                onLongPress: () => _removeTopic(peer, topic),
+                child: Panel(
+                  accent: unread > 0,
+                  padding: const EdgeInsets.fromLTRB(14, 10, 14, 10),
+                  onTap: () =>
+                      push(ChatPage(peer: peer, topic: topic), opaque: false),
+                  child: Row(
+                    children: [
+                      _TopicMark(color: topic.color, size: 10),
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              topic.name,
+                              style: Styles.cardTitle,
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                            const SizedBox(height: 2),
+                            Text(
+                              _preview(last),
+                              style: Styles.detail.copyWith(
+                                color: unread > 0 ? Palette.fg : Palette.dim,
+                              ),
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                          ],
+                        ),
+                      ),
+                      const SizedBox(width: 12),
+                      Column(
+                        crossAxisAlignment: CrossAxisAlignment.end,
+                        children: [
+                          Text(
+                            last == null ? '' : _when(last.time),
+                            style: Styles.detail.copyWith(fontSize: 11),
+                          ),
+                          if (unread > 0) ...[
+                            const SizedBox(height: 4),
+                            _Unread(count: unread),
+                          ],
+                        ],
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _Unread extends StatelessWidget {
+  const _Unread({required this.count});
+
+  final int count;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      constraints: const BoxConstraints(minWidth: 20),
+      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 3),
+      color: Palette.amber,
+      child: Text(
+        '$count',
+        textAlign: TextAlign.center,
+        style: Styles.detail.copyWith(
+          color: Palette.bg,
+          fontSize: 11,
+          height: 1,
+        ),
+      ),
+    );
+  }
+}
+
+class _BranchPainter extends CustomPainter {
+  const _BranchPainter({required this.end});
+
+  final bool end;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final paint = Paint()
+      ..color = Palette.line2
+      ..strokeWidth = 1;
+    final x = size.width / 2;
+    final y = 6 + (size.height - 6) / 2;
+
+    canvas.drawLine(Offset(x, 0), Offset(x, end ? y : size.height), paint);
+    canvas.drawLine(Offset(x, y), Offset(size.width, y), paint);
+  }
+
+  @override
+  bool shouldRepaint(_BranchPainter old) => old.end != end;
+}
+
+class ChatPage extends StatefulWidget {
+  const ChatPage({super.key, required this.peer, this.topic});
+
+  final String peer;
+  final ChatTopic? topic;
 
   @override
   State<ChatPage> createState() => _ChatPageState();
@@ -779,7 +1160,13 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
   int _version = -1;
   int _muted = 0;
 
+  bool _gone = false;
+
   String get peer => widget.peer;
+
+  ChatTopic? get topic => widget.topic;
+
+  String get _topic => widget.topic?.id ?? '';
 
   bool get _snoozed =>
       _muted == -1 || _muted > DateTime.now().millisecondsSinceEpoch;
@@ -907,14 +1294,20 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
 
     try {
       final history = await vigil.chat(peer, epoch: _epoch, stamp: _stamp);
-      if (history.unread > 0) {
-        await vigil.read(peer);
+      final unread = topic == null
+          ? history.unread
+          : history.topics.where((t) => t.id == _topic).firstOrNull?.unread ??
+                0;
+
+      if (unread > 0) {
+        await vigil.read(peer, topic: _topic);
       }
 
       if (mounted) {
         setState(() {
           _merge(history);
           _history = history;
+          _gone = topic != null && !history.topics.any((t) => t.id == _topic);
           _error = null;
         });
       }
@@ -975,7 +1368,12 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
     setState(() => _sending = true);
 
     try {
-      await Vigil.instance.send(peer, text, reply: _replying?.ref ?? 0);
+      await Vigil.instance.send(
+        peer,
+        text,
+        reply: _replying?.ref ?? 0,
+        topic: _topic,
+      );
       _input.clear();
       _type(false);
 
@@ -1111,7 +1509,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
     }
 
     if (choice == 'file') {
-      await _sendWith(() => Vigil.instance.sendFile(peer));
+      await _sendWith(() => Vigil.instance.sendFile(peer, topic: _topic));
       return;
     }
 
@@ -1123,7 +1521,9 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
       return;
     }
 
-    await _sendWith(() => Vigil.instance.sendImage(peer, picked.path));
+    await _sendWith(
+      () => Vigil.instance.sendImage(peer, picked.path, topic: _topic),
+    );
   }
 
   Future<void> _clipboard() async {
@@ -1168,7 +1568,9 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
     );
 
     if (send) {
-      await _sendWith(() => Vigil.instance.sendImageData(peer, image));
+      await _sendWith(
+        () => Vigil.instance.sendImageData(peer, image, topic: _topic),
+      );
     }
 
     unawaited(_clipboard());
@@ -1296,7 +1698,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
       return;
     }
 
-    await _sendWith(() => Vigil.instance.sendVoice(peer));
+    await _sendWith(() => Vigil.instance.sendVoice(peer, topic: _topic));
   }
 
   Future<void> _sendWith(Future<void> Function() send) async {
@@ -1570,7 +1972,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
             final status = snapshot.data!;
             final joined = status.chats.group == peer;
             final callable = status.call?.peers.contains(peer) ?? false;
-            final messages = _messages;
+            final messages = _messages.where((m) => m.topic == _topic).toList();
             final newest = messages.lastIndexWhere(
               (m) => !m.incoming && m.kind.isEmpty,
             );
@@ -1606,6 +2008,10 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
                               child: GestureDetector(
                                 behavior: HitTestBehavior.opaque,
                                 onTap: () async {
+                                  if (topic != null) {
+                                    return;
+                                  }
+
                                   if (group) {
                                     await _members();
                                   } else {
@@ -1648,11 +2054,30 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
                                             ],
                                           ),
                                           const SizedBox(height: 2),
-                                          PeerName(
-                                            peer,
-                                            style: Styles.barTitle,
-                                            shrink: 13,
-                                          ),
+                                          if (topic != null)
+                                            Row(
+                                              children: [
+                                                _TopicMark(
+                                                  color: topic!.color,
+                                                  size: 10,
+                                                ),
+                                                const SizedBox(width: 8),
+                                                Flexible(
+                                                  child: Text(
+                                                    topic!.name,
+                                                    style: Styles.barTitle,
+                                                    overflow:
+                                                        TextOverflow.ellipsis,
+                                                  ),
+                                                ),
+                                              ],
+                                            )
+                                          else
+                                            PeerName(
+                                              peer,
+                                              style: Styles.barTitle,
+                                              shrink: 13,
+                                            ),
                                         ],
                                       ),
                                     ),
@@ -1673,19 +2098,25 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
                                 label: joined ? 'Leave group' : 'Join group',
                                 onTap: () => _membership(!joined),
                               ),
-                            if (callable && status.phone == null && videoCalls)
+                            if (callable &&
+                                status.phone == null &&
+                                videoCalls &&
+                                topic == null)
                               GlyphBtn(
                                 GlyphKind.video,
                                 label: 'Video call ${vigil.name(peer)}',
                                 onTap: () => callPeer(peer, video: true),
                               ),
-                            if (callable && status.phone == null)
+                            if (callable &&
+                                status.phone == null &&
+                                topic == null)
                               GlyphBtn(
                                 GlyphKind.call,
                                 label: 'Call ${vigil.name(peer)}',
                                 onTap: () => callPeer(peer),
                               ),
-                            if (messages.any((m) => m.favorite))
+                            if (topic == null &&
+                                messages.any((m) => m.favorite))
                               GlyphBtn(
                                 GlyphKind.star,
                                 label: 'Favorites',
@@ -1741,6 +2172,9 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
                                                 ? 'Messages go to the members of '
                                                       '${vigil.name(peer)} that are '
                                                       'around right now.'
+                                                : topic != null
+                                                ? 'Write the first message in '
+                                                      '${topic!.name}.'
                                                 : 'Write your first message to ${vigil.name(peer)}.',
                                             textAlign: TextAlign.center,
                                             style: Styles.body.copyWith(
@@ -1876,7 +2310,12 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
                           Metrics.edge - 8,
                           inset + 10,
                         ),
-                        child: group && !status.gospel
+                        child: _gone
+                            ? const Text(
+                                'This topic was removed.',
+                                style: Styles.detail,
+                              )
+                            : group && !status.gospel
                             ? const Text(
                                 'Gospel is off, turn it on to send messages to '
                                 'this group.',
@@ -1903,7 +2342,9 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
                             : _Composer(
                                 input: _input,
                                 focus: _focus,
-                                max: _replying == null
+                                max: topic != null
+                                    ? _topicMax
+                                    : _replying == null
                                     ? _messageMax
                                     : _replyMax,
                                 busy: _sending,

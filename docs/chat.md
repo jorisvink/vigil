@@ -54,7 +54,8 @@ frame, 523 bytes
 +----------+-----+------+----------------------------------------+
   8          2     1      len bytes used, the rest zero
 
-type  1 text, 2 ack, 3 heartbeat, 4 data ack, 5 reply
+type  1 text, 2 ack, 3 heartbeat, 4 data ack, 5 reply, 6 topic,
+      7 topic text
 id    the message id, the id of the message acked for an ack,
       ffffffffffffffff for a heartbeat
 ```
@@ -74,6 +75,30 @@ hash    the hash the platform gave for the message replied to, not 0
 ```
 
 ```
+topic data
++-------+-------+------------+
+| id    | color | name       |
++-------+-------+------------+
+  8       4       up to 32
+
+id      the random id of the topic, not 0
+color   0xRRGGBB
+name    the name of the topic, empty when the topic was removed
+```
+
+```
+topic text data
++-------+--------+------+-------------------------------+
+| topic | author | hash | text                          |
++-------+--------+------+-------------------------------+
+  8       1        8      up to 495
+
+topic   the id of the topic the text is in, not 0
+author  as in a reply
+hash    as in a reply, 0 if the text replies to nothing
+```
+
+```
 heartbeat data
 +-----+----------+--------+----------+--------------+---------------+-------------+
 | uid | nick[16] | typing | features | instance[64] | signature[64] | avatar_have |
@@ -83,14 +108,14 @@ heartbeat data
 uid          random for each tunnel, a new one means the peer started over
 nick         our nickname, empty if we have none
 typing       1 while we type in this chat
-features     0x01 DATA, 0x02 REPLY, 0x04 NAME, 0x08 AVATAR
+features     0x01 DATA, 0x02 REPLY, 0x04 NAME, 0x08 AVATAR, 0x10 TOPIC
 instance     our name, signed by our flock, zero without NAME
 signature    the signature of our flock over our instance, zero without NAME
 avatar_have  the hash of the avatar of this peer that we hold, 0 if none
 ```
 
-We send `DATA` and `REPLY` always, `NAME` when our flock signed our name
-and `AVATAR` while we have an avatar.
+We send `DATA`, `REPLY` and `TOPIC` always, `NAME` when our flock signed
+our name and `AVATAR` while we have an avatar.
 
 ## Tunnels
 
@@ -160,6 +185,26 @@ tells the copies apart by id and text, see below.
 A reply waits until we heard a heartbeat from the peer, so we know if the
 peer takes replies. A peer with `REPLY` gets a reply frame, any other peer
 gets the text alone as a text frame.
+
+### Topics
+
+A topic is a chat of its own inside a one-to-one chat. Either side sets up
+a topic with `vigil_chat_topic()` under a random 64-bit id, and removes the
+topic with the same call and no name. Texts and parcels go in a topic with
+`vigil_chat_topic_send()` and `vigil_chat_topic_data_send()`. Each of these
+is a message on the outbox like any other, acked once the peer stored the
+message.
+
+Anything in a topic waits for a heartbeat from the peer like a reply does.
+A peer without `TOPIC` gets:
+
+```
+topic                an empty text frame, acked and dropped
+topic text           a text or reply frame
+parcel in a topic    the parcel, which the peer drops
+```
+
+Topic frames in a group tunnel are acked and dropped.
 
 ## Receiving
 
@@ -240,6 +285,10 @@ vigil_chat_reply(peer, ref, author, hash,   running or 1024 commands wait
 vigil_chat_group_send(ref, text, len)
 vigil_chat_group_reply(ref, author, hash,
     text, len)
+vigil_chat_topic_send(peer, ref, topic,
+    author, hash, text, len)
+vigil_chat_topic(peer, ref, topic, color,   queue a topic, no name removes
+    name, len)                              the topic
 vigil_chat_stored(token)                    ACK the message to the sender
 vigil_chat_forget(peer)                     drop the outbox of the peer
 vigil_chat_group(id)                        join a group, 0 leaves
@@ -259,7 +308,10 @@ An author of 0 in a reply means us.
 event        fields, besides "peer" and "group" for group events
 ───────────  ─────────────────────────────────────────────────────────────
 message      token, nick, signed, text, mention if it names us,
-             author and hash if it is a reply
+             author and hash if it is a reply, topic if it is
+             in a topic
+topic        token, topic, color, name     a topic was set up, an empty
+                                           name removed it
 sent         ref                       first time a message went out
 delivered    ref                       the peer stored the message
 acks         ref, acked, pending       a group message
@@ -281,6 +333,8 @@ not acked, so our peer sends the message again.
 |---------------------------|--------|-----------------------------------------|
 | VIGIL_CHAT_MESSAGE_MAX    | 512 B  | text in a frame                         |
 | VIGIL_CHAT_REPLY_MAX      | 503 B  | text in a reply                         |
+| VIGIL_CHAT_TOPIC_MAX      | 495 B  | text in a topic                         |
+| VIGIL_CHAT_TOPIC_NAME_MAX | 32 B   | name of a topic                         |
 | VIGIL_CHAT_NICK_MAX       | 16     | nickname length                         |
 | CHAT_HEARTBEAT            | 12 s   | between heartbeats                      |
 | CHAT_RESEND               | 5 s    | before an unacked message goes again    |

@@ -34,6 +34,7 @@ final class ChatVault {
         var unread: Int64 = -1
         var last: Data?
         var ambry: UInt32 = 0
+        var topics: Data?
     }
 
     private final class History {
@@ -49,6 +50,9 @@ final class ChatVault {
         var stamps = [Int64]()
         var index = [Int64: Int]()
         var digests = [Int: String]()
+        var topics = [[String: Any]]()
+        var unreads = [String: Int64]()
+        var reads = [String: UInt64]()
 
         init(chat: String, epoch: Int64) {
             self.chat = chat
@@ -138,7 +142,8 @@ final class ChatVault {
 
     func deliver(chat: String, peer: UInt8, nick: String, text: String, time: Int64,
                  kind: String = "", data: Data? = nil, media: String = "",
-                 name: String = "", quote: Quote? = nil) throws {
+                 name: String = "", quote: Quote? = nil, topic: String = "",
+                 color: Int = 0) throws {
         try locked {
             var message: [String: Any] = [
                 "chat": chat, "peer": Self.hex(peer), "nick": nick, "text": text, "time": time,
@@ -154,6 +159,11 @@ final class ChatVault {
             if let quote {
                 message["qa"] = quote.author
                 message["qh"] = quote.hash
+            }
+
+            if !topic.isEmpty {
+                message["tp"] = topic
+                message["color"] = color
             }
 
             let plain = try JSONSerialization.data(withJSONObject: message)
@@ -198,6 +208,17 @@ final class ChatVault {
                     continue
                 }
 
+                if kind == "topic" {
+                    if let topic = message["tp"] as? String, Self.group(chat) == nil {
+                        try topicSet(chat, ref: ref(), direction: "in", topic: topic, name: text,
+                                     color: (message["color"] as? NSNumber)?.intValue ?? 0,
+                                     time: (message["time"] as? NSNumber)?.int64Value ?? 0)
+                    }
+
+                    try wipe(file)
+                    continue
+                }
+
                 let ref = ref()
                 var record: [String: Any] = [
                     "t": kind.isEmpty ? "msg" : "member", "kind": kind, "dir": "in", "ref": ref,
@@ -214,6 +235,10 @@ final class ChatVault {
                 if let quote = Self.quote(message["qa"] as? String, message["qh"] as? String) {
                     record["qa"] = quote.author
                     record["qh"] = quote.hash
+                }
+
+                if let topic = message["tp"] as? String {
+                    record["tp"] = topic
                 }
 
                 try append(chat, record)
@@ -270,7 +295,7 @@ final class ChatVault {
                 guard let id = Self.chat(String(name.dropLast(4))) else { continue }
                 guard var conversation = try conversation(id, create: false) else { continue }
 
-                if conversation.unread < 0 {
+                if conversation.unread < 0 || conversation.topics == nil {
                     let full = History(chat: id, epoch: 0)
 
                     try load(id, conversation, full)
@@ -278,12 +303,17 @@ final class ChatVault {
                 }
 
                 var last: Any = NSNull()
+                var topics: Any = [Any]()
 
                 if let data = conversation.last, let message = try? JSONSerialization.jsonObject(with: data) {
                     last = message
                 }
 
-                out.append(["peer": id, "unread": conversation.unread, "last": last])
+                if let data = conversation.topics, let list = try? JSONSerialization.jsonObject(with: data) {
+                    topics = list
+                }
+
+                out.append(["peer": id, "unread": conversation.unread, "last": last, "topics": topics])
             }
 
             return out
@@ -301,7 +331,7 @@ final class ChatVault {
 
             try load(chat, conversation, current)
 
-            if fresh, conversation.unread < 0 {
+            if fresh, conversation.unread < 0 || conversation.topics == nil {
                 try summarize(chat, &conversation, current)
             }
 
@@ -318,6 +348,17 @@ final class ChatVault {
                 out["messages"] = current.messages
             }
 
+            let meta = Self.topicMeta(conversation)
+
+            out["topics"] = current.topics.map { topic -> [String: Any] in
+                var entry = topic
+                let id = topic["id"] as? String ?? ""
+
+                entry["unread"] = (meta[id]?["unread"] as? NSNumber)?.int64Value ?? 0
+
+                return entry
+            }
+
             if current.damaged {
                 out["warning"] = "Part of this chat could not be read, it was damaged or tampered with."
             } else if conversation.flags & Self.truncated != 0 {
@@ -328,7 +369,7 @@ final class ChatVault {
         }
     }
 
-    func send(_ chat: String, text: String, quote: Quote? = nil) throws -> Int64 {
+    func send(_ chat: String, text: String, quote: Quote? = nil, topic: String = "") throws -> Int64 {
         return try locked {
             let ref = ref()
             var record: [String: Any] = [
@@ -342,6 +383,11 @@ final class ChatVault {
                 record["qh"] = quote.hash
                 entry["qa"] = quote.author
                 entry["qh"] = quote.hash
+            }
+
+            if !topic.isEmpty {
+                record["tp"] = topic
+                entry["tp"] = topic
             }
 
             try append(chat, record)
@@ -403,14 +449,86 @@ final class ChatVault {
     }
 
     private func summarize(_ chat: String, _ conversation: inout Conversation, _ full: History) throws {
+        var topics = [[String: Any]]()
+
+        for topic in full.topics {
+            var entry = topic
+            let id = topic["id"] as? String ?? ""
+
+            entry["read"] = full.reads[id] ?? conversation.read
+            entry["unread"] = full.unreads[id] ?? 0
+
+            if let last = full.messages.last(where: { $0["tp"] as? String == id }) {
+                entry["last"] = last
+            }
+
+            topics.append(entry)
+        }
+
         conversation.unread = full.unread
-        conversation.last = try full.messages.last.map { try JSONSerialization.data(withJSONObject: $0) }
+        conversation.last = try full.messages.last(where: { $0["tp"] == nil })
+            .map { try JSONSerialization.data(withJSONObject: $0) }
+        conversation.topics = try JSONSerialization.data(withJSONObject: topics)
         open[chat] = conversation
         try save(chat, conversation)
     }
 
+    private static func topicMeta(_ conversation: Conversation) -> [String: [String: Any]] {
+        guard let data = conversation.topics,
+              let list = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] else { return [:] }
+
+        var out = [String: [String: Any]]()
+
+        for entry in list {
+            if let id = entry["id"] as? String {
+                out[id] = entry
+            }
+        }
+
+        return out
+    }
+
+    private static func topicsUpdate(_ topics: Data, _ record: [String: Any], count: UInt64) throws -> Data {
+        var list = try JSONSerialization.jsonObject(with: topics) as? [[String: Any]] ?? []
+        let topic = record["tp"] as? String ?? ""
+        let found = list.first { $0["id"] as? String == topic }
+
+        if record["t"] as? String != "topic" {
+            if let at = list.firstIndex(where: { $0["id"] as? String == topic }) {
+                list[at]["last"] = Self.message(record)
+
+                if record["dir"] as? String == "in" {
+                    list[at]["unread"] = ((list[at]["unread"] as? NSNumber)?.int64Value ?? 0) + 1
+                }
+            }
+
+            return try JSONSerialization.data(withJSONObject: list)
+        }
+
+        list.removeAll { $0["id"] as? String == topic }
+
+        if let name = record["name"] as? String, !name.isEmpty {
+            var entry: [String: Any] = [
+                "id": topic, "name": name, "color": (record["color"] as? NSNumber)?.intValue ?? 0,
+                "read": (found?["read"] as? NSNumber)?.uint64Value ?? count,
+                "unread": (found?["unread"] as? NSNumber)?.int64Value ?? 0,
+            ]
+
+            if let last = found?["last"] {
+                entry["last"] = last
+            }
+
+            list.append(entry)
+        }
+
+        return try JSONSerialization.data(withJSONObject: list)
+    }
+
     private func load(_ chat: String, _ conversation: Conversation, _ current: History) throws {
         current.stamp += 1
+        current.reads = Self.topicMeta(conversation).mapValues {
+            ($0["read"] as? NSNumber)?.uint64Value ?? conversation.read
+        }
 
         let file = try folder(dir).appendingPathComponent("\(chat).log")
         guard let handle = try? FileHandle(forReadingFrom: file) else { return }
@@ -452,8 +570,14 @@ final class ChatVault {
         case "msg":
             let message = Self.message(record)
 
-            if message["dir"] as? String == "in", current.seq >= read {
-                current.unread += 1
+            if message["dir"] as? String == "in" {
+                if let topic = message["tp"] as? String {
+                    if current.seq >= current.reads[topic] ?? read {
+                        current.unreads[topic, default: 0] += 1
+                    }
+                } else if current.seq >= read {
+                    current.unread += 1
+                }
             }
 
             current.index[ref] = current.messages.count
@@ -462,6 +586,17 @@ final class ChatVault {
 
             if message["qh"] != nil {
                 Self.quote(current, current.messages.count - 1)
+            }
+        case "topic":
+            let topic = record["tp"] as? String ?? ""
+            let name = record["name"] as? String ?? ""
+
+            current.topics.removeAll { $0["id"] as? String == topic }
+
+            if !name.isEmpty {
+                current.topics.append([
+                    "id": topic, "name": name, "color": (record["color"] as? NSNumber)?.intValue ?? 0,
+                ])
             }
         case "member":
             current.messages.append(Self.message(record))
@@ -548,6 +683,10 @@ final class ChatVault {
             message["qh"] = found.hash
         }
 
+        if let topic = record["tp"] as? String {
+            message["tp"] = topic
+        }
+
         return message
     }
 
@@ -559,6 +698,9 @@ final class ChatVault {
 
         for other in stride(from: at - 1, through: 0, by: -1) {
             guard current.messages[other]["kind"] == nil else { continue }
+            guard current.messages[other]["tp"] as? String == current.messages[at]["tp"] as? String else {
+                continue
+            }
             guard wrote(current.messages[other], wanted.author) else { continue }
 
             if current.digests[other] == nil {
@@ -593,27 +735,78 @@ final class ChatVault {
         return sum.prefix(8).map { String(format: "%02x", $0) }.joined()
     }
 
-    func sendData(_ chat: String, media: String, name: String, data: Data) throws -> (Int64, String) {
+    func sendData(_ chat: String, media: String, name: String, data: Data,
+                  topic: String = "") throws -> (Int64, String) {
         try locked {
             let ref = ref()
             let file = try dataWrite(chat, ref: ref, data)
-
-            try queue(UInt64(bitPattern: ref), data)
-
-            try append(chat, [
+            var record: [String: Any] = [
                 "t": "msg", "dir": "out", "ref": ref, "text": "", "data": file, "media": media,
                 "name": name, "time": Int64(Date().timeIntervalSince1970 * 1000),
-            ])
+            ]
+            var entry: [String: Any] = ["peer": chat, "ref": ref, "data": file, "media": media, "name": name]
+
+            if !topic.isEmpty {
+                record["tp"] = topic
+                entry["tp"] = topic
+            }
+
+            try queue(UInt64(bitPattern: ref), data)
+            try append(chat, record)
 
             guard Self.group(chat) == nil else { return (ref, file) }
 
             try exclusive {
                 var list = try outboxList()
-                list.append(["peer": chat, "ref": ref, "data": file, "media": media, "name": name])
+                list.append(entry)
                 try outboxSave(list)
             }
 
             return (ref, file)
+        }
+    }
+
+    func topic(_ chat: String, topic: String, name: String, color: Int) throws -> Int64 {
+        try locked {
+            guard Self.group(chat) == nil else {
+                throw Failure(description: "Groups have no topics.")
+            }
+
+            let ref = ref()
+
+            try topicSet(chat, ref: ref, direction: "out", topic: topic, name: name, color: color,
+                         time: Int64(Date().timeIntervalSince1970 * 1000))
+
+            try exclusive {
+                var list = try outboxList()
+                list.append([
+                    "peer": chat, "ref": ref, "op": "topic", "tp": topic, "name": name, "color": color,
+                ])
+                try outboxSave(list)
+            }
+
+            return ref
+        }
+    }
+
+    private func topicSet(_ chat: String, ref: Int64, direction: String, topic: String, name: String,
+                          color: Int, time: Int64) throws {
+        try append(chat, [
+            "t": "topic", "ref": ref, "dir": direction, "tp": topic, "name": name, "color": color,
+            "time": time,
+        ])
+
+        guard name.isEmpty, let conversation = try conversation(chat, create: false) else { return }
+
+        let full = History(chat: chat, epoch: 0)
+
+        try load(chat, conversation, full)
+
+        for message in full.messages {
+            guard message["tp"] as? String == topic else { continue }
+            guard let data = message["data"] as? String, !data.isEmpty else { continue }
+
+            try wipe(try folder(dir).appendingPathComponent(data))
         }
     }
 
@@ -815,12 +1008,34 @@ final class ChatVault {
                                 key: outboxKey(), aad: Self.receiptsAad))
     }
 
-    func read(_ chat: String) throws {
+    func read(_ chat: String, topic: String = "") throws {
         try locked {
             guard var conversation = try conversation(chat, create: false) else { return }
 
-            conversation.read = conversation.count
-            conversation.unread = 0
+            if topic.isEmpty {
+                conversation.read = conversation.count
+                conversation.unread = 0
+                open[chat] = conversation
+                try save(chat, conversation)
+                return
+            }
+
+            if conversation.topics == nil {
+                let full = History(chat: chat, epoch: 0)
+
+                try load(chat, conversation, full)
+                try summarize(chat, &conversation, full)
+            }
+
+            guard let data = conversation.topics,
+                  var list = try JSONSerialization.jsonObject(with: data) as? [[String: Any]] else { return }
+
+            for at in list.indices where list[at]["id"] as? String == topic {
+                list[at]["read"] = conversation.count
+                list[at]["unread"] = 0
+            }
+
+            conversation.topics = try JSONSerialization.data(withJSONObject: list)
             open[chat] = conversation
             try save(chat, conversation)
         }
@@ -958,11 +1173,15 @@ final class ChatVault {
 
         let type = record["t"] as? String
 
-        if type == "msg" || type == "member" {
+        if record["tp"] != nil {
+            if let topics = conversation.topics {
+                conversation.topics = try Self.topicsUpdate(topics, record, count: conversation.count)
+            }
+        } else if type == "msg" || type == "member" {
             conversation.last = try JSONSerialization.data(withJSONObject: Self.message(record))
         }
 
-        if type == "msg", record["dir"] as? String == "in", conversation.unread >= 0 {
+        if type == "msg", record["tp"] == nil, record["dir"] as? String == "in", conversation.unread >= 0 {
             conversation.unread += 1
         }
 
@@ -1025,7 +1244,7 @@ final class ChatVault {
         if plain.count >= 68 {
             let size = Int(plain[64]) << 24 | Int(plain[65]) << 16 | Int(plain[66]) << 8 | Int(plain[67])
 
-            guard plain.count == 68 + size || plain.count == 72 + size else {
+            guard plain.count == 68 + size || plain.count == 72 + size || plain.count >= 76 + size else {
                 throw Failure(description: "invalid conversation key")
             }
 
@@ -1035,9 +1254,22 @@ final class ChatVault {
                 conversation.last = Data(plain[68..<(68 + size)])
             }
 
-            if plain.count == 72 + size {
+            if plain.count >= 72 + size {
                 conversation.ambry = UInt32(plain[68 + size]) << 24 | UInt32(plain[69 + size]) << 16 |
                     UInt32(plain[70 + size]) << 8 | UInt32(plain[71 + size])
+            }
+
+            if plain.count >= 76 + size {
+                let topics = Int(plain[72 + size]) << 24 | Int(plain[73 + size]) << 16 |
+                    Int(plain[74 + size]) << 8 | Int(plain[75 + size])
+
+                guard plain.count == 76 + size + topics else {
+                    throw Failure(description: "invalid conversation key")
+                }
+
+                if topics > 0 {
+                    conversation.topics = Data(plain[(76 + size)..<(76 + size + topics)])
+                }
             }
         }
 
@@ -1048,6 +1280,7 @@ final class ChatVault {
             conversation.count = count
             conversation.unread = -1
             conversation.last = nil
+            conversation.topics = nil
             try save(chat, conversation)
         }
 
@@ -1070,6 +1303,8 @@ final class ChatVault {
         plain.append(contentsOf: Self.bytes(UInt32(conversation.last?.count ?? 0)))
         plain.append(conversation.last ?? Data())
         plain.append(contentsOf: Self.bytes(conversation.ambry))
+        plain.append(contentsOf: Self.bytes(UInt32(conversation.topics?.count ?? 0)))
+        plain.append(conversation.topics ?? Data())
 
         try store("key.\(chat)",
                   seal(plain, to: agreementPublic(), info: Self.keyAad + Self.label(chat)),

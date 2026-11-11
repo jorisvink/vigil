@@ -55,6 +55,18 @@ kind: 1 image, 2 file, 3 voice, 4 avatar
 ```
 
 ```
+blob in a topic (one-to-one only, kind has 0x80 set)
++------+-----+----------------+----------+----------------------+
+| kind | len | name[126]      | topic    | data (1 .. 4 MiB)    |
++------+-----+----------------+----------+----------------------+
+  1      1     126              8          VIGIL_CHAT_DATA_MAX
+```
+
+A peer without `TOPIC` does not know kind 0x80 and drops data in a topic,
+see [chat.md](chat.md). Data in topic 0, in a group, or an avatar in a
+topic is dropped too.
+
+```
 chunk packet, 1172 bytes (told apart from a frame by its length)
 +----------+---------+---------+---------+------------------------+
 | id       | index   | count   | size    | data[1152]             |
@@ -85,7 +97,7 @@ A complete parcel is acked with `base = count` and `latest = count - 1`.
 
 ```mermaid
 flowchart TD
-    A[vigil_chat_data_send / vigil_chat_group_data_send] --> B{accepting?<br/>kind, name valid?<br/>not avatar?}
+    A[vigil_chat_data_send / vigil_chat_topic_data_send /<br/>vigil_chat_group_data_send] --> B{accepting?<br/>kind, name valid?<br/>not avatar?}
     B -- no --> X[-1]
     B -- yes --> C{chat_blob_room}
     C -- same peer + ref held --> D[0, no copy]
@@ -227,7 +239,7 @@ only while the tunnel is online.
 
 ```mermaid
 flowchart TD
-    A[chat_data_arrived] --> V{kind known, name valid,<br/>avatar <= 32 KiB}
+    A[chat_data_arrived] --> V{kind known, topic valid,<br/>name valid, avatar <= 32 KiB}
     V -- no --> DC[seen with token 0<br/>ACK id + full DATA_ACK<br/>no event for the platform]
     V -- yes --> Q{parcels + size > 16 MiB}
     Q -- yes --> W[drop rxfer, no ack<br/>20 s sender stall, resend from chunk 0]
@@ -257,7 +269,7 @@ stateDiagram-v2
 
 `vigil_chat_data_take()` returns -1 for an unknown token or a buffer
 smaller than the data. It copies out the data only, the 128 byte head
-stays in the core.
+and the topic stay in the core.
 
 ## Platform contract
 
@@ -266,7 +278,8 @@ event                                 platform
 ────────────────────────────────────  ──────────────────────────────────────
 "data"   peer group token size          vigil_chat_data_take(token, buf, size)
          kind name nick signed          store in chat vault
-         kind: image | voice | file     zero buf
+         topic if in a topic            zero buf
+         kind: image | voice | file
                                         vigil_chat_stored(token)
 
 "avatar" peer group token size          same, avatar store
