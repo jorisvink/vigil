@@ -22,6 +22,7 @@ import UserNotifications
 
     if let peer = info["chat"] as? String {
       VigilPlugin.requested = peer
+      VigilPlugin.requestedTopic = info["topic"] as? String
     }
 
     if let caller = (info["call"] as? String).flatMap({ UInt8($0, radix: 16) }) {

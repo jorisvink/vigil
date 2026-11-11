@@ -42,6 +42,7 @@ object Chats {
     var opened = ""
         private set
     var requested = ""
+    var requestedTopic = ""
 
     @Volatile
     var local = ""
@@ -151,7 +152,10 @@ object Chats {
 
                         if (alerts(service, id, event.optBoolean("mention"))) {
                             unseen[id] = (unseen[id] ?: 0) + 1
-                            notify(service, id, peer, nick, event.optString("signed"), text, time)
+                            notify(
+                                service, id, peer, nick, event.optString("signed"), text, time,
+                                event.optString("topic")
+                            )
                         }
                     }
                     "data" -> {
@@ -188,7 +192,10 @@ object Chats {
 
                         if (alerts(service, id, false)) {
                             unseen[id] = (unseen[id] ?: 0) + 1
-                            notify(service, id, peer, nick, event.optString("signed"), summary(media, name), time)
+                            notify(
+                                service, id, peer, nick, event.optString("signed"), summary(media, name), time,
+                                event.optString("topic")
+                            )
                         }
                     }
                     "topic" -> {
@@ -236,7 +243,7 @@ object Chats {
                         stored(event.getLong("token"))
                     }
                     "leave" -> {
-                        left(vault, id, Calls.hex(peer))
+                        left(service, vault, id, Calls.hex(peer))
                         stored(event.getLong("token"))
                     }
                     "ambry" -> vault.deliver(
@@ -261,7 +268,7 @@ object Chats {
         return vault.groupCheck(chat, Calls.hex(peer), event.getInt("serial"))
     }
 
-    private fun roster(context: Context, vault: ChatVault, chat: String, peer: Int, event: JSONObject) {
+    private fun roster(service: VigilVpnService, vault: ChatVault, chat: String, peer: Int, event: JSONObject) {
         val owner = Calls.hex(peer)
         val info = vault.groupInfo(chat)
         val serial = event.getInt("serial")
@@ -299,14 +306,17 @@ object Chats {
         if (info == null || info.getString("state") == "removed") {
             if (state == "open") {
                 vault.deliver(chat, peer, "", name, time, "added")
+                announce(service, chat, peer, "added you to ${name.ifEmpty { "a group" }}")
             }
         } else {
             for (member in members.filter { it !in before && it != local }) {
                 vault.deliver(chat, member.toInt(16), "", "", time, "joined")
+                announce(service, chat, member.toInt(16), "joined the group")
             }
 
             for (member in before.filter { it !in members && it != local }) {
                 vault.deliver(chat, member.toInt(16), "", "", time, "left")
+                announce(service, chat, member.toInt(16), "left the group")
             }
 
             if (name != info.optString("name")) {
@@ -317,6 +327,10 @@ object Chats {
         if (state != "open") {
             vault.deliver(chat, peer, "", "", time, state)
             vault.groupDrop(chat, before + members)
+
+            if (state == "removed") {
+                announce(service, chat, peer, "removed you from the group")
+            }
         } else {
             vault.groupDrop(chat, before.filter { it !in members })
         }
@@ -324,7 +338,7 @@ object Chats {
         namesChanged()
     }
 
-    private fun left(vault: ChatVault, chat: String, member: String) {
+    private fun left(service: VigilVpnService, vault: ChatVault, chat: String, member: String) {
         val info = vault.groupInfo(chat) ?: return
 
         if (info.getString("owner") != local || info.getString("state") != "open") {
@@ -343,6 +357,7 @@ object Chats {
         vault.groupSave(chat, info)
         vault.groupDrop(chat, listOf(member))
         vault.deliver(chat, member.toInt(16), "", "", System.currentTimeMillis(), "left")
+        announce(service, chat, member.toInt(16), "left the group")
 
         submit(vault, vault.rosterQueue(chat, info, local))
         namesChanged()
@@ -517,7 +532,9 @@ object Chats {
 
     fun json(context: Context): JSONObject {
         val pending = requested
+        val topic = requestedTopic
         requested = ""
+        requestedTopic = ""
 
         return JSONObject()
             .put("version", version)
@@ -526,6 +543,7 @@ object Chats {
             .put("unseen", unseen.values.sum())
             .put("hardware", vault(context).hardware)
             .put("open", pending.ifEmpty { JSONObject.NULL })
+            .put("openTopic", topic.ifEmpty { JSONObject.NULL })
     }
 
     @Synchronized
@@ -598,6 +616,15 @@ object Chats {
     private fun mutes(context: Context): JSONObject =
         JSONObject(prefs(context).getString("mutes", "{}") ?: "{}")
 
+    private fun announce(service: VigilVpnService, chat: String, peer: Int, text: String) {
+        if (!alerts(service, chat, false)) {
+            return
+        }
+
+        unseen[chat] = (unseen[chat] ?: 0) + 1
+        notify(service, chat, peer, "", "", text, System.currentTimeMillis(), "")
+    }
+
     private fun alerts(context: Context, id: String, mention: Boolean): Boolean {
         if (foreground && opened == id) {
             return false
@@ -634,7 +661,7 @@ object Chats {
 
     private fun notify(
         service: VigilVpnService, id: String, peer: Int, nick: String, signed: String, text: String,
-        time: Long
+        time: Long, topic: String
     ) {
         val name = sender(service, peer, nick, signed)
         val messages = shown.getOrPut(id) { mutableListOf() }
@@ -673,7 +700,7 @@ object Chats {
                     .build()
             )
 
-        builder.setContentIntent(launch(service, notification(id), id))
+        builder.setContentIntent(launch(service, notification(id), id, topic))
 
         service.getSystemService(NotificationManager::class.java)
             .notify(notification(id), builder.build())
@@ -711,10 +738,10 @@ object Chats {
         manager.notify(SUMMARY, builder.build())
     }
 
-    private fun launch(context: Context, code: Int, id: String): PendingIntent =
+    private fun launch(context: Context, code: Int, id: String, topic: String = ""): PendingIntent =
         PendingIntent.getActivity(
             context, code,
-            VigilVpnService.notified(context, ACTION_CHAT).putExtra(EXTRA_CHAT, id),
+            VigilVpnService.notified(context, ACTION_CHAT).putExtra(EXTRA_CHAT, id).putExtra(EXTRA_TOPIC, topic),
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
         )
 
@@ -737,6 +764,7 @@ object Chats {
 
     const val ACTION_CHAT = "se.sanctorum.vigil.CHAT"
     const val EXTRA_CHAT = "chat"
+    const val EXTRA_TOPIC = "topic"
     const val CHAT_LIST = "gospel"
 
     private const val TAG = "vigil"

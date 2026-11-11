@@ -820,7 +820,10 @@ class MainActivity : FlutterActivity() {
                 withMicrophone(service(VigilVpnService.ACTION_ANSWER), null)
             }
             VigilVpnService.ACTION_SHOW -> show()
-            Chats.ACTION_CHAT -> Chats.requested = intent.getStringExtra(Chats.EXTRA_CHAT) ?: ""
+            Chats.ACTION_CHAT -> {
+                Chats.requested = intent.getStringExtra(Chats.EXTRA_CHAT) ?: ""
+                Chats.requestedTopic = intent.getStringExtra(Chats.EXTRA_TOPIC) ?: ""
+            }
         }
     }
 

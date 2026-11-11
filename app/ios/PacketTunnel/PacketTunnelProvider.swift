@@ -346,7 +346,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
                        event["mention"] as? Bool == true || ChatVault.muted(chat) == 0 {
                         unseen[chat, default: 0] += 1
                         notifyChat(chat, peer, nick, event["signed"] as? String ?? "", text,
-                                   badge: unseen.values.reduce(0, +))
+                                   topic: event["topic"] as? String ?? "", badge: unseen.values.reduce(0, +))
                     }
                 case "topic":
                     guard let topic = event["topic"] as? String else { continue }
@@ -367,12 +367,17 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
                                       topic: topic,
                                       color: Int(event["color"] as? String ?? "", radix: 16) ?? 0)
                     stored((event["token"] as? NSNumber)?.uint64Value ?? 0)
-                case "roster":
-                    try roster(chat, peer, event)
+                case "roster", "leave":
+                    let changes = try kind == "roster" ? roster(chat, peer, event) : left(chat, hex)
+
                     stored((event["token"] as? NSNumber)?.uint64Value ?? 0)
-                case "leave":
-                    try left(chat, hex)
-                    stored((event["token"] as? NSNumber)?.uint64Value ?? 0)
+
+                    for (member, text) in changes {
+                        guard defaults.string(forKey: "chatOpen") != chat, ChatVault.muted(chat) == 0 else { continue }
+
+                        unseen[chat, default: 0] += 1
+                        notifyChat(chat, member, "", "", text, topic: "", badge: unseen.values.reduce(0, +))
+                    }
                 case "ambry":
                     try vault.deliver(chat: chat, peer: peer, nick: "",
                                       text: event["generation"] as? String ?? "",
@@ -414,7 +419,8 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
                     if defaults.string(forKey: "chatOpen") != chat, ChatVault.muted(chat) == 0 {
                         unseen[chat, default: 0] += 1
                         notifyChat(chat, peer, nick, event["signed"] as? String ?? "",
-                                   Self.summary(media, name), badge: unseen.values.reduce(0, +))
+                                   Self.summary(media, name), topic: event["topic"] as? String ?? "",
+                                   badge: unseen.values.reduce(0, +))
                     }
                 case "name":
                     try vault.peerName(peer, nick: event["nick"] as? String ?? "",
@@ -526,7 +532,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         return try ChatVault.shared.groupCheck(chat, peer: peer, serial: serial)
     }
 
-    private func roster(_ chat: String, _ peer: UInt8, _ event: [String: Any]) throws {
+    private func roster(_ chat: String, _ peer: UInt8, _ event: [String: Any]) throws -> [(UInt8, String)] {
         let vault = ChatVault.shared
         let owner = ChatVault.hex(peer)
         let info = try vault.groupInfo(chat)
@@ -534,8 +540,10 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         let time = Int64(Date().timeIntervalSince1970 * 1000)
         let previous = info?["state"] as? String ?? ""
 
-        if let info, serial <= (info["serial"] as? NSNumber)?.intValue ?? 0 { return }
-        if previous == "left" || previous == "ended" { return }
+        if let info, serial <= (info["serial"] as? NSNumber)?.intValue ?? 0 { return [] }
+        if previous == "left" || previous == "ended" { return [] }
+
+        var changes = [(UInt8, String)]()
 
         let members = event["members"] as? [String] ?? []
         let before = info.map { ChatVault.members($0) } ?? []
@@ -550,17 +558,20 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         if info == nil || previous == "removed" {
             if state == "open" {
                 try vault.deliver(chat: chat, peer: peer, nick: "", text: name, time: time, kind: "added")
+                changes.append((peer, "added you to \(name.isEmpty ? "a group" : name)"))
             }
         } else {
             for member in members where !before.contains(member) && member != local {
                 if let id = UInt8(member, radix: 16) {
                     try vault.deliver(chat: chat, peer: id, nick: "", text: "", time: time, kind: "joined")
+                    changes.append((id, "joined the group"))
                 }
             }
 
             for member in before where !members.contains(member) && member != local {
                 if let id = UInt8(member, radix: 16) {
                     try vault.deliver(chat: chat, peer: id, nick: "", text: "", time: time, kind: "left")
+                    changes.append((id, "left the group"))
                 }
             }
 
@@ -576,18 +587,24 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             try vault.groupDrop(chat, before.filter { !members.contains($0) })
         }
 
+        if state == "removed" {
+            changes.append((peer, "removed you from the group"))
+        }
+
         ChatVault.defaults.set(ChatVault.defaults.integer(forKey: "chatNames") + 1, forKey: "chatNames")
+
+        return changes
     }
 
-    private func left(_ chat: String, _ member: String) throws {
+    private func left(_ chat: String, _ member: String) throws -> [(UInt8, String)] {
         let vault = ChatVault.shared
 
         guard var info = try vault.groupInfo(chat), info["owner"] as? String == local,
-              info["state"] as? String == "open" else { return }
+              info["state"] as? String == "open" else { return [] }
 
         let members = ChatVault.members(info)
 
-        guard members.contains(member), let peer = UInt8(member, radix: 16) else { return }
+        guard members.contains(member), let peer = UInt8(member, radix: 16) else { return [] }
 
         info["members"] = members.filter { $0 != member }
         info["serial"] = ((info["serial"] as? NSNumber)?.intValue ?? 0) + 1
@@ -600,6 +617,8 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
 
         submitOutbox()
         ChatVault.defaults.set(ChatVault.defaults.integer(forKey: "chatNames") + 1, forKey: "chatNames")
+
+        return [(peer, "left the group")]
     }
 
     private func onMain(_ body: () -> Void) {
@@ -796,7 +815,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
     }
 
     private func notifyChat(_ chat: String, _ peer: UInt8, _ nick: String, _ signed: String, _ text: String,
-                            badge: Int) {
+                            topic: String, badge: Int) {
         let preview = ChatVault.defaults.object(forKey: "chatPreview") as? Bool ?? false
         let content = UNMutableNotificationContent()
         let body = preview ? text : "New message"
@@ -807,7 +826,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         content.sound = .default
         content.badge = NSNumber(value: badge)
         content.threadIdentifier = "chat-\(chat)"
-        content.userInfo = ["chat": chat]
+        content.userInfo = ["chat": chat, "topic": topic]
 
         UNUserNotificationCenter.current().add(
             UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil))

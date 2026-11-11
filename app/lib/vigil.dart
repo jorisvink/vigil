@@ -320,6 +320,7 @@ class Chats {
   int get unseen => json['unseen'] as int? ?? 0;
   bool get hardware => json['hardware'] as bool? ?? true;
   String? get open => json['open'] as String?;
+  String? get openTopic => json['openTopic'] as String?;
 }
 
 class ChatMessage {

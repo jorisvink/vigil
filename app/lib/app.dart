@@ -127,10 +127,26 @@ class _ShellState extends State<Shell> with WidgetsBindingObserver {
         goTab(NavTab.gospel);
 
         if (peer != 'gospel') {
-          push(ChatPage(peer: peer), opaque: false);
+          unawaited(_openChat(peer, s.chats.openTopic ?? ''));
         }
       }
     });
+  }
+
+  Future<void> _openChat(String peer, String id) async {
+    ChatTopic? topic;
+
+    if (id.isNotEmpty) {
+      try {
+        final topics = (await Vigil.instance.chat(peer)).topics;
+
+        topic = topics.where((t) => t.id == id).firstOrNull;
+      } on VigilError catch (_) {
+        topic = null;
+      }
+    }
+
+    push(ChatPage(peer: peer, topic: topic), opaque: false);
   }
 
   @override

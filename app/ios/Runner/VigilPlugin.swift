@@ -23,6 +23,7 @@ final class VigilPlugin: NSObject, FlutterPlugin, UIDocumentPickerDelegate,
     private static let tunnelsKey = "tunnels"
 
     static var requested: String?
+    static var requestedTopic: String?
 
     private var version = 0
     private var avatars = 0
@@ -1609,7 +1610,9 @@ final class VigilPlugin: NSObject, FlutterPlugin, UIDocumentPickerDelegate,
         let defaults = ChatVault.defaults
         let unseen = defaults.dictionary(forKey: "chatUnseen") as? [String: Int] ?? [:]
         let open = Self.requested
+        let topic = Self.requestedTopic
         Self.requested = nil
+        Self.requestedTopic = nil
 
         badge(unseen.values.reduce(0, +))
 
@@ -1620,6 +1623,7 @@ final class VigilPlugin: NSObject, FlutterPlugin, UIDocumentPickerDelegate,
             "unseen": unseen.values.reduce(0, +),
             "hardware": ChatVault.shared.hardware,
             "open": open ?? NSNull(),
+            "openTopic": topic ?? NSNull(),
         ] as [String: Any])
     }
 
