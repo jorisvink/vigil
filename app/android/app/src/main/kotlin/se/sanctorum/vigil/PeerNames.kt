@@ -4,12 +4,23 @@ import android.content.Context
 import org.json.JSONObject
 
 object PeerNames {
-    fun load(context: Context): JSONObject =
-        try {
+    fun load(context: Context): JSONObject {
+        val all = try {
             JSONObject(prefs(context).getString(KEY, null) ?: "{}")
         } catch (e: Exception) {
             JSONObject()
         }
+
+        val names = JSONObject()
+
+        for (key in all.keys()) {
+            if (key.matches(Regex("[0-9a-f]{2}"))) {
+                names.put(key, all.getString(key))
+            }
+        }
+
+        return names
+    }
 
     fun save(context: Context, names: JSONObject): JSONObject {
         val clean = JSONObject()

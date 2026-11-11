@@ -1795,8 +1795,10 @@ final class ChatVault {
     }
 
     static func names() -> [String: String] {
-        if let names = defaults.dictionary(forKey: namesKey) as? [String: String] { return names }
-        return UserDefaults.standard.dictionary(forKey: namesKey) as? [String: String] ?? [:]
+        let all = defaults.dictionary(forKey: namesKey) as? [String: String] ??
+            UserDefaults.standard.dictionary(forKey: namesKey) as? [String: String] ?? [:]
+
+        return all.filter { $0.key.count == 2 && UInt8($0.key, radix: 16) != nil && $0.key == $0.key.lowercased() }
     }
 
     static func save(_ names: [String: Any]) -> [String: String] {

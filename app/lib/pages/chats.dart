@@ -106,6 +106,12 @@ var _voiceRate = 1.0;
     return (Liveness.pending, 'CONNECTING', Palette.amber);
   }
 
+  final around = members.where((m) => _reachable(status, m.id)).length;
+
+  if (around > 0) {
+    return (Liveness.off, '$around OF ${members.length} AROUND', Palette.fg2);
+  }
+
   return (Liveness.off, '${members.length + 1} MEMBERS', Palette.fg2);
 }
 
@@ -186,9 +192,18 @@ Widget chatDot(Status status, String peer, {double size = 8}) {
   return StateDot(state, size: size);
 }
 
-bool _reachable(Status status, String peer) =>
-    (status.call?.peers.contains(peer) ?? false) ||
-    (status.chat?.peer(peer)?.present ?? false);
+bool _reachable(Status status, String peer) {
+  if (!isGroup(peer)) {
+    return (status.call?.peers.contains(peer) ?? false) ||
+        (status.chat?.peer(peer)?.present ?? false);
+  }
+
+  if (!(Vigil.instance.group(peer)?.open ?? false)) {
+    return false;
+  }
+
+  return groupMembers(status, peer).any((m) => _reachable(status, m.id));
+}
 
 String sender(ChatMessage message) {
   final vigil = Vigil.instance;

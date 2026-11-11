@@ -660,9 +660,13 @@ class Vigil {
 
   Future<void> _loadNames(String? names) async {
     final raw = await _invoke('names', names);
-    _names = (jsonDecode(raw.isEmpty ? '{}' : raw) as Map<String, dynamic>).map(
-      (k, v) => MapEntry(k, v as String),
-    );
+    final all = jsonDecode(raw.isEmpty ? '{}' : raw) as Map<String, dynamic>;
+
+    _names = {
+      for (final entry in all.entries)
+        if (RegExp(r'^[0-9a-f]{2}$').hasMatch(entry.key))
+          entry.key: entry.value as String,
+    };
     _publish(_last);
   }
 
