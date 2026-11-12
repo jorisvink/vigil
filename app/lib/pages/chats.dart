@@ -106,7 +106,7 @@ var _voiceRate = 1.0;
     return (Liveness.pending, 'CONNECTING', Palette.amber);
   }
 
-  final around = members.where((m) => _reachable(status, m.id)).length;
+  final around = members.where((m) => m.around).length;
 
   if (around > 0) {
     return (Liveness.off, '$around OF ${members.length} AROUND', Palette.fg2);
@@ -116,11 +116,12 @@ var _voiceRate = 1.0;
 }
 
 class ChatMember {
-  ChatMember(this.id, this.peer, this.chat);
+  ChatMember(this.id, this.peer, this.chat, this.around);
 
   final String id;
   final ChatPeer? peer;
   final String chat;
+  final bool around;
 
   bool get online => peer?.online ?? false;
   String get link => peer?.link ?? 'none';
@@ -175,7 +176,8 @@ List<ChatMember> groupMembers(Status status, String chat) {
 
   return [
     for (final id in Vigil.instance.group(chat)?.members ?? const <String>[])
-      if (id != own) ChatMember(id, status.chat?.peer(id), chat),
+      if (id != own)
+        ChatMember(id, status.chat?.peer(id), chat, _reachable(status, id)),
   ];
 }
 
@@ -202,7 +204,7 @@ bool _reachable(Status status, String peer) {
     return false;
   }
 
-  return groupMembers(status, peer).any((m) => _reachable(status, m.id));
+  return groupMembers(status, peer).any((m) => m.around);
 }
 
 String sender(ChatMessage message) {
@@ -1825,13 +1827,17 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
           final open = group?.open ?? false;
           final members = groupMembers(status, peer);
 
-          members.sort((a, b) {
-            if (a.online && !b.online) {
-              return -1;
-            }
+          int rank(ChatMember m) => m.online
+              ? 0
+              : m.around
+              ? 1
+              : 2;
 
-            if (!a.online && b.online) {
-              return 1;
+          members.sort((a, b) {
+            final order = rank(a) - rank(b);
+
+            if (order != 0) {
+              return order;
             }
 
             return a.id.compareTo(b.id);
@@ -1845,8 +1851,8 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
               const SizedBox(height: 6),
               Text(
                 '${owner ? 'YOURS' : 'OWNED BY ${vigil.name(group?.owner ?? '').toUpperCase()}'}'
-                ' · ${members.where((m) => m.online).length} OF '
-                '${members.length} ONLINE',
+                ' · ${members.where((m) => m.online || m.around).length} OF '
+                '${members.length} AROUND',
                 style: Styles.rubric,
                 overflow: TextOverflow.ellipsis,
               ),
@@ -2622,6 +2628,7 @@ class _Member extends StatelessWidget {
             'p2p' => (Liveness.online, 'ONLINE · P2P', Palette.good),
             'relay' => (Liveness.online, 'ONLINE · RELAY', Palette.good),
             'connecting' => (Liveness.pending, 'CONNECTING', Palette.amber),
+            _ when member.around => (Liveness.off, 'AROUND', Palette.fg2),
             _ => (Liveness.off, owner ? 'OWNER' : 'OFFLINE', Palette.dim),
           };
 
@@ -2630,7 +2637,10 @@ class _Member extends StatelessWidget {
       onTap: onTap,
       child: Row(
         children: [
-          StateDot(state),
+          if (state == Liveness.off && member.around)
+            const AroundDot()
+          else
+            StateDot(state),
           const SizedBox(width: 12),
           Avatar(member.id),
           Expanded(
