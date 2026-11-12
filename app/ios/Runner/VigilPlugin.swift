@@ -1415,8 +1415,18 @@ final class VigilPlugin: NSObject, FlutterPlugin, UIDocumentPickerDelegate,
 
         switch call.method {
         case "chats":
+            let before = defaults.dictionary(forKey: "chatUnseen") as? [String: Int] ?? [:]
+
             try vault.merge()
-            return json(try vault.conversations())
+
+            let list = try vault.conversations()
+            let known = Set(list.compactMap { $0["peer"] as? String })
+
+            for chat in before.keys where !known.contains(chat) {
+                seen(chat)
+            }
+
+            return json(list)
         case "chat":
             let epoch = (args["epoch"] as? NSNumber)?.int64Value ?? 0
             let stamp = (args["stamp"] as? NSNumber)?.int64Value ?? 0
@@ -1566,6 +1576,7 @@ final class VigilPlugin: NSObject, FlutterPlugin, UIDocumentPickerDelegate,
 
             try vault.delete(hex)
             ChatVault.mute(hex, until: 0)
+            seen(hex)
             if group == nil {
                 VigilCall.shared.send?("chat-forget \(hex)")
             }

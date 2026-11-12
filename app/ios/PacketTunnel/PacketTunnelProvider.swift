@@ -341,6 +341,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
               !events.isEmpty else { return }
 
         var unseen = defaults.dictionary(forKey: "chatUnseen") as? [String: Int] ?? [:]
+        var fresh = [String: Int]()
 
         for event in events {
             guard let hex = event["peer"] as? String,
@@ -377,6 +378,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
                     if defaults.string(forKey: "chatOpen") != chat,
                        event["mention"] as? Bool == true || ChatVault.muted(chat) == 0 {
                         unseen[chat, default: 0] += 1
+                        fresh[chat, default: 0] += 1
                         notifyChat(chat, peer, nick, event["signed"] as? String ?? "", text,
                                    topic: event["topic"] as? String ?? "", badge: unseen.values.reduce(0, +))
                     }
@@ -408,6 +410,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
                         guard defaults.string(forKey: "chatOpen") != chat, ChatVault.muted(chat) == 0 else { continue }
 
                         unseen[chat, default: 0] += 1
+                        fresh[chat, default: 0] += 1
                         notifyChat(chat, member, "", "", text, topic: "", badge: unseen.values.reduce(0, +))
                     }
                 case "ambry":
@@ -450,6 +453,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
 
                     if defaults.string(forKey: "chatOpen") != chat, ChatVault.muted(chat) == 0 {
                         unseen[chat, default: 0] += 1
+                        fresh[chat, default: 0] += 1
                         notifyChat(chat, peer, nick, event["signed"] as? String ?? "",
                                    Self.summary(media, name), topic: event["topic"] as? String ?? "",
                                    badge: unseen.values.reduce(0, +))
@@ -488,7 +492,16 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             }
         }
 
-        defaults.set(unseen, forKey: "chatUnseen")
+        if !fresh.isEmpty {
+            unseen = defaults.dictionary(forKey: "chatUnseen") as? [String: Int] ?? [:]
+
+            for (chat, count) in fresh {
+                unseen[chat, default: 0] += count
+            }
+
+            defaults.set(unseen, forKey: "chatUnseen")
+        }
+
         defaults.set(defaults.integer(forKey: "chatVersion") + 1, forKey: "chatVersion")
     }
 

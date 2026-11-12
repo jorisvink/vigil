@@ -535,6 +535,7 @@ class MainActivity : FlutterActivity() {
 
                         vault.delete(id)
                         Chats.mute(this, id, 0L)
+                        Chats.seen(this, id)
                         Chats.changed()
                         ""
                     }
