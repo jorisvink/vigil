@@ -7,9 +7,9 @@ SRC=$TOPDIR/build/src
 
 . ./dist-build/fetch.sh
 
-LIBKYRKA_VERSION=1.2.1
+LIBKYRKA_VERSION=1.2.2
 LIBKYRKA_URL=https://sanctorum.se/releases/libkyrka-$LIBKYRKA_VERSION.tgz
-LIBKYRKA_SHA256=d9450f3b626d34e7f2ebcc7fae8eeb7b1633a67dcf6eb9ebbe0b8c0ce0529fd2
+LIBKYRKA_SHA256=942ff139f3e46446ae16a90ea556ccd363684c3b95b39048033d523634ed5294
 
 # libsodium, used by libkyrka for x25519, ed25519 and (on hosts) AES-GCM.
 LIBSODIUM_VERSION=1.0.22
