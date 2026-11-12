@@ -23,7 +23,7 @@ of metadata:
 
 - the public IP addresses and ports of your devices
 - which device ids in a flock are online, and when
-- which devices take part in which liturgy or group chat
+- which devices take part in which liturgy
 - which device wants to call or message which other device
 - when traffic is relayed through it, how much and when
 

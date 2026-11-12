@@ -9,6 +9,7 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.os.SystemClock
 import android.util.Log
 import org.json.JSONArray
 import org.json.JSONObject
@@ -19,6 +20,7 @@ object Chats {
     private var vault: ChatVault? = null
     private var session = 0L
     private var resubmit = 0L
+    private var sweep = 0L
     private var screen: BroadcastReceiver? = null
     private data class Shown(val text: String, val time: Long, val name: String, val key: String)
 
@@ -26,6 +28,7 @@ object Chats {
     private val unseen = mutableMapOf<String, Int>()
     private val receipts = mutableListOf<Receipt>()
     private val waiting = mutableSetOf<Long>()
+    private val around = mutableSetOf<String>()
 
     @Volatile
     var version = 0L
@@ -99,6 +102,7 @@ object Chats {
                     avatar?.fill(0)
                 }
 
+                vault.expire()
                 handover(vault, null)
                 session = chat.optLong("session")
             } catch (e: Exception) {
@@ -120,6 +124,24 @@ object Chats {
 
         for (receipt in pending) {
             receipt(vault, receipt)
+        }
+
+        val present = around(status)
+        val arrived = present - around
+
+        around.clear()
+        around.addAll(present)
+
+        try {
+            if (SystemClock.elapsedRealtime() >= sweep) {
+                sweep = SystemClock.elapsedRealtime() + SWEEP_MS
+                sweep(vault)
+                rejoin(vault, present)
+            } else if (arrived.isNotEmpty()) {
+                rejoin(vault, arrived)
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "failed to sweep the group outbox", e)
         }
 
         val events = JSONArray(String(Vigil.chatEvents(), Charsets.UTF_8))
@@ -292,6 +314,10 @@ object Chats {
             else -> "open"
         }
 
+        if (info == null && state != "open") {
+            return
+        }
+
         vault.groupSave(
             chat,
             JSONObject()
@@ -326,13 +352,13 @@ object Chats {
 
         if (state != "open") {
             vault.deliver(chat, peer, "", "", time, state)
-            vault.groupDrop(chat, before + members)
+            drop(vault.groupDrop(chat, before + members))
 
             if (state == "removed") {
                 announce(service, chat, peer, "removed you from the group")
             }
         } else {
-            vault.groupDrop(chat, before.filter { it !in members })
+            drop(vault.groupDrop(chat, before.filter { it !in members }))
         }
 
         namesChanged()
@@ -355,12 +381,69 @@ object Chats {
         info.put("serial", info.getInt("serial") + 1)
 
         vault.groupSave(chat, info)
-        vault.groupDrop(chat, listOf(member))
+        drop(vault.groupDrop(chat, listOf(member)))
         vault.deliver(chat, member.toInt(16), "", "", System.currentTimeMillis(), "left")
         announce(service, chat, member.toInt(16), "left the group")
 
         submit(vault, vault.rosterQueue(chat, info, local))
         namesChanged()
+    }
+
+    private fun sweep(vault: ChatVault) {
+        val dropped = vault.expire()
+
+        drop(dropped)
+
+        if (dropped.isNotEmpty()) {
+            changed()
+        }
+    }
+
+    fun drop(dropped: List<Pair<String, Long>>) {
+        for ((peer, ref) in dropped) {
+            if (!Vigil.chatDrop(peer.toInt(16), ref)) {
+                Log.w(TAG, "failed to drop $ref for $peer")
+            }
+        }
+    }
+
+    private fun around(status: JSONObject): Set<String> {
+        val around = mutableSetOf<String>()
+        val list = status.optJSONObject("chat")?.optJSONArray("peers") ?: JSONArray()
+        val calls = status.optJSONObject("call")?.optJSONArray("peers") ?: JSONArray()
+
+        for (i in 0 until list.length()) {
+            val peer = list.getJSONObject(i)
+
+            if (peer.optBoolean("present") || peer.optBoolean("online")) {
+                around.add(peer.getString("id"))
+            }
+        }
+
+        for (i in 0 until calls.length()) {
+            around.add(calls.getString(i))
+        }
+
+        return around
+    }
+
+    private fun rejoin(vault: ChatVault, around: Set<String>) {
+        val groups = vault.groups()
+
+        for (id in groups.keys()) {
+            val info = groups.getJSONObject(id)
+            val stale = info.optJSONArray("stale") ?: continue
+
+            if (info.getString("owner") != local) {
+                continue
+            }
+
+            for (member in (0 until stale.length()).map { stale.getString(it) }.filter { it in around }) {
+                vault.groupStale(id, member, false)
+                submit(vault, vault.rosterQueue(id, vault.groupInfo(id)!!, local, only = listOf(member)))
+                submit(vault, vault.topicQueue(id, local, listOf(member)))
+            }
+        }
     }
 
     fun submit(vault: ChatVault, entries: JSONArray) {
@@ -497,7 +580,7 @@ object Chats {
         }
     }
 
-    fun typing(id: String, on: Boolean, topic: String = "") {
+    fun typing(context: Context, id: String, on: Boolean, topic: String = "") {
         val group = ChatVault.group(id)
         val where = ChatVault.topicId(topic)
 
@@ -506,10 +589,12 @@ object Chats {
             return
         }
 
-        if (on) {
-            Vigil.chatGroupTyping(group.owner, group.id, where)
+        val info = if (on) vault(context).groupInfo(id) else null
+
+        if (info != null && info.getString("state") == "open") {
+            Vigil.chatGroupTyping(group.owner, group.id, where, ChatVault.roster(ChatVault.members(info)))
         } else {
-            Vigil.chatGroupTyping(0, 0L, 0L)
+            Vigil.chatGroupTyping(0, 0L, 0L, null)
         }
     }
 
@@ -523,7 +608,7 @@ object Chats {
 
         if (opened != "") {
             peer(opened)?.let { Vigil.chatOpen(it, false) }
-            typing(opened, false)
+            typing(context, opened, false)
             opened = ""
         }
 
@@ -775,4 +860,5 @@ object Chats {
     private const val SUMMARY = 0x0fff
     private const val GROUP = "se.sanctorum.vigil.chats"
     private const val RESUBMIT_MS = 10_000L
+    private const val SWEEP_MS = 15_000L
 }

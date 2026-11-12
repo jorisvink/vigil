@@ -184,8 +184,8 @@ stateDiagram-v2
     Done --> Sending: DATA_ACK, base < count, latest 0<br/>bits cleared, rate 200, from chunk 0
     Done --> [*]: ACK(id), event "delivered"
     Sending --> [*]: ACK(id)
-    Sending --> [*]: vigil_chat_forget / tunnel gone / avatar dropped
-    Done --> [*]: vigil_chat_forget / tunnel gone / avatar dropped
+    Sending --> [*]: vigil_chat_forget / vigil_chat_drop / tunnel gone / avatar dropped
+    Done --> [*]: vigil_chat_forget / vigil_chat_drop / tunnel gone / avatar dropped
 ```
 
 First chunk out: event `sent`. An avatar gets no `sent` or `delivered`,

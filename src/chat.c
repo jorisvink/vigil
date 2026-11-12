@@ -36,6 +36,7 @@
 #define CHAT_COMMAND_FORGET		2
 #define CHAT_COMMAND_STORED		3
 #define CHAT_COMMAND_DATA		4
+#define CHAT_COMMAND_DROP		5
 
 /* The events we have for the platform. */
 #define CHAT_EVENT_MESSAGE		1
@@ -57,6 +58,16 @@
 
 /* Time we keep a one-to-one tunnel alive. */
 #define CHAT_IDLE			(60 * 1000)
+
+/* Time we keep signaling a peer for a group message we just queued. */
+#define CHAT_RETRY_EAGER		(5 * 60 * 1000)
+
+/* Time we signal a peer for a group message each time we try again. */
+#define CHAT_RETRY_WINDOW		(60 * 1000)
+
+/* The first and the longest time between two tries for a group message. */
+#define CHAT_RETRY_START		(5 * 60 * 1000)
+#define CHAT_RETRY_MAX			(60 * 60 * 1000)
 
 /* Time until we consider a peer offline. */
 #define CHAT_RX_TIMEOUT			(30 * 1000)
@@ -207,6 +218,10 @@ struct chat_msg {
 	u_int64_t		age;
 	int			sent;
 	int			pending;
+
+	u_int64_t		retry;
+	u_int64_t		signal;
+	u_int64_t		backoff;
 
 	struct chat_blob	*blob;
 	struct chat_quote	quote;
@@ -484,7 +499,8 @@ static void	chat_name_report(struct chat_peer *);
 static int	chat_signal_check(struct chat_peer *);
 static void	chat_utf8_normalize(u_int8_t *, size_t);
 static void	chat_ambry_report(struct chat_tunnel *, u_int32_t);
-static void	chat_typing_state(u_int8_t *, u_int64_t *, u_int64_t *);
+static void	chat_typing_state(u_int8_t, u_int8_t *, u_int64_t *,
+		    u_int64_t *);
 static void	chat_heaven_input(struct kyrka_packet *, u_int64_t, void *);
 static void	chat_hb_recv(struct chat_tunnel *, struct vigil_chat_frame *);
 static void	chat_purgatory_input(struct kyrka_packet *, u_int64_t, void *);
@@ -506,11 +522,15 @@ static void		chat_frame_send(struct chat_tunnel *,
 			    struct chat_msg *);
 
 static void	chat_msg_free(struct chat_msg *);
+static int	chat_msg_signal(struct chat_msg *);
+static void	chat_msg_backoff(struct chat_msg *);
 static void	chat_msg_resend(struct chat_tunnel *);
 static void	chat_msg_queue(struct chat_tunnel *, struct chat_msg *);
 static int	chat_msg_waits(struct chat_tunnel *, struct chat_msg *);
 
 static void	chat_outbox_free(struct chat_peer *);
+static int	chat_outbox_signal(struct chat_peer *);
+static void	chat_outbox_drop(struct chat_peer *, u_int64_t);
 static void	chat_outbox_add(struct chat_peer *, u_int64_t,
 		    const struct chat_quote *, const struct chat_topic *,
 		    const struct chat_group *, const u_int8_t *, size_t);
@@ -625,10 +645,14 @@ static pthread_mutex_t			lock = PTHREAD_MUTEX_INITIALIZER;
 /* Our nickname, empty if we have none. */
 static char				nick[VIGIL_CHAT_NICK_MAX + 1];
 
-/* The group and topic we are typing in, an id of 0 means none. */
+/*
+ * The group and topic we are typing in, an id of 0 means none. Only the
+ * owner and members of that group learn about it.
+ */
 static u_int8_t				typing_owner = 0;
 static u_int64_t			typing_group = 0;
 static u_int64_t			typing_topic = 0;
+static u_int8_t				typing_members[VIGIL_CHAT_GROUP_ROSTER];
 
 /* Set when our flock signed our instance, we then send it to peers. */
 static int				named = 0;
@@ -1083,14 +1107,16 @@ vigil_chat_group_topic(u_int8_t peer, u_int64_t ref, u_int64_t id,
 }
 
 /*
- * Tell our peers we are typing in the given group and topic, an id of 0
- * means we are not typing in any group and a topic of 0 in none of its
- * topics.
+ * Tell the owner and the given members of the given group we are typing
+ * in it and the given topic, an id of 0 means we are not typing in any
+ * group and a topic of 0 in none of its topics.
  */
 void
-vigil_chat_group_typing(u_int8_t owner, u_int64_t id, u_int64_t topic)
+vigil_chat_group_typing(u_int8_t owner, u_int64_t id, u_int64_t topic,
+    const u_int8_t *members)
 {
 	PRECOND(id == 0 || (owner > 0 && owner < KYRKA_PEERS_PER_FLOCK));
+	PRECOND(id == 0 || members != NULL);
 
 	if (id == 0) {
 		owner = 0;
@@ -1101,6 +1127,12 @@ vigil_chat_group_typing(u_int8_t owner, u_int64_t id, u_int64_t topic)
 	typing_owner = owner;
 	typing_group = id;
 	typing_topic = topic;
+
+	if (id == 0) {
+		memset(typing_members, 0, sizeof(typing_members));
+	} else {
+		memcpy(typing_members, members, sizeof(typing_members));
+	}
 	vigil_unlock(&lock);
 
 	vigil_wake_signal();
@@ -1250,6 +1282,25 @@ vigil_chat_forget(u_int8_t peer)
 
 	ret = chat_command_queue(CHAT_COMMAND_FORGET,
 	    peer, 0, NULL, NULL, NULL, NULL, 0);
+
+	return (ret);
+}
+
+/*
+ * Drop the message with the given ref we hold for the given peer.
+ */
+int
+vigil_chat_drop(u_int8_t peer, u_int64_t ref)
+{
+	int		ret;
+
+	PRECOND(peer > 0 && peer < KYRKA_PEERS_PER_FLOCK);
+
+	if (!vigil_atomic_read(&accepting))
+		return (0);
+
+	ret = chat_command_queue(CHAT_COMMAND_DROP,
+	    peer, ref, NULL, NULL, NULL, NULL, 0);
 
 	return (ret);
 }
@@ -2199,7 +2250,7 @@ chat_tunnel_manage(struct chat_tunnel *tun)
 	chat_rxfer_check(tun);
 
 	typed = vigil_atomic_read(&typing[tun->peer->id]);
-	chat_typing_state(&owner, &group, &topic);
+	chat_typing_state(tun->peer->id, &owner, &group, &topic);
 
 	if (!tun->greeted || typed != tun->typed ||
 	    owner != tun->typed_owner || group != tun->typed_group ||
@@ -2890,8 +2941,8 @@ chat_frame_send(struct chat_tunnel *tun, struct chat_msg *msg)
 		hb->avatar_have = htobe64(tun->peer->avatar_held);
 		hb->typing = vigil_atomic_read(&typing[tun->peer->id]);
 
-		chat_typing_state(&tun->typed_owner, &tun->typed_group,
-		    &tun->typed_topic);
+		chat_typing_state(tun->peer->id, &tun->typed_owner,
+		    &tun->typed_group, &tun->typed_topic);
 		hb->typing_owner = tun->typed_owner;
 		hb->typing_group = htobe64(tun->typed_group);
 		hb->typing_topic = htobe64(tun->typed_topic);
@@ -3710,7 +3761,7 @@ chat_signal_check(struct chat_peer *peer)
 	if (peer->id == 0)
 		return (0);
 
-	if (!TAILQ_EMPTY(&peer->outbox))
+	if (chat_outbox_signal(peer))
 		return (1);
 
 	if (vigil_atomic_read(&opened[peer->id]))
@@ -3846,10 +3897,72 @@ chat_outbox_add(struct chat_peer *peer, u_int64_t ref,
 	memcpy(&msg->topic, topic, sizeof(*topic));
 	memcpy(&msg->group, group, sizeof(*group));
 
+	if (group->id != 0)
+		chat_msg_backoff(msg);
+
 	TAILQ_INSERT_TAIL(&peer->outbox, msg, wlist);
 
 	if (peer->tunnel != NULL)
 		chat_msg_queue(peer->tunnel, msg);
+}
+
+/*
+ * Returns 1 if a message on the outbox of the given peer wants us to signal
+ * the peer right now. A message for a group is tried again with a backoff,
+ * the others want it until they are acked, and so does anything on a tunnel
+ * that is online or for a peer that discovery sees online.
+ */
+static int
+chat_outbox_signal(struct chat_peer *peer)
+{
+	struct chat_msg		*msg;
+
+	PRECOND(peer != NULL);
+
+	if (TAILQ_EMPTY(&peer->outbox))
+		return (0);
+
+	if (chat_tunnel_online(peer->tunnel))
+		return (1);
+
+	if (vigil_call_peer(peer->id) & VIGIL_CALL_PEER_ONLINE)
+		return (1);
+
+	TAILQ_FOREACH(msg, &peer->outbox, wlist) {
+		if (chat_msg_signal(msg))
+			return (1);
+	}
+
+	return (0);
+}
+
+/*
+ * Drop the message with the given ref from the outbox of the given peer.
+ */
+static void
+chat_outbox_drop(struct chat_peer *peer, u_int64_t ref)
+{
+	struct chat_msg		*msg;
+
+	PRECOND(peer != NULL);
+
+	TAILQ_FOREACH(msg, &peer->outbox, wlist) {
+		if (msg->ref == ref)
+			break;
+	}
+
+	if (msg == NULL)
+		return;
+
+	if (msg->pending)
+		TAILQ_REMOVE(&peer->tunnel->sendq, msg, slist);
+
+	if (peer->tunnel != NULL && peer->tunnel->xfer != NULL &&
+	    peer->tunnel->xfer->msg == msg)
+		chat_xfer_free(peer->tunnel);
+
+	TAILQ_REMOVE(&peer->outbox, msg, wlist);
+	chat_msg_free(msg);
 }
 
 /*
@@ -3933,6 +4046,7 @@ chat_command_queue(int type, u_int8_t peer, u_int64_t value,
 
 	PRECOND(type == CHAT_COMMAND_SEND ||
 	    type == CHAT_COMMAND_FORGET ||
+	    type == CHAT_COMMAND_DROP ||
 	    type == CHAT_COMMAND_STORED);
 	PRECOND(data != NULL || len == 0);
 	PRECOND(len <= VIGIL_CHAT_MESSAGE_MAX);
@@ -4168,6 +4282,9 @@ chat_commands_run(void)
 		case CHAT_COMMAND_FORGET:
 			chat_outbox_free(peer);
 			break;
+		case CHAT_COMMAND_DROP:
+			chat_outbox_drop(peer, cmd->value);
+			break;
 		case CHAT_COMMAND_STORED:
 			chat_token_ack(cmd->value);
 			break;
@@ -4252,11 +4369,15 @@ chat_ambry_report(struct chat_tunnel *tun, u_int32_t generation)
 }
 
 /*
- * Take the group and topic we are typing in, an id of 0 means none.
+ * Take the group and topic we are typing in that the given peer may know
+ * about, an id of 0 means none. A peer outside the group learns nothing,
+ * a topic outside a group only goes to the peer we type to.
  */
 static void
-chat_typing_state(u_int8_t *owner, u_int64_t *id, u_int64_t *topic)
+chat_typing_state(u_int8_t peer, u_int8_t *owner, u_int64_t *id,
+    u_int64_t *topic)
 {
+	PRECOND(peer > 0 && peer < KYRKA_PEERS_PER_FLOCK);
 	PRECOND(owner != NULL);
 	PRECOND(id != NULL);
 	PRECOND(topic != NULL);
@@ -4265,7 +4386,17 @@ chat_typing_state(u_int8_t *owner, u_int64_t *id, u_int64_t *topic)
 	*id = typing_group;
 	*topic = typing_topic;
 	*owner = typing_owner;
+
+	if (*id != 0 && peer != *owner &&
+	    !(typing_members[peer / 8] & (1 << (peer % 8)))) {
+		*id = 0;
+		*owner = 0;
+		*topic = 0;
+	}
 	vigil_unlock(&lock);
+
+	if (*id == 0 && vigil_atomic_read(&typing[peer]) == 0)
+		*topic = 0;
 }
 
 /*
@@ -4668,6 +4799,49 @@ chat_command_next(struct chat_command **cmd)
 }
 
 /*
+ * Have the given message signal its peer with a backoff, eagerly at first
+ * and after that for a short window at a time with ever longer pauses.
+ */
+static void
+chat_msg_backoff(struct chat_msg *msg)
+{
+	PRECOND(msg != NULL);
+
+	msg->backoff = CHAT_RETRY_START;
+	msg->signal = vigil->now + CHAT_RETRY_EAGER;
+	msg->retry = msg->signal + msg->backoff;
+}
+
+/*
+ * Returns 1 if the given message wants us to signal its peer right now,
+ * a message without a backoff always does.
+ */
+static int
+chat_msg_signal(struct chat_msg *msg)
+{
+	PRECOND(msg != NULL);
+
+	if (msg->backoff == 0)
+		return (1);
+
+	if (vigil->now < msg->signal)
+		return (1);
+
+	if (vigil->now < msg->retry)
+		return (0);
+
+	msg->backoff *= 2;
+
+	if (msg->backoff > CHAT_RETRY_MAX)
+		msg->backoff = CHAT_RETRY_MAX;
+
+	msg->signal = vigil->now + CHAT_RETRY_WINDOW;
+	msg->retry = vigil->now + msg->backoff;
+
+	return (1);
+}
+
+/*
  * Free the given message and drop the data it carries, if any.
  */
 static void
@@ -4790,7 +4964,8 @@ static void
 chat_outbox_data(struct chat_peer *peer, u_int64_t ref,
     struct chat_blob *blob)
 {
-	struct chat_msg		*msg;
+	struct chat_msg			*msg;
+	struct vigil_chat_data_head	*head;
 
 	PRECOND(peer != NULL);
 	PRECOND(blob != NULL);
@@ -4801,6 +4976,11 @@ chat_outbox_data(struct chat_peer *peer, u_int64_t ref,
 	}
 
 	msg = chat_data_msg(ref, blob);
+	head = (struct vigil_chat_data_head *)blob->data;
+
+	if (head->kind & VIGIL_CHAT_DATA_GROUP)
+		chat_msg_backoff(msg);
+
 	TAILQ_INSERT_TAIL(&peer->outbox, msg, wlist);
 
 	if (peer->tunnel != NULL)

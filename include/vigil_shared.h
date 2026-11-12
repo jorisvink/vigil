@@ -332,13 +332,15 @@ void	vigil_call_hangup(void);
 void	vigil_call_dial(u_int8_t);
 void	vigil_call_done(u_int8_t);
 int	vigil_chat_forget(u_int8_t);
+int	vigil_chat_drop(u_int8_t, u_int64_t);
 int	vigil_chat_stored(u_int64_t);
 int	vigil_chat_nick(const char *);
 void	vigil_chat_open(u_int8_t, int);
 void	vigil_chat_typing(u_int8_t, u_int64_t, int);
 size_t	vigil_chat_events(char *, size_t);
 void	vigil_chat_avatar(const void *, size_t);
-void	vigil_chat_group_typing(u_int8_t, u_int64_t, u_int64_t);
+void	vigil_chat_group_typing(u_int8_t, u_int64_t, u_int64_t,
+	    const u_int8_t *);
 ssize_t	vigil_chat_data_take(u_int64_t, void *, size_t);
 int	vigil_chat_group_leave(u_int8_t, u_int64_t, u_int64_t);
 int	vigil_chat_send(u_int8_t, u_int64_t, const char *, size_t);

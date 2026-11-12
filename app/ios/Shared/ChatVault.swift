@@ -74,6 +74,7 @@ final class ChatVault {
     private static let queuedAad = Data("VIGIL.CHAT.QUEUED".utf8)
     private static let receiptsAad = Data("VIGIL.CHAT.RECEIPTS".utf8)
     private static let groupsAad = Data("VIGIL.CHAT.GROUPS".utf8)
+    private static let groupExpire: Int64 = 3 * 24 * 60 * 60 * 1000
     private static let dataAad = Data("VIGIL.CHAT.DATA".utf8)
     private static let avatarAad = Data("VIGIL.CHAT.AVATAR".utf8)
     private static let nameAad = Data("VIGIL.CHAT.NAME".utf8)
@@ -461,6 +462,7 @@ final class ChatVault {
                 copy["peer"] = member
                 copy["chat"] = chat
                 copy["gs"] = info["serial"] ?? 0
+                copy["at"] = Self.now()
                 list.append(copy)
             }
 
@@ -515,26 +517,39 @@ final class ChatVault {
         }
     }
 
-    func groupDrop(_ chat: String, _ peers: [String]) throws {
-        try locked {
+    func groupDrop(_ chat: String, _ peers: [String]) throws -> [(String, Int64)] {
+        return try locked {
+            var dropped = [(String, Int64)]()
+
             try exclusive {
                 let list = try outboxList()
-                let kept = list.filter {
-                    !($0["chat"] as? String == chat && peers.contains($0["peer"] as? String ?? ""))
+                var kept = [[String: Any]]()
+
+                for entry in list {
+                    let peer = entry["peer"] as? String ?? ""
+
+                    guard entry["chat"] as? String == chat, peers.contains(peer) else {
+                        kept.append(entry)
+                        continue
+                    }
+
+                    dropped.append((peer, (entry["ref"] as? NSNumber)?.int64Value ?? 0))
                 }
 
-                guard kept.count != list.count else { return }
+                guard !dropped.isEmpty else { return }
 
                 try outboxSave(kept)
                 try unqueueUnused(kept, list)
             }
+
+            return dropped
         }
     }
 
     func rosterQueue(_ chat: String, _ info: [String: Any], local: String,
-                     also: [String] = []) throws {
+                     also: [String] = [], only: [String]? = nil) throws {
         try locked {
-            let targets = Set(Self.members(info) + also).subtracting([local])
+            let targets = Set(only ?? (Self.members(info) + also)).subtracting([local])
 
             try exclusive {
                 var list = try outboxList().filter {
@@ -547,6 +562,7 @@ final class ChatVault {
                         "peer": peer, "chat": chat, "ref": ref(), "op": "roster",
                         "serial": info["serial"] ?? 0, "members": info["members"] ?? [String](),
                         "name": info["name"] ?? "", "ended": info["state"] as? String == "ended",
+                        "at": Self.now(),
                     ])
                 }
 
@@ -559,7 +575,7 @@ final class ChatVault {
         try locked {
             try exclusive {
                 var list = try outboxList()
-                list.append(["peer": owner, "chat": chat, "ref": ref(), "op": "leave"])
+                list.append(["peer": owner, "chat": chat, "ref": ref(), "op": "leave", "at": Self.now()])
                 try outboxSave(list)
             }
         }
@@ -797,6 +813,8 @@ final class ChatVault {
                     $0["state"] = "sent"
                 }
             }
+        case "expired":
+            change(current, ref) { _ = Self.unaddress(&$0, record["member"] as? String ?? "") }
         case "delivered":
             change(current, ref) {
                 guard let member = record["member"] as? String else {
@@ -841,17 +859,24 @@ final class ChatVault {
 
     private static func gone(_ current: History, _ member: String) {
         for at in current.messages.indices {
-            guard var to = current.messages[at]["to"] as? [String] else { continue }
-
-            let got = current.messages[at]["got"] as? [String] ?? []
-
-            guard !got.contains(member), to.contains(member) else { continue }
-
-            to.removeAll { $0 == member }
-            current.messages[at]["to"] = to
-            Self.tally(&current.messages[at])
-            current.stamps[at] = current.stamp
+            if Self.unaddress(&current.messages[at], member) {
+                current.stamps[at] = current.stamp
+            }
         }
+    }
+
+    private static func unaddress(_ message: inout [String: Any], _ member: String) -> Bool {
+        guard var to = message["to"] as? [String] else { return false }
+
+        let got = message["got"] as? [String] ?? []
+
+        guard !got.contains(member), to.contains(member) else { return false }
+
+        to.removeAll { $0 == member }
+        message["to"] = to
+        Self.tally(&message)
+
+        return true
     }
 
     private static func tally(_ message: inout [String: Any]) {
@@ -865,6 +890,8 @@ final class ChatVault {
             message["state"] = "delivered"
         } else if acked > 0 {
             message["state"] = "sent"
+        } else if to == 0 {
+            message["state"] = "failed"
         }
     }
 
@@ -1015,6 +1042,17 @@ final class ChatVault {
             try topicSet(chat, ref: ref, direction: "out", topic: topic, name: name, color: color,
                          time: Int64(Date().timeIntervalSince1970 * 1000))
 
+            if var updated = info {
+                var topics = try topicsOf(chat, updated).filter { $0["id"] as? String != topic }
+
+                if !name.isEmpty {
+                    topics.append(["id": topic, "name": name, "color": color])
+                }
+
+                updated["topics"] = topics
+                try groupSave(chat, updated)
+            }
+
             try exclusive {
                 var list = try outboxList()
 
@@ -1024,6 +1062,7 @@ final class ChatVault {
                         copy["peer"] = member
                         copy["chat"] = chat
                         copy["gs"] = info["serial"] ?? 0
+                        copy["at"] = Self.now()
                         list.append(copy)
                     }
                 } else {
@@ -1034,6 +1073,41 @@ final class ChatVault {
             }
 
             return ref
+        }
+    }
+
+    func topicsOf(_ chat: String, _ info: [String: Any]) throws -> [[String: Any]] {
+        if let topics = info["topics"] as? [[String: Any]] {
+            return topics
+        }
+
+        let topics = try messages(chat)["topics"] as? [[String: Any]] ?? []
+
+        return topics.map {
+            ["id": $0["id"] ?? "", "name": $0["name"] ?? "", "color": $0["color"] ?? 0]
+        }
+    }
+
+    func topicQueue(_ chat: String, local: String, targets: [String]) throws {
+        try locked {
+            guard let info = try groupInfo(chat), let topics = info["topics"] as? [[String: Any]],
+                  !topics.isEmpty else { return }
+
+            try exclusive {
+                var list = try outboxList()
+
+                for peer in targets where peer != local {
+                    for topic in topics {
+                        list.append([
+                            "peer": peer, "chat": chat, "ref": ref(), "op": "topic",
+                            "tp": topic["id"] ?? "", "name": topic["name"] ?? "", "color": topic["color"] ?? 0,
+                            "gs": info["serial"] ?? 0, "at": Self.now(),
+                        ])
+                    }
+                }
+
+                try outboxSave(list)
+            }
         }
     }
 
@@ -1247,6 +1321,10 @@ final class ChatVault {
             }
         }
 
+        try receiptWrite(chat, ref: ref, kind: kind, member: chat != peer ? peer : nil)
+    }
+
+    private func receiptWrite(_ chat: String, ref: Int64, kind: String, member: String?) throws {
         let file = try folder(dir).appendingPathComponent("receipts.box")
         var list = [[String: Any]]()
 
@@ -1258,13 +1336,89 @@ final class ChatVault {
 
         var receipt: [String: Any] = ["peer": chat, "ref": ref, "t": kind]
 
-        if chat != peer {
-            receipt["member"] = peer
+        if let member {
+            receipt["member"] = member
         }
 
         list.append(receipt)
         try write(file, sealBox(JSONSerialization.data(withJSONObject: list),
                                 key: outboxKey(), aad: Self.receiptsAad))
+    }
+
+    func expire() throws -> [(String, Int64)] {
+        return try locked {
+            var dropped = [(String, Int64)]()
+            var stale = [(String, String)]()
+
+            try exclusive {
+                let now = Self.now()
+                var changed = false
+                var kept = [[String: Any]]()
+
+                for var entry in try outboxList() {
+                    guard let chat = entry["chat"] as? String else {
+                        kept.append(entry)
+                        continue
+                    }
+
+                    if entry["at"] == nil {
+                        entry["at"] = now
+                        changed = true
+                    }
+
+                    let at = (entry["at"] as? NSNumber)?.int64Value ?? now
+
+                    if now - at < Self.groupExpire {
+                        kept.append(entry)
+                        continue
+                    }
+
+                    let peer = entry["peer"] as? String ?? ""
+                    let ref = (entry["ref"] as? NSNumber)?.int64Value ?? 0
+
+                    dropped.append((peer, ref))
+                    changed = true
+
+                    switch entry["op"] as? String {
+                    case "roster", "topic":
+                        stale.append((chat, peer))
+                    case nil:
+                        try receiptWrite(chat, ref: ref, kind: "expired", member: peer)
+                    default:
+                        break
+                    }
+                }
+
+                if changed {
+                    try outboxSave(kept)
+                }
+            }
+
+            for (chat, peer) in stale {
+                try groupStale(chat, peer: peer, on: true)
+            }
+
+            return dropped
+        }
+    }
+
+    func groupStale(_ chat: String, peer: String, on: Bool) throws {
+        try locked {
+            guard var info = try groupInfo(chat) else { return }
+
+            var stale = (info["stale"] as? [String] ?? []).filter { $0 != peer }
+
+            if on {
+                stale.append(peer)
+            }
+
+            info["stale"] = stale
+            try groupSave(chat, info)
+        }
+    }
+
+    static func now() -> Int64 {
+        Int64(Date().timeIntervalSince1970 * 1000)
     }
 
     func read(_ chat: String, topic: String = "") throws {

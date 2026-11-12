@@ -84,7 +84,10 @@ object Vigil {
     external fun chatAvatar(data: ByteArray?): Boolean
 
     @JvmStatic
-    external fun chatGroupTyping(owner: Int, group: Long, topic: Long)
+    external fun chatDrop(peer: Int, ref: Long): Boolean
+
+    @JvmStatic
+    external fun chatGroupTyping(owner: Int, group: Long, topic: Long, members: ByteArray?)
 
     @JvmStatic
     external fun chatGroupSend(

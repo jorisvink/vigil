@@ -521,7 +521,7 @@ main(int argc, char **argv)
 
 				if (typing_group)
 					vigil_chat_group_typing(owner, group,
-					    topic);
+					    topic, members);
 
 				sent = 1;
 				gsent = 0;

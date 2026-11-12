@@ -518,7 +518,7 @@ class MainActivity : FlutterActivity() {
                 "chatTyping" -> {
                     val id = chat(call.argument<String>("peer")!!)
 
-                    Chats.typing(id, call.argument<Boolean>("on")!!, topic(id, call.argument<String>("topic")))
+                    Chats.typing(this, id, call.argument<Boolean>("on")!!, topic(id, call.argument<String>("topic")))
                     result.success("")
                 }
                 "chatDelete" -> {
@@ -1071,12 +1071,14 @@ class MainActivity : FlutterActivity() {
 
         info.put("members", JSONArray(members))
         info.put("serial", info.getInt("serial") + 1)
+        info.put("topics", vault.topicsOf(chat, info))
 
         vault.groupSave(chat, info)
-        vault.groupDrop(chat, gone)
+        Chats.drop(vault.groupDrop(chat, gone))
         vault.merge()
 
         Chats.submit(vault, vault.rosterQueue(chat, info, local, gone))
+        Chats.submit(vault, vault.topicQueue(chat, local, members.filter { it !in before }))
         Chats.namesChanged()
         Chats.changed()
     }
@@ -1092,7 +1094,7 @@ class MainActivity : FlutterActivity() {
             return
         }
 
-        vault.groupDrop(chat, ChatVault.members(info) + owner)
+        Chats.drop(vault.groupDrop(chat, ChatVault.members(info) + owner))
 
         if (owner == local) {
             info.put("state", "ended")

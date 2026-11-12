@@ -40,10 +40,12 @@ sequenceDiagram
     Note over SC: message freed
 ```
 
-A message stays on the outbox until our peer acks the message or the
-platform calls `vigil_chat_forget(peer)`. Messages do not expire, a
-message for a peer that is away goes out once there is a tunnel to that
-peer again.
+A message stays on the outbox until our peer acks the message, the
+platform calls `vigil_chat_forget(peer)`, or the platform drops that one
+message with `vigil_chat_drop(peer, ref)`. The core does not expire
+messages, a message for a peer that is away goes out once there is a
+tunnel to that peer again. The platform drops a group copy after 3 days,
+see Groups.
 
 ## Wire formats
 
@@ -144,9 +146,10 @@ instance      our name, signed by our flock, zero without NAME
 signature     the signature of our flock over our instance, zero without NAME
 avatar_have   the hash of the avatar of this peer that we hold, 0 if none
 typing_owner  the owner of the group we type in
-typing_group  the id of the group we type in, 0 if none
+typing_group  the id of the group we type in, 0 if none or if this peer
+              is not the owner or a member of it
 typing_topic  the topic we type in, of this chat or of the group, 0 if
-              none
+              none or if this peer does not get the typing or group
 ```
 
 We send `DATA`, `REPLY`, `TOPIC` and `GROUP` always, `NAME` when our flock
@@ -165,7 +168,8 @@ flowchart TD
 
 We signal a peer on the chat signaling liturgy, group `0000`, while:
 
-- we hold messages for that peer,
+- we hold messages for that peer, for a group copy only as the backoff
+  under Groups allows,
 - its chat is open on our side (`vigil_chat_open(peer, 1)`),
 - a message of ours was delivered to that peer, or we got one from that
   peer, in the last 60 s,
@@ -258,7 +262,9 @@ the chat vault, and only then does our peer get its `ACK`. A message the
 platform did not store within 10 s is handed over again under a new token
 when it is sent again.
 
-An empty text frame is acked and not handed over.
+An empty text frame is acked and not handed over. A reply, topic, topic
+text or group frame too short for its fixed fields is ignored and not
+acked, so our peer keeps sending it.
 
 Each tunnel remembers the last 64 messages it received, text and parcels
 together. A new uid in a heartbeat means the peer restarted and its ids
@@ -269,7 +275,7 @@ start over, the tunnel then forgets all 64.
 A group is owned by the peer that set it up and is known by its owner and
 a random 64-bit id. Everything in a group travels over the one-to-one
 tunnels, as a group frame on the outbox of each member like any other
-message. There is no liturgy and no tunnel of its own for a group.
+message.
 
 ```mermaid
 sequenceDiagram
@@ -287,7 +293,7 @@ sequenceDiagram
 
 ```
 call                                   what goes out
-─────────────────────────────────────  ──────────────────────────────────────
+-------------------------------------  --------------------------------------
 vigil_chat_group_roster(peer, ...)     the roster, from the owner only
 vigil_chat_group_send(peer, ...)       a text or reply in the group, or in
                                        a topic of the group
@@ -303,12 +309,33 @@ one-to-one message until it is acked. A member that is away gets its
 copies once it is around again. The platform counts the `delivered`
 events of the copies of a message into its tally.
 
+We do not signal a member that is away for a group copy all the time:
+
+```
+after queueing      signal
+------------------  -----------------------------------------------
+first 5 min         all the time
+after that          quiet for 5 min, then 1 min out of every 10, 20,
+                    40, 60, 60 ... min
+```
+
+A copy on a tunnel that is online always goes out right away, and we
+signal a member as soon as the discovery liturgy (see
+[call.md](call.md)) sees it online. The platform gives up on a copy after
+3 days and drops it with `vigil_chat_drop(peer, ref)`, the member no
+longer counts as pending for that message. The platform also drops the
+copies for a member that leaves or is removed, and all copies of a group
+that ends or that we leave, since a peer that deleted the group holds
+them and never acks them. A member whose roster or topic
+was given up on is marked stale, the owner sends it the roster and the
+topics of the group again the next time that member is around.
+
 The core does not keep rosters, it only checks what it can see in a
 frame:
 
 ```
 frame        dropped (acked) when
-───────────  ─────────────────────────────────────────────────
+-----------  -------------------------------------------------
 any          id 0, owner 0 or ff, an unknown type
 roster       it does not come from its owner, a bad state or name
 topic        it does not come from its owner
@@ -320,7 +347,7 @@ of every message in the group with it:
 
 ```
 message                               platform
-────────────────────────────────────  ──────────────────────────────────
+------------------------------------  ----------------------------------
 no roster for the group yet           held: not stored, not acked
 serial above the one of our roster    held: not stored, not acked
 group ended, left or removed from     dropped: acked, not stored
@@ -336,13 +363,16 @@ member that was just added therefore reaches members that did not hear of
 it yet, and a peer that is not in any roster never gets anything stored.
 
 A roster with a serial at or below the last one the platform has is
-dropped. A member that leaves sends a leave to the owner, the owner then
-sends the new roster to every member that is left. A member that is no
-longer in a roster was removed. An ended roster, or the owner leaving,
-freezes the group, nobody can send in it anymore.
+dropped, so is the first roster of a group when it is ended or does not
+have us as a member. A member that leaves sends a leave to the owner, the
+owner then sends the new roster to every member that is left. A member
+that is no longer in a roster was removed. An ended roster, or the owner
+leaving, freezes the group, nobody can send in it anymore.
 
 A group has topics like a one-to-one chat. Only the owner sets one up or
-removes one, every member can write in it.
+removes one, every member can write in it. A member the owner adds later
+gets the topics of the group right after its roster, but none of the
+messages from before it was added.
 
 A peer without `GROUP` gets an empty text frame for anything in a group,
 which the peer acks and drops. Group frames wait for a heartbeat like a
@@ -368,7 +398,7 @@ and again when its nickname or signed name changes.
 
 ```
 platform calls                              core
-──────────────────────────────────────────  ──────────────────────────────────
+------------------------------------------  ----------------------------------
 vigil_chat_send(peer, ref, text, len)       queue a message, -1 if not
 vigil_chat_reply(peer, ref, author, hash,   running or 1024 commands wait
     text, len)
@@ -386,11 +416,13 @@ vigil_chat_topic(peer, ref, topic, color,   queue a topic, no name removes
     name, len)                              the topic
 vigil_chat_stored(token)                    ACK the message to the sender
 vigil_chat_forget(peer)                     drop the outbox of the peer
+vigil_chat_drop(peer, ref)                  drop one message of the outbox
 vigil_chat_open(peer, on)                   keep signaling the peer
 vigil_chat_typing(peer, topic, on)          typing in a one-to-one chat,
                                             in a topic if not 0
 vigil_chat_group_typing(owner, group,       typing in a group and topic,
-    topic)                                  group 0 for none
+    topic, members)                         group 0 for none, only the
+                                            owner and members hear it
 vigil_chat_nick(name)                       our nickname, empty for none
 vigil_chat_events(buf, len)                 the events as a JSON array,
                                             buf holds at least 64 KiB
@@ -404,7 +436,7 @@ it replies to nothing.
 ```
 event        fields, besides "peer", and "owner", "group" and "serial"
              in a group
-───────────  ─────────────────────────────────────────────────────────────
+-----------  -------------------------------------------------------------
 message      token, nick, signed, text, mention if it names us,
              author and hash if it is a reply, topic if it is
              in a topic
@@ -444,6 +476,9 @@ not acked, so our peer sends the message again.
 | CHAT_RESEND               | 5 s    | before an unacked message goes again    |
 | CHAT_STORE_WAIT           | 10 s   | for the platform to store a message     |
 | CHAT_IDLE                 | 60 s   | signaling after the last message        |
+| CHAT_RETRY_EAGER          | 5 min  | signaling for a new group copy          |
+| CHAT_RETRY_WINDOW         | 1 min  | signaling each time we try again        |
+| CHAT_RETRY_START / MAX    | 5 / 60 min | first and longest wait between tries |
 | CHAT_RX_TIMEOUT           | 30 s   | silence before a tunnel is offline      |
 | VIGIL_CALL_PRESENT_EXPIRE | 9 s    | a peer the cathedral stopped pushing    |
 | CHAT_P2P_VERIFY           | 30 s   | for a p2p path to show it works         |

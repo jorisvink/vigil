@@ -143,6 +143,18 @@ peer. When the heartbeats of a peer no longer have the feature bit, the
 receiver drops the picture it kept for that peer. Like the nickname, the
 picture is chosen by the sender and not checked by anyone.
 
+## Topics
+
+A chat can have topics, chats of their own inside it with a name and a
+color. They show as branches under the chat in the chat list. In a
+one-to-one chat either side can set up or remove a topic. In a group only
+the owner can, every member can write in it. A member added to a group
+later gets its topics, but not the messages from before.
+
+Removing a topic deletes the images and files sent in it, see
+[vault.md](vault.md). An older app that does not know topics gets the
+texts of a topic in the chat itself and does not get its images or files.
+
 ## Group chats
 
 Anyone can set up a group chat, give it a name and pick its members. The
@@ -152,9 +164,9 @@ remove members, or end it.
 
 There is no group key. A group message is sent to every other member
 over the same tunnel as a one-to-one chat with that member, each with its
-own keys. A member that is away gets the message once it is around again.
-The sender sees how many members received it and how many are still
-pending.
+own keys. A member that is away gets the message once it is around again,
+if that is within 3 days. The sender sees how many members received it
+and how many are still pending.
 
 A member can leave a group. The owner then takes that member off the list
 and tells the others. When the owner ends or leaves the group, it stays
@@ -176,7 +188,9 @@ is never acknowledged if it was only received and then lost.
 
 Messages wait in an outbox until they are delivered. They are sent again
 when the peer comes back, even after the app was restarted. A group
-message waits for every member on its own.
+message waits for every member on its own, for at most 3 days. A member
+that did not get it by then no longer counts as pending, and a message
+that no member got shows as failed.
 
 ## Notifications
 

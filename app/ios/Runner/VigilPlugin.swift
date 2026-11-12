@@ -1016,11 +1016,13 @@ final class VigilPlugin: NSObject, FlutterPlugin, UIDocumentPickerDelegate,
 
         info["members"] = members
         info["serial"] = ((info["serial"] as? NSNumber)?.intValue ?? 0) + 1
+        info["topics"] = try vault.topicsOf(chat, info)
 
         try vault.groupSave(chat, info)
-        try vault.groupDrop(chat, gone)
+        try Self.drop(vault.groupDrop(chat, gone))
         try vault.merge()
         try vault.rosterQueue(chat, info, local: local, also: gone)
+        try vault.topicQueue(chat, local: local, targets: members.filter { !before.contains($0) })
 
         VigilCall.shared.send?("chat")
         Self.namesChanged()
@@ -1035,7 +1037,7 @@ final class VigilPlugin: NSObject, FlutterPlugin, UIDocumentPickerDelegate,
         guard var info = try vault.groupInfo(chat), info["state"] as? String == "open",
               let owner = info["owner"] as? String, let me = UInt8(local, radix: 16) else { return }
 
-        try vault.groupDrop(chat, ChatVault.members(info) + [owner])
+        try Self.drop(vault.groupDrop(chat, ChatVault.members(info) + [owner]))
 
         if owner == local {
             info["state"] = "ended"
@@ -1059,6 +1061,12 @@ final class VigilPlugin: NSObject, FlutterPlugin, UIDocumentPickerDelegate,
 
     private static func namesChanged() {
         ChatVault.defaults.set(ChatVault.defaults.integer(forKey: "chatNames") + 1, forKey: "chatNames")
+    }
+
+    private static func drop(_ dropped: [(String, Int64)]) {
+        for (peer, ref) in dropped {
+            VigilCall.shared.send?("chat-drop \(peer) " + String(format: "%016llx", UInt64(bitPattern: ref)))
+        }
     }
 
     func documentPicker(_ controller: UIDocumentPickerViewController, didPickDocumentsAt urls: [URL]) {

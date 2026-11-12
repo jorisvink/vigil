@@ -69,6 +69,7 @@ static jboolean		android_remote_start(JNIEnv *, jclass, jstring,
 static jbyteArray	android_chat_events(JNIEnv *, jclass);
 static jbyteArray	android_chat_data_take(JNIEnv *, jclass, jlong, jint);
 static jboolean		android_chat_forget(JNIEnv *, jclass, jint);
+static jboolean		android_chat_drop(JNIEnv *, jclass, jint, jlong);
 static jboolean		android_chat_stored(JNIEnv *, jclass, jlong);
 static jboolean		android_chat_nick(JNIEnv *, jclass, jstring);
 static jboolean		android_chat_avatar(JNIEnv *, jclass, jbyteArray);
@@ -76,7 +77,7 @@ static void		android_chat_open(JNIEnv *, jclass, jint, jboolean);
 static void		android_chat_typing(JNIEnv *, jclass, jint, jlong,
 			    jboolean);
 static void		android_chat_group_typing(JNIEnv *, jclass, jint,
-			    jlong, jlong);
+			    jlong, jlong, jbyteArray);
 static jboolean		android_chat_group_leave(JNIEnv *, jclass, jint, jlong,
 			    jlong);
 static jboolean		android_chat_send(JNIEnv *, jclass, jint, jlong,
@@ -122,12 +123,13 @@ static JNINativeMethod	methods[] = {
 	{ "chatSend", "(IJ[BIJJ)Z", (void *)android_chat_send },
 	{ "chatTopic", "(IJJI[B)Z", (void *)android_chat_topic },
 	{ "chatForget", "(I)Z", (void *)android_chat_forget },
+	{ "chatDrop", "(IJ)Z", (void *)android_chat_drop },
 	{ "chatStored", "(J)Z", (void *)android_chat_stored },
 	{ "chatOpen", "(IZ)V", (void *)android_chat_open },
 	{ "chatTyping", "(IJZ)V", (void *)android_chat_typing },
 	{ "chatNick", "(Ljava/lang/String;)Z", (void *)android_chat_nick },
 	{ "chatAvatar", "([B)Z", (void *)android_chat_avatar },
-	{ "chatGroupTyping", "(IJJ)V", (void *)android_chat_group_typing },
+	{ "chatGroupTyping", "(IJJ[B)V", (void *)android_chat_group_typing },
 	{ "chatGroupSend", "(IJIJIJ[BIJ)Z", (void *)android_chat_group_send },
 	{ "chatGroupTopic", "(IJJIJI[B)Z", (void *)android_chat_group_topic },
 	{ "chatGroupRoster", "(IJJIZ[B[B)Z",
@@ -712,6 +714,22 @@ android_chat_forget(JNIEnv *env, jclass cls, jint peer)
 }
 
 /*
+ * Vigil.chatDrop(), drops the message with the given ref we hold for the
+ * given peer.
+ */
+static jboolean
+android_chat_drop(JNIEnv *env, jclass cls, jint peer, jlong ref)
+{
+	if (peer <= 0)
+		return (JNI_FALSE);
+
+	if (peer >= KYRKA_PEERS_PER_FLOCK)
+		return (JNI_FALSE);
+
+	return (vigil_chat_drop(peer, ref) == 0);
+}
+
+/*
  * Vigil.chatStored(), the message with the given token was stored.
  */
 static jboolean
@@ -793,20 +811,38 @@ android_chat_avatar(JNIEnv *env, jclass cls, jbyteArray data)
 }
 
 /*
- * Vigil.chatGroupTyping(), tells our peers we type in the given group and
- * topic, a group of 0 means we do not.
+ * Vigil.chatGroupTyping(), tells the owner and members of the given group
+ * we type in it and the given topic, a group of 0 means we do not. The
+ * members hold a bit for every member.
  */
 static void
 android_chat_group_typing(JNIEnv *env, jclass cls, jint owner, jlong group,
-    jlong topic)
+    jlong topic, jbyteArray members)
 {
+	size_t		mlen;
+	char		*mbuf;
+
 	if (group == 0) {
-		vigil_chat_group_typing(0, 0, 0);
+		vigil_chat_group_typing(0, 0, 0, NULL);
 		return;
 	}
 
-	if (owner > 0 && owner < KYRKA_PEERS_PER_FLOCK)
-		vigil_chat_group_typing(owner, group, topic);
+	if (owner <= 0 || owner >= KYRKA_PEERS_PER_FLOCK)
+		return;
+
+	if (members == NULL)
+		return;
+
+	mbuf = android_bytes_copy(env, members, VIGIL_CHAT_GROUP_ROSTER, &mlen);
+	if (mbuf == NULL)
+		return;
+
+	if (mlen == VIGIL_CHAT_GROUP_ROSTER) {
+		vigil_chat_group_typing(owner, group, topic,
+		    (const u_int8_t *)mbuf);
+	}
+
+	android_bytes_free(mbuf, mlen);
 }
 
 /*

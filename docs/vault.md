@@ -155,11 +155,16 @@ merge.
 A message in a group goes in the outbox once for every other member. Its
 record in the log lists who it went to, each receipt names the member it
 came from, and the tally shows how many of them got the message. A
-member that leaves the group no longer counts as pending.
+member that leaves the group no longer counts as pending, and neither
+does a member that did not get the message within 3 days. A message that
+none of its members got within that time shows as failed.
 
 The name, owner and members of every group are kept in a groups file, so
 the network side can check who may write in a group and the owner's phone
-can hand a new list of members around while it is locked.
+can hand a new list of members around while it is locked. The groups file
+also lists the members whose list of members or topics did not reach them
+within 3 days, the owner's phone sends both again once such a member is
+around.
 
 The outbox, the receipts file and the groups file are encrypted with the
 outbox key.
