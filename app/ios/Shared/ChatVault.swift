@@ -209,7 +209,7 @@ final class ChatVault {
                     continue
                 }
 
-                guard let message = try JSONSerialization.jsonObject(with: plain) as? [String: Any],
+                guard let message = (try? JSONSerialization.jsonObject(with: plain)) as? [String: Any],
                       let peer = message["peer"] as? String,
                       let chat = Self.chat(message["chat"] as? String ?? peer),
                       let text = message["text"] as? String else {
@@ -1282,7 +1282,12 @@ final class ChatVault {
                     continue
                 }
 
-                out[hex] = try JSONSerialization.jsonObject(with: plain)
+                guard let entry = try? JSONSerialization.jsonObject(with: plain) else {
+                    try wipe(file)
+                    continue
+                }
+
+                out[hex] = entry
             }
 
             return out
@@ -1742,10 +1747,10 @@ final class ChatVault {
 
     private func unseal(_ data: Data, info: Data) throws -> Data {
         let bytes = [UInt8](data)
-        guard bytes.count > 3, bytes[0] == 1 else { throw Failure(description: "unknown sealed data") }
+        guard bytes.count > 3, bytes[0] == 1 else { throw CryptoKitError.incorrectParameterSize }
 
         let len = Int(bytes[1]) << 8 | Int(bytes[2])
-        guard bytes.count > 3 + len else { throw Failure(description: "short sealed data") }
+        guard bytes.count > 3 + len else { throw CryptoKitError.incorrectParameterSize }
 
         let encoded = Data(bytes[3..<(3 + len)])
         let ephemeral = try P256.KeyAgreement.PublicKey(x963Representation: encoded)

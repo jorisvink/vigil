@@ -8,6 +8,7 @@ import android.security.keystore.KeyProperties
 import android.security.keystore.StrongBoxUnavailableException
 import android.security.keystore.UserNotAuthenticatedException
 import org.json.JSONArray
+import org.json.JSONException
 import org.json.JSONObject
 import java.io.File
 import java.io.FileOutputStream
@@ -19,7 +20,9 @@ import java.security.KeyStore
 import java.security.MessageDigest
 import java.security.PublicKey
 import java.security.SecureRandom
+import java.security.interfaces.ECPublicKey
 import java.security.spec.ECGenParameterSpec
+import java.security.spec.InvalidKeySpecException
 import java.security.spec.X509EncodedKeySpec
 import javax.crypto.AEADBadTagException
 import javax.crypto.Cipher
@@ -220,6 +223,12 @@ class ChatVault(context: Context) {
                 }
 
                 append(chat, record)
+            } catch (e: JSONException) {
+                wipe(file)
+                continue
+            } catch (e: IllegalArgumentException) {
+                wipe(file)
+                continue
             } finally {
                 plain.fill(0)
             }
@@ -808,6 +817,8 @@ class ChatVault(context: Context) {
 
             try {
                 out.put(peer, JSONObject(String(plain)))
+            } catch (e: JSONException) {
+                wipe(file)
             } finally {
                 plain.fill(0)
             }
@@ -1721,13 +1732,23 @@ class ChatVault(context: Context) {
         require(data.size > 3 && data[0] == SEALED_HARDWARE) { "unknown inbox record" }
 
         val buffer = ByteBuffer.wrap(data, 1, data.size - 1)
-        val encoded = ByteArray(buffer.short.toInt()).also { buffer.get(it) }
+        val length = buffer.short.toInt()
+        require(length > 0 && length + NONCE <= buffer.remaining()) { "short inbox record" }
+
+        val encoded = ByteArray(length).also { buffer.get(it) }
         val nonce = ByteArray(NONCE).also { buffer.get(it) }
         val sealed = ByteArray(buffer.remaining()).also { buffer.get(it) }
 
         val entry = agreement() ?: throw IllegalStateException("no inbox key")
-        val ephemeral = KeyFactory.getInstance(KeyProperties.KEY_ALGORITHM_EC)
-            .generatePublic(X509EncodedKeySpec(encoded))
+        val ephemeral = try {
+            KeyFactory.getInstance(KeyProperties.KEY_ALGORITHM_EC)
+                .generatePublic(X509EncodedKeySpec(encoded)) as ECPublicKey
+        } catch (e: InvalidKeySpecException) {
+            throw IllegalArgumentException("bad inbox key")
+        }
+
+        val own = entry.certificate.publicKey as ECPublicKey
+        require(ephemeral.params.order == own.params.order) { "bad inbox key" }
 
         val shared = KeyAgreement.getInstance("ECDH", KEYSTORE).run {
             init(entry.privateKey)
