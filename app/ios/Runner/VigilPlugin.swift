@@ -363,7 +363,8 @@ final class VigilPlugin: NSObject, FlutterPlugin, UIDocumentPickerDelegate,
             }
         case "chatSend", "chatImageSend", "chatRead", "chatOpen", "chatTyping",
              "chatImageData", "chatDelete", "chatSettings", "chatFavorite",
-             "chatPin", "chatMute", "chatTopic", "groupCreate", "groupEdit", "groupLeave":
+             "chatPin", "chatMute", "chatTopic", "groupCreate", "groupEdit", "groupLeave",
+             "chatStar", "chatOrder":
             result(Self.reply { try chat(call) })
         case "flag":
             let args = call.arguments as? [String: Any] ?? [:]
@@ -1408,6 +1409,18 @@ final class VigilPlugin: NSObject, FlutterPlugin, UIDocumentPickerDelegate,
             return try groupCreate(args)
         }
 
+        if call.method == "chatOrder" {
+            let chats = call.arguments as? [String] ?? []
+
+            guard chats.allSatisfy({ ChatVault.group($0) != nil }) else {
+                throw ChatVault.Failure(description: "Only groups can be ordered.")
+            }
+
+            ChatVault.order(chats)
+            version += 1
+            return ""
+        }
+
         guard call.method == "chats" || call.method == "chatSettings" ||
               ChatVault.chat(hex) != nil else {
             throw ChatVault.Failure(description: "There is no chat \(hex).")
@@ -1426,7 +1439,7 @@ final class VigilPlugin: NSObject, FlutterPlugin, UIDocumentPickerDelegate,
                 seen(chat)
             }
 
-            return json(list)
+            return json(ChatVault.arrange(list))
         case "chat":
             let epoch = (args["epoch"] as? NSNumber)?.int64Value ?? 0
             let stamp = (args["stamp"] as? NSNumber)?.int64Value ?? 0
@@ -1569,6 +1582,10 @@ final class VigilPlugin: NSObject, FlutterPlugin, UIDocumentPickerDelegate,
             }
 
             return "\(ChatVault.muted(hex))"
+        case "chatStar":
+            ChatVault.star(hex, on: args["on"] as? Bool ?? false)
+            version += 1
+            return ""
         case "chatDelete":
             if group != nil, (try vault.groupInfo(hex))?["state"] as? String == "open" {
                 try groupLeave(hex)
@@ -1576,6 +1593,7 @@ final class VigilPlugin: NSObject, FlutterPlugin, UIDocumentPickerDelegate,
 
             try vault.delete(hex)
             ChatVault.mute(hex, until: 0)
+            ChatVault.unlist(hex)
             seen(hex)
             if group == nil {
                 VigilCall.shared.send?("chat-forget \(hex)")

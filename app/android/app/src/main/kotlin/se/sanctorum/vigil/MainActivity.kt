@@ -249,7 +249,7 @@ class MainActivity : FlutterActivity() {
                 "chats" -> background(result) {
                     val vault = Chats.vault(this)
                     vault.merge()
-                    vault.conversations().toString()
+                    Chats.arrange(this, vault.conversations()).toString()
                 }
                 "chat" -> {
                     val id = chat(call.argument<String>("peer")!!)
@@ -535,6 +535,7 @@ class MainActivity : FlutterActivity() {
 
                         vault.delete(id)
                         Chats.mute(this, id, 0L)
+                        Chats.unlist(this, id)
                         Chats.seen(this, id)
                         Chats.changed()
                         ""
@@ -570,6 +571,16 @@ class MainActivity : FlutterActivity() {
                         call.argument<Number>("until")?.toLong()
                     ).toString()
                 )
+                "chatStar" -> {
+                    Chats.star(this, chat(call.argument<String>("peer")!!), call.argument<Boolean>("on")!!)
+                    Chats.changed()
+                    result.success("")
+                }
+                "chatOrder" -> {
+                    Chats.order(this, (call.arguments as List<*>).map { chat(it as String) })
+                    Chats.changed()
+                    result.success("")
+                }
                 "chatSettings" -> result.success(
                     Chats.settings(
                         this, call.argument<String>("nick"), call.argument<Boolean>("preview")

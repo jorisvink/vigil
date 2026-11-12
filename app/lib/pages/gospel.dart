@@ -186,7 +186,7 @@ class _GospelPageState extends State<GospelPage> with WidgetsBindingObserver {
 
   List<Widget> _chatList(Status status) {
     final chats = _list(status, _chats);
-    final groups = chats.where((c) => isGroup(c.peer)).toList();
+    final groups = chats.where((c) => isGroup(c.peer)).toList()..sort(_placed);
     final peers = chats.where((c) => !isGroup(c.peer)).toList()
       ..sort((a, b) => _order(status, a, b));
 
@@ -213,8 +213,31 @@ class _GospelPageState extends State<GospelPage> with WidgetsBindingObserver {
           ),
         ),
       if (groups.isNotEmpty) const GroupLabel('Groups'),
-      for (final chat in groups)
-        ChatRow(key: ValueKey(chat.peer), chat: chat, status: status),
+      if (groups.length == 1)
+        ChatRow(
+          key: ValueKey(groups.first.peer),
+          chat: groups.first,
+          status: status,
+        ),
+      if (groups.length > 1)
+        Gapped(
+          child: ReorderableListView(
+            shrinkWrap: true,
+            padding: EdgeInsets.zero,
+            physics: const NeverScrollableScrollPhysics(),
+            buildDefaultDragHandles: false,
+            proxyDecorator: (child, index, animation) => child,
+            onReorderItem: (from, to) => _move(groups, from, to),
+            children: [
+              for (final (i, chat) in groups.indexed)
+                Padding(
+                  key: ValueKey(chat.peer),
+                  padding: const EdgeInsets.only(bottom: Metrics.gap),
+                  child: ChatRow(chat: chat, status: status, handle: i),
+                ),
+            ],
+          ),
+        ),
       if (peers.isNotEmpty) const Line(),
       if (peers.isNotEmpty) const GroupLabel('Chats'),
       for (final chat in peers)
@@ -222,9 +245,57 @@ class _GospelPageState extends State<GospelPage> with WidgetsBindingObserver {
     ];
   }
 
+  Future<void> _move(List<ChatSummary> groups, int from, int to) async {
+    groups.insert(to, groups.removeAt(from));
+
+    setState(() {
+      for (final (i, chat) in groups.indexed) {
+        chat.json['order'] = i;
+      }
+    });
+
+    try {
+      await Vigil.instance.orderChats([for (final c in groups) c.peer]);
+    } on VigilError catch (e) {
+      notify(e.message);
+    }
+  }
+
+  int _placed(ChatSummary a, ChatSummary b) {
+    if (a.order != b.order) {
+      if (a.order == -1) {
+        return 1;
+      }
+
+      if (b.order == -1) {
+        return -1;
+      }
+
+      return a.order.compareTo(b.order);
+    }
+
+    final recent = (b.last?.time ?? DateTime(0)).compareTo(
+      a.last?.time ?? DateTime(0),
+    );
+
+    if (recent != 0) {
+      return recent;
+    }
+
+    return a.peer.compareTo(b.peer);
+  }
+
   int _order(Status status, ChatSummary a, ChatSummary b) {
     final vigil = Vigil.instance;
     final online = chatOnline(status, a.peer);
+
+    if (a.star != b.star) {
+      if (a.star) {
+        return -1;
+      }
+
+      return 1;
+    }
 
     if (online != chatOnline(status, b.peer)) {
       if (online) {

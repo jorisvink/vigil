@@ -356,6 +356,8 @@ class ChatSummary {
 
   String get peer => json['peer'] as String? ?? '00';
   int get unread => json['unread'] as int? ?? 0;
+  bool get star => json['star'] as bool? ?? false;
+  int get order => json['order'] as int? ?? -1;
   ChatMessage? get last => json['last'] is Map<String, dynamic>
       ? ChatMessage(json['last'] as Map<String, dynamic>)
       : null;
@@ -1143,6 +1145,16 @@ class Vigil {
 
   Future<void> typing(String peer, bool on, {String topic = ''}) =>
       _invoke('chatTyping', {'peer': peer, 'on': on, 'topic': topic});
+
+  Future<void> starChat(String peer, bool on) async {
+    await _invoke('chatStar', {'peer': peer, 'on': on});
+    await refresh();
+  }
+
+  Future<void> orderChats(List<String> chats) async {
+    await _invoke('chatOrder', chats);
+    await refresh();
+  }
 
   Future<void> deleteChat(String peer) async {
     await _invoke('chatDelete', peer);

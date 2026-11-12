@@ -628,11 +628,17 @@ class _Swipe extends StatefulWidget {
     required this.label,
     required this.onAction,
     required this.child,
+    this.mark,
+    this.markLabel,
+    this.onMark,
   });
 
   final String label;
   final VoidCallback onAction;
   final Widget child;
+  final String? mark;
+  final String? markLabel;
+  final VoidCallback? onMark;
 
   @override
   State<_Swipe> createState() => _SwipeState();
@@ -643,11 +649,22 @@ class _SwipeState extends State<_Swipe> {
 
   double _offset = 0;
   bool _dragging = false;
+  bool _marking = false;
 
   void _drag(DragUpdateDetails details) {
+    var low = 0.0;
+
+    if (widget.onMark != null) {
+      low = -_width;
+    }
+
     setState(() {
       _dragging = true;
-      _offset = (_offset + details.delta.dx).clamp(0, _width);
+      _offset = (_offset + details.delta.dx).clamp(low, _width);
+
+      if (_offset != 0) {
+        _marking = _offset < 0;
+      }
     });
   }
 
@@ -661,16 +678,22 @@ class _SwipeState extends State<_Swipe> {
   }
 
   double _snap(double velocity) {
-    if (velocity > 300) {
-      return _width;
+    var side = _width;
+
+    if (_offset < 0) {
+      side = -_width;
     }
 
-    if (velocity < -300) {
+    if (velocity.abs() > 300) {
+      if (velocity.sign == side.sign) {
+        return side;
+      }
+
       return 0;
     }
 
-    if (_offset > _width / 2) {
-      return _width;
+    if (_offset.abs() > _width / 2) {
+      return side;
     }
 
     return 0;
@@ -680,9 +703,40 @@ class _SwipeState extends State<_Swipe> {
     setState(() => _offset = 0);
   }
 
+  void _settled() {
+    if (_offset == 0 && _marking) {
+      setState(() => _marking = false);
+    }
+  }
+
+  Widget _action(String label, String text, GlyphKind glyph, VoidCallback run) {
+    return Semantics(
+      button: true,
+      label: label,
+      child: GestureDetector(
+        onTap: () {
+          _close();
+          run();
+        },
+        child: Container(
+          color: Palette.amber,
+          alignment: Alignment.center,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Glyph(glyph, size: 18, color: Palette.bg),
+              const SizedBox(height: 4),
+              Text(text, style: Styles.rubric.copyWith(color: Palette.bg)),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
-    final open = _offset > 0 && !_dragging;
+    final open = _offset != 0 && !_dragging;
 
     return GestureDetector(
       onHorizontalDragUpdate: _drag,
@@ -695,41 +749,32 @@ class _SwipeState extends State<_Swipe> {
               top: 0,
               bottom: 0,
               width: _width,
-              child: Semantics(
-                button: true,
-                label: widget.label,
-                child: GestureDetector(
-                  onTap: () {
-                    _close();
-                    widget.onAction();
-                  },
-                  child: Container(
-                    color: Palette.amber,
-                    alignment: Alignment.center,
-                    child: Column(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        const Glyph(
-                          GlyphKind.close,
-                          size: 18,
-                          color: Palette.bg,
-                        ),
-                        const SizedBox(height: 4),
-                        Text(
-                          'DELETE',
-                          style: Styles.rubric.copyWith(color: Palette.bg),
-                        ),
-                      ],
-                    ),
-                  ),
-                ),
+              child: _action(
+                widget.label,
+                'DELETE',
+                GlyphKind.close,
+                widget.onAction,
               ),
             ),
+            if (_marking && widget.onMark != null)
+              Positioned(
+                right: 0,
+                top: 0,
+                bottom: 0,
+                width: _width,
+                child: _action(
+                  widget.markLabel ?? '',
+                  widget.mark ?? '',
+                  GlyphKind.star,
+                  widget.onMark!,
+                ),
+              ),
             AnimatedContainer(
               duration: _dragging
                   ? Duration.zero
                   : const Duration(milliseconds: 160),
               curve: Curves.easeOut,
+              onEnd: _settled,
               transform: Matrix4.translationValues(_offset, 0, 0),
               child: GestureDetector(
                 behavior: HitTestBehavior.opaque,
@@ -745,10 +790,16 @@ class _SwipeState extends State<_Swipe> {
 }
 
 class ChatRow extends StatelessWidget {
-  const ChatRow({super.key, required this.chat, required this.status});
+  const ChatRow({
+    super.key,
+    required this.chat,
+    required this.status,
+    this.handle,
+  });
 
   final ChatSummary chat;
   final Status status;
+  final int? handle;
 
   @override
   Widget build(BuildContext context) {
@@ -756,9 +807,20 @@ class ChatRow extends StatelessWidget {
     final last = chat.last;
     final typing = typingLine(status, chat.peer, '');
 
+    var mark = 'FAVORITE';
+
+    if (chat.star) {
+      mark = 'UNFAVORITE';
+    }
+
     final row = _Swipe(
       label: 'Delete chat with ${vigil.name(chat.peer)}',
       onAction: () => removeChat(chat.peer),
+      mark: mark,
+      markLabel:
+          '${mark[0]}${mark.substring(1).toLowerCase()} '
+          '${vigil.name(chat.peer)}',
+      onMark: isGroup(chat.peer) ? null : _star,
       child: GestureDetector(
         onLongPress: () => manageTopics(chat.peer),
         child: _row(vigil, last, typing),
@@ -783,6 +845,14 @@ class ChatRow extends StatelessWidget {
     );
   }
 
+  Future<void> _star() async {
+    try {
+      await Vigil.instance.starChat(chat.peer, !chat.star);
+    } on VigilError catch (e) {
+      notify(e.message);
+    }
+  }
+
   Widget _row(Vigil vigil, ChatMessage? last, String? typing) {
     return Panel(
       accent: chat.unread > 0,
@@ -797,7 +867,21 @@ class ChatRow extends StatelessWidget {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                PeerName(chat.peer, style: Styles.cardTitle),
+                Row(
+                  children: [
+                    Flexible(
+                      child: PeerName(chat.peer, style: Styles.cardTitle),
+                    ),
+                    if (chat.star) ...[
+                      const SizedBox(width: 6),
+                      const Glyph(
+                        GlyphKind.star,
+                        size: 11,
+                        color: Palette.amber,
+                      ),
+                    ],
+                  ],
+                ),
                 const SizedBox(height: 3),
                 Text(
                   typing ?? _preview(last),
@@ -829,6 +913,18 @@ class ChatRow extends StatelessWidget {
                 const SizedBox(height: 17),
             ],
           ),
+          if (handle != null)
+            ReorderableDragStartListener(
+              index: handle!,
+              child: Semantics(
+                label: 'Move ${vigil.name(chat.peer)}',
+                child: Container(
+                  color: Colors.transparent,
+                  padding: const EdgeInsets.fromLTRB(14, 10, 2, 10),
+                  child: const Glyph(GlyphKind.grip, size: 18),
+                ),
+              ),
+            ),
         ],
       ),
     );

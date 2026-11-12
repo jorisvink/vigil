@@ -167,11 +167,11 @@ class TabPage extends StatelessWidget {
                 PageTitle(rubric: rubric, title: title, index: index),
                 for (final child in children)
                   Padding(
-                    padding: const EdgeInsets.fromLTRB(
+                    padding: EdgeInsets.fromLTRB(
                       Metrics.edge,
                       0,
                       Metrics.edge,
-                      Metrics.gap,
+                      child is Gapped ? 0 : Metrics.gap,
                     ),
                     child: child,
                   ),
@@ -182,6 +182,15 @@ class TabPage extends StatelessWidget {
       ),
     );
   }
+}
+
+class Gapped extends StatelessWidget {
+  const Gapped({super.key, required this.child});
+
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) => child;
 }
 
 class PushedPage extends StatelessWidget {

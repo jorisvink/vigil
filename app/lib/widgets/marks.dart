@@ -243,6 +243,7 @@ enum GlyphKind {
   seal,
   bell,
   snoozed,
+  grip,
 }
 
 class Glyph extends StatelessWidget {
@@ -537,6 +538,10 @@ class _GlyphPainter extends CustomPainter {
           9.9,
           9.6,
         ], close: true);
+      case GlyphKind.grip:
+        poly([5, 7, 19, 7]);
+        poly([5, 12, 19, 12]);
+        poly([5, 17, 19, 17]);
     }
   }
 

@@ -1994,6 +1994,42 @@ final class ChatVault {
         return until
     }
 
+    static func star(_ chat: String, on: Bool) {
+        var stars = defaults.stringArray(forKey: starsKey) ?? []
+
+        stars.removeAll { $0 == chat }
+
+        if on {
+            stars.append(chat)
+        }
+
+        defaults.set(stars, forKey: starsKey)
+    }
+
+    static func order(_ chats: [String]) {
+        defaults.set(chats, forKey: orderKey)
+    }
+
+    static func unlist(_ chat: String) {
+        star(chat, on: false)
+        order((defaults.stringArray(forKey: orderKey) ?? []).filter { $0 != chat })
+    }
+
+    static func arrange(_ chats: [[String: Any]]) -> [[String: Any]] {
+        let stars = defaults.stringArray(forKey: starsKey) ?? []
+        let order = defaults.stringArray(forKey: orderKey) ?? []
+
+        return chats.map { chat in
+            let id = chat["peer"] as? String ?? ""
+            var entry = chat
+
+            entry["star"] = stars.contains(id)
+            entry["order"] = order.firstIndex(of: id) ?? -1
+
+            return entry
+        }
+    }
+
     static let callCategory = "call"
 
     static func callActions() {
@@ -2007,4 +2043,6 @@ final class ChatVault {
 
     private static let namesKey = "peerNames"
     private static let mutesKey = "chatMutes"
+    private static let starsKey = "chatStars"
+    private static let orderKey = "chatOrder"
 }

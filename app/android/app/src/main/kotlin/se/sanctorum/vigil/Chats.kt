@@ -701,6 +701,55 @@ object Chats {
     private fun mutes(context: Context): JSONObject =
         JSONObject(prefs(context).getString("mutes", "{}") ?: "{}")
 
+    fun star(context: Context, id: String, on: Boolean) {
+        val stars = stars(context)
+
+        if (on) {
+            stars.put(id, true)
+        } else {
+            stars.remove(id)
+        }
+
+        prefs(context).edit().putString("stars", stars.toString()).apply()
+    }
+
+    fun order(context: Context, chats: List<String>) {
+        prefs(context).edit().putString("order", JSONArray(chats).toString()).apply()
+    }
+
+    fun unlist(context: Context, id: String) {
+        val order = order(context)
+
+        star(context, id, false)
+
+        if (order.remove(id)) {
+            order(context, order)
+        }
+    }
+
+    fun arrange(context: Context, chats: JSONArray): JSONArray {
+        val stars = stars(context)
+        val order = order(context)
+
+        for (idx in 0 until chats.length()) {
+            val chat = chats.getJSONObject(idx)
+            val id = chat.getString("peer")
+
+            chat.put("star", stars.has(id)).put("order", order.indexOf(id))
+        }
+
+        return chats
+    }
+
+    private fun stars(context: Context): JSONObject =
+        JSONObject(prefs(context).getString("stars", "{}") ?: "{}")
+
+    private fun order(context: Context): MutableList<String> {
+        val saved = JSONArray(prefs(context).getString("order", "[]") ?: "[]")
+
+        return MutableList(saved.length()) { saved.getString(it) }
+    }
+
     private fun announce(service: VigilVpnService, chat: String, peer: Int, text: String) {
         if (!alerts(service, chat, false)) {
             return
