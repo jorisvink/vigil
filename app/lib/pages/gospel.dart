@@ -207,7 +207,7 @@ class _GospelPageState extends State<GospelPage> with WidgetsBindingObserver {
               'that arrive while it is locked are protected by the '
               'device key only.',
         ),
-      if (_chats != null && chats.isEmpty && _error == null)
+      if (_chats != null && all.isEmpty && _error == null)
         EmptyState(
           glyph: GlyphKind.chat,
           title: 'No chats yet',
@@ -231,7 +231,7 @@ class _GospelPageState extends State<GospelPage> with WidgetsBindingObserver {
       if (all.isNotEmpty && chats.isEmpty)
         const Padding(
           padding: EdgeInsets.symmetric(vertical: 8),
-          child: Text('No unread messages.', style: Styles.detail),
+          child: Text('It sure is quiet here.', style: Styles.detail),
         ),
       if (chats.isNotEmpty)
         Gapped(
