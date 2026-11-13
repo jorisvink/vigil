@@ -313,7 +313,7 @@ class _ShadePainter extends CustomPainter {
         Path()..addRect(Offset.zero & size),
         Path()..addRect(window),
       ),
-      Paint()..color = const Color(0xb30b0c0e),
+      Paint()..color = const Color(0xb315120f),
     );
   }
 

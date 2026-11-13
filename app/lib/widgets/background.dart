@@ -73,7 +73,7 @@ class _LinkOverlayState extends State<LinkOverlay> {
             opacity: shown ? 1 : 0,
             duration: const Duration(milliseconds: 150),
             child: ColoredBox(
-              color: const Color(0xcc0b0c0e),
+              color: Palette.veil,
               child: Center(
                 child: Padding(
                   padding: const EdgeInsets.symmetric(horizontal: Metrics.edge),

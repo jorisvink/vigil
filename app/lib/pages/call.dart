@@ -122,14 +122,14 @@ Future<T?> sheet<T>(BuildContext context, WidgetBuilder builder) =>
       isScrollControlled: true,
       useSafeArea: true,
       backgroundColor: const Color(0x00000000),
-      barrierColor: const Color(0xcc0b0c0e),
+      barrierColor: Palette.veil,
       elevation: 0,
       builder: (context) => Padding(
         padding: EdgeInsets.only(
           bottom: MediaQuery.viewInsetsOf(context).bottom,
         ),
-        child: CustomPaint(
-          painter: const CutPainter(fill: Palette.bg2, stroke: Palette.line2),
+        child: DecoratedBox(
+          decoration: sheetDecoration,
           child: Padding(
             padding: EdgeInsets.fromLTRB(
               Metrics.edge,
@@ -140,9 +140,7 @@ Future<T?> sheet<T>(BuildContext context, WidgetBuilder builder) =>
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
-                Center(
-                  child: Container(width: 32, height: 3, color: Palette.amber),
-                ),
+                const SheetHandle(),
                 const SizedBox(height: 20),
                 // Bounded by the screen minus the keyboard, so a sheet can
                 // let a Flexible part give way when the keyboard comes up.
@@ -154,13 +152,7 @@ Future<T?> sheet<T>(BuildContext context, WidgetBuilder builder) =>
       ),
     );
 
-Widget sheetTitle(String title) => Row(
-  children: [
-    const RubricCross(fill: Palette.bg2),
-    const SizedBox(width: 12),
-    Expanded(child: Text(title, style: Styles.cardTitle)),
-  ],
-);
+Widget sheetTitle(String title) => Text(title, style: Styles.barTitle);
 
 class CallPage extends StatefulWidget {
   const CallPage({super.key});
@@ -231,7 +223,7 @@ class _CallPageState extends State<CallPage> {
 
         return PopScope(
           canPop: phone == null,
-          child: DotGrid(
+          child: Ground(
             child: SafeArea(
               child: Padding(
                 padding: const EdgeInsets.fromLTRB(
@@ -543,10 +535,10 @@ class _CallKey extends StatelessWidget {
               width: compact ? 56 : 72,
               height: compact ? 56 : 72,
               child: CustomPaint(
-                painter: CutPainter(
+                painter: RoundPainter(
                   fill: fill,
                   stroke: lit ? Palette.amber : Palette.line2,
-                  cut: compact ? 11 : 14,
+                  radius: compact ? 28 : 36,
                 ),
                 child: Center(
                   child: Glyph(
@@ -563,7 +555,7 @@ class _CallKey extends StatelessWidget {
             ),
             const SizedBox(height: 10),
             Text(
-              label.toUpperCase(),
+              label,
               style: Styles.tab.copyWith(color: lit ? Palette.fg : Palette.dim),
             ),
           ],

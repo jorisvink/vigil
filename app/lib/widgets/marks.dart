@@ -1,4 +1,4 @@
-// The small marks the app is drawn with: the cut corner, the crosses,
+// The small marks the app is drawn with: the rounded panel, the crosses,
 // the wordmark square and the line glyphs used as icons.
 
 import 'dart:math' as math;
@@ -7,69 +7,54 @@ import 'package:flutter/widgets.dart';
 
 import '../theme.dart';
 
-Path cutPath(Size size, {double cut = Metrics.cut}) {
-  return Path()
-    ..moveTo(0, 0)
-    ..lineTo(size.width - cut, 0)
-    ..lineTo(size.width, cut)
-    ..lineTo(size.width, size.height)
-    ..lineTo(0, size.height)
-    ..close();
-}
-
-Path portraitPath(Size size) {
-  final cut = size.shortestSide * 0.22;
-
-  return Path()
-    ..moveTo(0, 0)
-    ..lineTo(size.width - cut, 0)
-    ..lineTo(size.width, cut)
-    ..lineTo(size.width, size.height)
-    ..lineTo(cut, size.height)
-    ..lineTo(0, size.height - cut)
-    ..close();
+Path roundPath(Size size, {double radius = Metrics.radius}) {
+  return Path()..addRRect(
+    RRect.fromRectAndRadius(Offset.zero & size, Radius.circular(radius)),
+  );
 }
 
 class PortraitClipper extends CustomClipper<Path> {
   const PortraitClipper();
 
   @override
-  Path getClip(Size size) => portraitPath(size);
+  Path getClip(Size size) => Path()..addOval(Offset.zero & size);
 
   @override
   bool shouldReclip(covariant PortraitClipper oldClipper) => false;
 }
 
-class CutClipper extends CustomClipper<Path> {
-  const CutClipper({this.cut = Metrics.cut});
+class RoundClipper extends CustomClipper<Path> {
+  const RoundClipper({this.radius = Metrics.radius});
 
-  final double cut;
-
-  @override
-  Path getClip(Size size) => cutPath(size, cut: cut);
+  final double radius;
 
   @override
-  bool shouldReclip(covariant CutClipper oldClipper) => oldClipper.cut != cut;
+  Path getClip(Size size) => roundPath(size, radius: radius);
+
+  @override
+  bool shouldReclip(covariant RoundClipper oldClipper) =>
+      oldClipper.radius != radius;
 }
 
-class CutPainter extends CustomPainter {
-  const CutPainter({
+class RoundPainter extends CustomPainter {
+  const RoundPainter({
     this.fill = Palette.bg2,
     this.stroke = Palette.line,
-    this.cut = Metrics.cut,
+    this.radius = Metrics.radius,
   });
 
   final Color fill;
   final Color stroke;
-  final double cut;
+  final double radius;
 
   @override
   void paint(Canvas canvas, Size size) {
-    final path = cutPath(size, cut: cut);
+    final rect = Offset.zero & size;
+    final round = RRect.fromRectAndRadius(rect, Radius.circular(radius));
 
-    canvas.drawPath(path, Paint()..color = fill);
-    canvas.drawPath(
-      path,
+    canvas.drawRRect(round, Paint()..color = fill);
+    canvas.drawRRect(
+      round.deflate(0.5),
       Paint()
         ..color = stroke
         ..style = PaintingStyle.stroke
@@ -78,65 +63,10 @@ class CutPainter extends CustomPainter {
   }
 
   @override
-  bool shouldRepaint(covariant CutPainter oldDelegate) =>
+  bool shouldRepaint(covariant RoundPainter oldDelegate) =>
       oldDelegate.fill != fill ||
       oldDelegate.stroke != stroke ||
-      oldDelegate.cut != cut;
-}
-
-/// The outlined cross the site puts next to every rubric.
-///
-/// The svg path is M3.5 .5h4v3h3v4h-3v7h-4v-7h-3v-4h3z, filled with
-/// the background and stroked in amber.
-class RubricCross extends StatelessWidget {
-  const RubricCross({super.key, this.fill = Palette.bg});
-
-  final Color fill;
-
-  @override
-  Widget build(BuildContext context) {
-    return CustomPaint(
-      size: const Size(11, 15),
-      painter: _RubricCrossPainter(fill),
-    );
-  }
-}
-
-class _RubricCrossPainter extends CustomPainter {
-  const _RubricCrossPainter(this.fill);
-
-  final Color fill;
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    final path = Path()
-      ..moveTo(3.5, 0.5)
-      ..relativeLineTo(4, 0)
-      ..relativeLineTo(0, 3)
-      ..relativeLineTo(3, 0)
-      ..relativeLineTo(0, 4)
-      ..relativeLineTo(-3, 0)
-      ..relativeLineTo(0, 7)
-      ..relativeLineTo(-4, 0)
-      ..relativeLineTo(0, -7)
-      ..relativeLineTo(-3, 0)
-      ..relativeLineTo(0, -4)
-      ..relativeLineTo(3, 0)
-      ..close();
-
-    canvas.drawPath(path, Paint()..color = fill);
-    canvas.drawPath(
-      path,
-      Paint()
-        ..color = Palette.amber
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = 1,
-    );
-  }
-
-  @override
-  bool shouldRepaint(covariant _RubricCrossPainter oldDelegate) =>
-      oldDelegate.fill != fill;
+      oldDelegate.radius != radius;
 }
 
 class SolidCross extends StatelessWidget {
@@ -306,7 +236,7 @@ class _GlyphPainter extends CustomPainter {
         poly([2, 13, 7, 13, 10, 5, 14, 19, 17, 11, 22, 11]);
       case GlyphKind.log:
         canvas.drawPath(
-          cutPath(const Size(20, 18), cut: 4).shift(const Offset(2, 3)),
+          roundPath(const Size(20, 18), radius: 3).shift(const Offset(2, 3)),
           line,
         );
         poly([6, 9, 9, 12, 6, 15]);
@@ -350,7 +280,7 @@ class _GlyphPainter extends CustomPainter {
         poly([7, 12, 17, 12]);
       case GlyphKind.paste:
         canvas.drawPath(
-          cutPath(const Size(14, 18), cut: 4).shift(const Offset(5, 3)),
+          roundPath(const Size(14, 18), radius: 3).shift(const Offset(5, 3)),
           line,
         );
         poly([8, 9, 15, 9]);

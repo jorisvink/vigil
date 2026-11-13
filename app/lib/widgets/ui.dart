@@ -1,6 +1,5 @@
 import 'dart:async';
 import 'dart:math' as math;
-import 'dart:ui' as ui;
 
 import 'package:flutter/widgets.dart';
 
@@ -13,41 +12,15 @@ import 'net_data.dart';
 double tabBarSpace(BuildContext context) =>
     Metrics.tabBar + MediaQuery.paddingOf(context).bottom + 24;
 
-class DotGrid extends StatelessWidget {
-  const DotGrid({super.key, required this.child});
+class Ground extends StatelessWidget {
+  const Ground({super.key, required this.child});
 
   final Widget child;
 
   @override
   Widget build(BuildContext context) {
-    return CustomPaint(painter: const _DotsPainter(), child: child);
+    return ColoredBox(color: Palette.bg, child: child);
   }
-}
-
-class _DotsPainter extends CustomPainter {
-  const _DotsPainter();
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    canvas.drawRect(Offset.zero & size, Paint()..color = Palette.bg);
-
-    final paint = Paint()
-      ..color = const Color(0x0dffffff)
-      ..strokeWidth = 2.3
-      ..strokeCap = StrokeCap.round;
-    final dots = <Offset>[];
-
-    for (double y = 12; y < size.height; y += 24) {
-      for (double x = 12; x < size.width; x += 24) {
-        dots.add(Offset(x, y));
-      }
-    }
-
-    canvas.drawPoints(ui.PointMode.points, dots, paint);
-  }
-
-  @override
-  bool shouldRepaint(covariant CustomPainter oldDelegate) => false;
 }
 
 class TopBar extends StatelessWidget {
@@ -60,7 +33,7 @@ class TopBar extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return SizedBox(
-      height: 56,
+      height: 60,
       child: Row(
         children: [
           const SizedBox(width: Metrics.edge),
@@ -89,7 +62,7 @@ class Rubric extends StatelessWidget {
         children: [
           if (index != null)
             TextSpan(
-              text: '${hex(index!)}   ',
+              text: '${roman(index!)}  ·  ',
               style: const TextStyle(color: Palette.amber),
             ),
           TextSpan(text: text.toUpperCase()),
@@ -115,21 +88,15 @@ class PageTitle extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Padding(
-      padding: const EdgeInsets.fromLTRB(Metrics.edge, 18, Metrics.edge, 22),
+      padding: const EdgeInsets.fromLTRB(Metrics.edge, 14, Metrics.edge, 22),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Row(
-            children: [
-              const RubricCross(),
-              const SizedBox(width: 12),
-              Rubric(text: rubric, index: index),
-            ],
-          ),
           if (title != null) ...[
-            const SizedBox(height: 10),
-            Text(title!, style: Styles.title),
+            Rubric(text: rubric, index: index),
+            const SizedBox(height: 8),
           ],
+          Text(title ?? rubric, style: Styles.title),
         ],
       ),
     );
@@ -165,7 +132,6 @@ class TabPage extends StatelessWidget {
       child: Column(
         children: [
           TopBar(actions: actions, glow: glow),
-          const Line(),
           Expanded(
             child: CustomScrollView(
               slivers: [
@@ -247,7 +213,7 @@ class PushedPage extends StatelessWidget {
     final keyboard = MediaQuery.viewInsetsOf(context).bottom;
     final inset = keyboard > 0 ? 0.0 : MediaQuery.paddingOf(context).bottom;
 
-    return DotGrid(
+    return Ground(
       child: Padding(
         padding: EdgeInsets.only(bottom: keyboard),
         child: SafeArea(
@@ -255,7 +221,7 @@ class PushedPage extends StatelessWidget {
           child: Column(
             children: [
               SizedBox(
-                height: 56,
+                height: 60,
                 child: Row(
                   children: [
                     const SizedBox(width: Metrics.edge - 12),
@@ -327,6 +293,30 @@ class PushedPage extends StatelessWidget {
   }
 }
 
+const sheetDecoration = BoxDecoration(
+  color: Palette.bg2,
+  border: Border.fromBorderSide(BorderSide(color: Palette.line2)),
+  borderRadius: BorderRadius.vertical(top: Radius.circular(28)),
+);
+
+class SheetHandle extends StatelessWidget {
+  const SheetHandle({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return Center(
+      child: Container(
+        width: 36,
+        height: 4,
+        decoration: BoxDecoration(
+          color: Palette.line2,
+          borderRadius: BorderRadius.circular(2),
+        ),
+      ),
+    );
+  }
+}
+
 class Line extends StatelessWidget {
   const Line({super.key, this.color = Palette.line});
 
@@ -356,10 +346,10 @@ class Panel extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     Widget panel(bool pressed) => CustomPaint(
-      painter: CutPainter(
+      painter: RoundPainter(
         fill: pressed ? Palette.bg3 : Palette.bg2,
         stroke: accent
-            ? Palette.amber
+            ? Palette.amberDim
             : pressed
             ? Palette.line2
             : Palette.line,
@@ -422,21 +412,27 @@ class StateDot extends StatelessWidget {
       height: size,
       decoration: BoxDecoration(
         color: color,
+        shape: BoxShape.circle,
         boxShadow: state == Liveness.off
             ? null
-            : [BoxShadow(color: color.withValues(alpha: 0.55), blurRadius: 8)],
+            : [
+                BoxShadow(
+                  color: color.withValues(alpha: 0.25),
+                  spreadRadius: size / 2,
+                ),
+              ],
       ),
     );
   }
 }
 
 class AmbientClock extends ValueNotifier<double> {
-  AmbientClock(this._sample) : super(_sample(0));
+  AmbientClock(this._sample, [this._quiet]) : super(_sample(0));
 
   static const _step = Duration(milliseconds: 50);
 
   static final net = AmbientClock((seconds) => seconds);
-  static final blip = AmbientClock(_blip);
+  static final blip = AmbientClock(_blip, _blipQuiet);
 
   static double _blip(double seconds) {
     final p = seconds % 4 / 4;
@@ -452,25 +448,42 @@ class AmbientClock extends ValueNotifier<double> {
     return 1 - (p - 0.9575) / 0.0425;
   }
 
+  static Duration? _blipQuiet(double seconds) {
+    final p = seconds % 4 / 4;
+
+    if (p >= 0.9375) {
+      return null;
+    }
+
+    return Duration(microseconds: ((0.9375 - p) * 4e6).ceil());
+  }
+
   static bool live(BuildContext context) {
     return TickerMode.valuesOf(context).enabled &&
         !MediaQuery.disableAnimationsOf(context);
   }
 
   final double Function(double seconds) _sample;
+  final Duration? Function(double seconds)? _quiet;
 
+  final _clock = Stopwatch();
   Timer? _timer;
-  var _ticks = 0;
 
-  void _tick(Timer _) {
-    _ticks++;
-    value = _sample(_ticks * _step.inMilliseconds / 1000);
+  void _tick() {
+    final seconds = _clock.elapsedMicroseconds / 1e6;
+
+    value = _sample(seconds);
+    _timer = Timer(_quiet?.call(seconds) ?? _step, _tick);
   }
 
   @override
   void addListener(VoidCallback listener) {
     super.addListener(listener);
-    _timer ??= Timer.periodic(_step, _tick);
+
+    if (_timer == null) {
+      _clock.start();
+      _timer = Timer(Duration.zero, _tick);
+    }
   }
 
   @override
@@ -480,6 +493,7 @@ class AmbientClock extends ValueNotifier<double> {
     if (!hasListeners) {
       _timer?.cancel();
       _timer = null;
+      _clock.stop();
     }
   }
 }
@@ -532,13 +546,14 @@ class AroundDot extends StatelessWidget {
       height: size,
       decoration: BoxDecoration(
         color: Palette.good.withValues(alpha: 0.9 * t),
+        shape: BoxShape.circle,
         border: Border.all(color: Palette.good.withValues(alpha: 0.75)),
         boxShadow: t == 0
             ? null
             : [
                 BoxShadow(
-                  color: Palette.good.withValues(alpha: 0.55 * t),
-                  blurRadius: 8,
+                  color: Palette.good.withValues(alpha: 0.25 * t),
+                  spreadRadius: size / 2,
                 ),
               ],
       ),
@@ -569,15 +584,16 @@ class Tag extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 4),
+      padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 5),
       decoration: BoxDecoration(
         color: accent ? Palette.amberWash : null,
         border: Border.all(color: accent ? Palette.amberDim : Palette.line2),
+        borderRadius: BorderRadius.circular(12),
       ),
       child: Text(
         text.toUpperCase(),
         style: Styles.rubric.copyWith(
-          fontSize: 9.5,
+          fontSize: 10,
           height: 1,
           color: accent ? Palette.amber : Palette.dim,
         ),
@@ -774,14 +790,12 @@ class Notice extends StatelessWidget {
     return Container(
       decoration: BoxDecoration(
         color: Palette.bg2,
-        border: Border(
-          left: BorderSide(color: edge, width: 2),
-          top: const BorderSide(color: Palette.line),
-          right: const BorderSide(color: Palette.line),
-          bottom: const BorderSide(color: Palette.line),
+        border: Border.all(
+          color: kind == NoticeKind.note ? Palette.line : edge.withAlpha(90),
         ),
+        borderRadius: BorderRadius.circular(Metrics.radius),
       ),
-      padding: const EdgeInsets.fromLTRB(14, 12, 14, 12),
+      padding: const EdgeInsets.fromLTRB(16, 13, 16, 13),
       child: Text.rich(
         TextSpan(
           children: [
@@ -811,14 +825,10 @@ class Pre extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Container(
-      decoration: const BoxDecoration(
-        color: Color(0xff07080a),
-        border: Border(
-          left: BorderSide(color: Palette.amber, width: 2),
-          top: BorderSide(color: Palette.line),
-          right: BorderSide(color: Palette.line),
-          bottom: BorderSide(color: Palette.line),
-        ),
+      decoration: BoxDecoration(
+        color: Palette.well,
+        border: Border.all(color: Palette.line),
+        borderRadius: BorderRadius.circular(12),
       ),
       padding: const EdgeInsets.fromLTRB(14, 12, 14, 12),
       child: child,

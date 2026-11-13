@@ -95,7 +95,7 @@ final class VigilPlugin: NSObject, FlutterPlugin, UIDocumentPickerDelegate,
 
             let view = UIView(frame: window.bounds)
             view.tag = coverTag
-            view.backgroundColor = UIColor(red: 0x0b / 255, green: 0x0c / 255, blue: 0x0e / 255, alpha: 1)
+            view.backgroundColor = UIColor(red: 0x15 / 255, green: 0x12 / 255, blue: 0x0f / 255, alpha: 1)
             view.autoresizingMask = [.flexibleWidth, .flexibleHeight]
             window.addSubview(view)
         }

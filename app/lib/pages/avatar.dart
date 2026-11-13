@@ -187,11 +187,11 @@ class _Mask extends CustomPainter {
     final hole = Path()
       ..fillType = PathFillType.evenOdd
       ..addRect(area)
-      ..addPath(portraitPath(size), Offset.zero);
+      ..addOval(area);
 
     canvas.drawPath(hole, Paint()..color = const Color(0xb3000000));
-    canvas.drawPath(
-      portraitPath(size),
+    canvas.drawOval(
+      area,
       Paint()
         ..color = Palette.amber
         ..style = PaintingStyle.stroke

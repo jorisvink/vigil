@@ -110,13 +110,13 @@ class Btn extends StatelessWidget {
         }
 
         final text = Text(
-          busy ? 'Working…'.toUpperCase() : label.toUpperCase(),
+          busy ? 'Working…' : label,
           style: Styles.btn.copyWith(color: fg),
           overflow: TextOverflow.ellipsis,
         );
 
         return CustomPaint(
-          painter: CutPainter(fill: fill, stroke: stroke),
+          painter: RoundPainter(fill: fill, stroke: stroke, radius: 26),
           child: Container(
             height: kind == BtnKind.ghost ? 40 : 52,
             padding: EdgeInsets.symmetric(
@@ -195,14 +195,14 @@ class Toggle extends StatelessWidget {
               duration: const Duration(milliseconds: 160),
               curve: Curves.easeOut,
               builder: (context, t, _) => CustomPaint(
-                painter: CutPainter(
+                painter: RoundPainter(
                   fill: Color.lerp(Palette.bg3, Palette.amberWash, t)!,
                   stroke: Color.lerp(
                     pressed ? Palette.fg2 : Palette.line2,
                     accent,
                     t,
                   )!,
-                  cut: 6,
+                  radius: _height / 2,
                 ),
                 child: SizedBox(
                   width: _width,
@@ -214,7 +214,10 @@ class Toggle extends StatelessWidget {
                       child: Container(
                         width: _knob,
                         height: _knob,
-                        color: Color.lerp(Palette.dim, accent, t),
+                        decoration: BoxDecoration(
+                          color: Color.lerp(Palette.dim, accent, t),
+                          shape: BoxShape.circle,
+                        ),
                       ),
                     ),
                   ),

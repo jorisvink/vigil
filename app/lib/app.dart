@@ -83,7 +83,7 @@ class VigilApp extends StatelessWidget {
       ),
       textSelectionTheme: const TextSelectionThemeData(
         cursorColor: Palette.amber,
-        selectionColor: Color(0x99ffb000),
+        selectionColor: Color(0x80e8a33d),
         selectionHandleColor: Palette.amber,
       ),
       textTheme: const TextTheme(bodyMedium: Styles.body),
@@ -181,7 +181,7 @@ class _ShellState extends State<Shell> with WidgetsBindingObserver {
 
   @override
   Widget build(BuildContext context) {
-    return DotGrid(
+    return Ground(
       child: ValueListenableBuilder<NavTab>(
         valueListenable: currentTab,
         builder: (context, tab, _) => Stack(
@@ -215,7 +215,7 @@ class _ShellState extends State<Shell> with WidgetsBindingObserver {
                     gradient: LinearGradient(
                       begin: Alignment.topCenter,
                       end: Alignment.bottomCenter,
-                      colors: [Color(0x000b0c0e), Palette.bg],
+                      colors: [Color(0x0015120f), Palette.bg],
                       stops: [0, 0.45],
                     ),
                   ),
@@ -223,9 +223,9 @@ class _ShellState extends State<Shell> with WidgetsBindingObserver {
               ),
             ),
             Positioned(
-              left: 12,
-              right: 12,
-              bottom: MediaQuery.paddingOf(context).bottom + 12,
+              left: 0,
+              right: 0,
+              bottom: 0,
               child: StreamBuilder<List<Tunnel>>(
                 stream: Vigil.instance.tunnelUpdates,
                 initialData: Vigil.instance.tunnels,
@@ -262,29 +262,26 @@ class _TabBar extends StatelessWidget {
   Widget build(BuildContext context) {
     return Container(
       decoration: const BoxDecoration(
-        boxShadow: [
-          BoxShadow(color: Color(0xcc000000), blurRadius: 24, spreadRadius: 4),
-        ],
+        color: Palette.bg2,
+        border: Border(top: BorderSide(color: Palette.line)),
       ),
-      child: CustomPaint(
-        painter: const CutPainter(fill: Palette.bg2, stroke: Palette.line2),
-        child: SizedBox(
-          height: Metrics.tabBar,
-          child: Row(
-            children: [
-              for (final tab in NavTab.values)
-                if (tab != NavTab.status || status)
-                  Expanded(
-                    child: _TabItem(
-                      label: _tabs[tab.index].$1,
-                      glyph: _tabs[tab.index].$2,
-                      active: tab == current,
-                      mark: tab == NavTab.gospel && unseen > 0,
-                      onTap: () => goTab(tab),
-                    ),
+      padding: EdgeInsets.only(bottom: MediaQuery.paddingOf(context).bottom),
+      child: SizedBox(
+        height: Metrics.tabBar,
+        child: Row(
+          children: [
+            for (final tab in NavTab.values)
+              if (tab != NavTab.status || status)
+                Expanded(
+                  child: _TabItem(
+                    label: _tabs[tab.index].$1,
+                    glyph: _tabs[tab.index].$2,
+                    active: tab == current,
+                    mark: tab == NavTab.gospel && unseen > 0,
+                    onTap: () => goTab(tab),
                   ),
-            ],
-          ),
+                ),
+          ],
         ),
       ),
     );
@@ -314,48 +311,34 @@ class _TabItem extends StatelessWidget {
       builder: (context, pressed) {
         final color = active || pressed ? Palette.amber : Palette.dim;
 
-        return Stack(
-          children: [
-            Center(
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
+        return Center(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Stack(
+                clipBehavior: Clip.none,
                 children: [
-                  Stack(
-                    clipBehavior: Clip.none,
-                    children: [
-                      Glyph(glyph, size: 22, color: color),
-                      if (mark)
-                        Positioned(
-                          top: -2,
-                          right: -5,
-                          child: Container(
-                            width: 7,
-                            height: 7,
-                            color: Palette.amber,
-                          ),
+                  Glyph(glyph, size: 22, color: color),
+                  if (mark)
+                    Positioned(
+                      top: -2,
+                      right: -5,
+                      child: Container(
+                        width: 8,
+                        height: 8,
+                        decoration: BoxDecoration(
+                          color: Palette.amber,
+                          shape: BoxShape.circle,
+                          border: Border.all(color: Palette.bg2, width: 1.5),
                         ),
-                    ],
-                  ),
-                  const SizedBox(height: 7),
-                  Text(
-                    label.toUpperCase(),
-                    style: Styles.tab.copyWith(
-                      color: active ? Palette.fg : color,
+                      ),
                     ),
-                  ),
                 ],
               ),
-            ),
-            if (active)
-              Positioned(
-                top: 0,
-                left: 0,
-                right: 0,
-                child: Center(
-                  child: Container(width: 26, height: 2, color: Palette.amber),
-                ),
-              ),
-          ],
+              const SizedBox(height: 6),
+              Text(label, style: Styles.tab.copyWith(color: color)),
+            ],
+          ),
         );
       },
     );
@@ -524,8 +507,10 @@ class _SwipeBackState extends State<SwipeBack>
   }
 }
 
-Future<T?> replace<T>(Widget page) {
-  return navigatorKey.currentState!.pushReplacement<T, Object?>(route<T>(page));
+Future<T?> replace<T>(Widget page, {bool opaque = true}) {
+  return navigatorKey.currentState!.pushReplacement<T, Object?>(
+    route<T>(page, opaque: opaque),
+  );
 }
 
 void open(String url) {
@@ -690,6 +675,77 @@ class PeerName extends StatelessWidget {
   }
 }
 
+const _inks = [
+  Color(0xff5b3f2a),
+  Color(0xff3d4a5b),
+  Color(0xff4a5b3d),
+  Color(0xff6b4a5a),
+  Color(0xff5b5a3d),
+  Color(0xff3d5b56),
+];
+
+const _names = [
+  Color(0xffdcb48f),
+  Color(0xff9fb4d6),
+  Color(0xffa9c99a),
+  Color(0xffd6a3bb),
+  Color(0xffcfc98f),
+  Color(0xff8fcfc4),
+];
+
+int _shade(String peer) {
+  var sum = 0;
+
+  for (final unit in peer.codeUnits) {
+    sum = (sum * 31 + unit) & 0xffff;
+  }
+
+  return sum % _inks.length;
+}
+
+Color inkOf(String peer) => _inks[_shade(peer)];
+
+Color nameInk(String peer) => _names[_shade(peer)];
+
+class Monogram extends StatelessWidget {
+  const Monogram({
+    super.key,
+    required this.peer,
+    required this.size,
+    this.name,
+  });
+
+  final String peer;
+  final double size;
+  final String? name;
+
+  @override
+  Widget build(BuildContext context) {
+    final vigil = Vigil.instance;
+    final shown =
+        name ?? (peer == selfPeer ? vigil.selfName : vigil.name(peer));
+    final plain = shown.replaceFirst('~', '').trim();
+    var initial = '';
+
+    if (plain.isNotEmpty) {
+      initial = String.fromCharCode(plain.runes.first).toUpperCase();
+    }
+
+    return Container(
+      width: size,
+      height: size,
+      alignment: Alignment.center,
+      decoration: BoxDecoration(color: inkOf(peer), shape: BoxShape.circle),
+      child: ExcludeSemantics(
+        child: Text(
+          initial,
+          style: Styles.barTitle.copyWith(fontSize: size * 0.48, height: 1),
+        ),
+      ),
+    );
+  }
+}
+
 class Avatar extends StatelessWidget {
   const Avatar(
     this.peer, {
@@ -697,12 +753,14 @@ class Avatar extends StatelessWidget {
     this.size = 36,
     this.margin = const EdgeInsets.only(right: 12),
     this.zoom = false,
+    this.name,
   });
 
   final String peer;
   final double size;
   final EdgeInsets margin;
   final bool zoom;
+  final String? name;
 
   @override
   Widget build(BuildContext context) {
@@ -714,27 +772,22 @@ class Avatar extends StatelessWidget {
         final data = snapshot.data;
 
         if (data == null) {
-          return const SizedBox.shrink();
+          return Padding(
+            padding: margin,
+            child: Monogram(peer: peer, size: size, name: name),
+          );
         }
 
-        final portrait = ClipPath(
-          clipper: const PortraitClipper(),
-          child: Container(
+        final portrait = ClipOval(
+          child: Image.memory(
+            data,
             width: size,
             height: size,
-            padding: const EdgeInsets.all(1),
-            color: Palette.line2,
-            child: ClipPath(
-              clipper: const PortraitClipper(),
-              child: Image.memory(
-                data,
-                fit: BoxFit.cover,
-                gaplessPlayback: true,
-                cacheWidth: (size * ratio).round(),
-                errorBuilder: (context, error, stack) =>
-                    const SizedBox.shrink(),
-              ),
-            ),
+            fit: BoxFit.cover,
+            gaplessPlayback: true,
+            cacheWidth: (size * ratio).round(),
+            errorBuilder: (context, error, stack) =>
+                Monogram(peer: peer, size: size, name: name),
           ),
         );
 
@@ -785,21 +838,13 @@ class _AvatarView extends StatelessWidget {
                     return Column(
                       mainAxisSize: MainAxisSize.min,
                       children: [
-                        ClipPath(
-                          clipper: const PortraitClipper(),
-                          child: Container(
+                        ClipOval(
+                          child: Image.memory(
+                            data,
                             width: side,
                             height: side,
-                            padding: const EdgeInsets.all(2),
-                            color: Palette.line2,
-                            child: ClipPath(
-                              clipper: const PortraitClipper(),
-                              child: Image.memory(
-                                data,
-                                fit: BoxFit.cover,
-                                filterQuality: FilterQuality.medium,
-                              ),
-                            ),
+                            fit: BoxFit.cover,
+                            filterQuality: FilterQuality.medium,
                           ),
                         ),
                         const SizedBox(height: 20),
@@ -843,10 +888,10 @@ Future<bool> confirm({
     isScrollControlled: true,
     useSafeArea: true,
     backgroundColor: const Color(0x00000000),
-    barrierColor: const Color(0xcc0b0c0e),
+    barrierColor: Palette.veil,
     elevation: 0,
-    builder: (context) => CustomPaint(
-      painter: const CutPainter(fill: Palette.bg2, stroke: Palette.line2),
+    builder: (context) => DecoratedBox(
+      decoration: sheetDecoration,
       child: Padding(
         padding: EdgeInsets.fromLTRB(
           Metrics.edge,
@@ -858,22 +903,14 @@ Future<bool> confirm({
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Center(
-              child: Container(width: 32, height: 3, color: Palette.amber),
-            ),
+            const SheetHandle(),
             const SizedBox(height: 20),
             Flexible(
               child: SingleChildScrollView(
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Row(
-                      children: [
-                        const RubricCross(fill: Palette.bg2),
-                        const SizedBox(width: 12),
-                        Expanded(child: Text(title, style: Styles.cardTitle)),
-                      ],
-                    ),
+                    Text(title, style: Styles.barTitle),
                     const SizedBox(height: 12),
                     Text(text, style: Styles.body),
                     if (detail != null) ...[const SizedBox(height: 16), detail],

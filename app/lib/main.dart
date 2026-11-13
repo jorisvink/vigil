@@ -11,7 +11,7 @@ void main() {
       statusBarColor: Color(0x00000000),
       statusBarIconBrightness: Brightness.light,
       statusBarBrightness: Brightness.dark,
-      systemNavigationBarColor: Color(0xff111317),
+      systemNavigationBarColor: Color(0xff1e1a16),
       systemNavigationBarIconBrightness: Brightness.light,
     ),
   );

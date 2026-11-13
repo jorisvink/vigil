@@ -250,7 +250,7 @@ class _GospelPageState extends State<GospelPage> with WidgetsBindingObserver {
                 Padding(
                   key: ValueKey(chat.peer),
                   padding: EdgeInsets.only(
-                    bottom: i == chats.length - 1 ? 0 : Metrics.gap,
+                    bottom: i == chats.length - 1 ? 0 : 2,
                   ),
                   child: ChatRow(
                     chat: chat,
@@ -338,25 +338,26 @@ class _UnreadSort extends StatelessWidget {
       onTap: onTap,
       label: on ? 'Show all chats' : 'Show only unread chats',
       builder: (context, pressed) {
-        final tint = on || pressed ? Palette.amber : Palette.dim;
+        final tint = on || pressed ? Palette.amber : Palette.fg2;
 
         return Padding(
           padding: const EdgeInsets.symmetric(vertical: 6),
           child: Container(
-            padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 4),
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
             decoration: BoxDecoration(
               color: on ? Palette.amberWash : null,
               border: Border.all(color: on ? Palette.amberDim : Palette.line2),
+              borderRadius: BorderRadius.circular(16),
             ),
             child: Row(
               mainAxisSize: MainAxisSize.min,
               children: [
-                Glyph(GlyphKind.sort, size: 12, color: tint),
-                const SizedBox(width: 5),
+                Glyph(GlyphKind.sort, size: 13, color: tint),
+                const SizedBox(width: 6),
                 Text(
-                  'UNREAD',
-                  style: Styles.rubric.copyWith(
-                    fontSize: 9.5,
+                  'Unread only',
+                  style: Styles.detail.copyWith(
+                    fontSize: 12.5,
                     height: 1,
                     color: tint,
                   ),
@@ -404,8 +405,9 @@ class _StatusBtn extends StatelessWidget {
         height: 44,
         child: Center(
           child: Container(
-            padding: const EdgeInsets.all(5),
+            padding: const EdgeInsets.all(7),
             decoration: BoxDecoration(
+              shape: BoxShape.circle,
               border: Border.all(
                 color: pressed ? Palette.amber : Palette.line2,
               ),
@@ -688,7 +690,7 @@ class _PeerSheetState extends State<_PeerSheet> {
             const SizedBox(height: 16),
             _Action(
               title: 'New group',
-              text: 'Pick the members, you own the group',
+              text: 'Pick who will join the group, you become the owner',
               onTap: () => Navigator.of(context).pop(_PeerSheet.group),
             ),
             _Action(

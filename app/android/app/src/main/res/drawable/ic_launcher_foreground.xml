@@ -1,18 +1,23 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  The amber square with its ring, as in the sanctorum.se wordmark,
-  centered in the 66dp safe zone of the 108dp adaptive icon.
+  The Priest from lib/widgets/marks.dart, drawn on its 100 by 130 grid
+  and centered in the 66dp safe zone of the 108dp adaptive icon.
 -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
     android:width="108dp"
     android:height="108dp"
     android:viewportWidth="108"
     android:viewportHeight="108">
-    <path
-        android:fillColor="#ffb000"
-        android:fillType="evenOdd"
-        android:pathData="M34,34h40v40h-40z M36.5,36.5v35h35v-35z" />
-    <path
-        android:fillColor="#ffb000"
-        android:pathData="M43.5,43.5h21v21h-21z" />
+    <group
+        android:scaleX="0.4615"
+        android:scaleY="0.4615"
+        android:translateX="30.92"
+        android:translateY="24">
+        <path
+            android:strokeColor="#e8a33d"
+            android:strokeWidth="3.5"
+            android:strokeLineCap="round"
+            android:strokeLineJoin="round"
+            android:pathData="M18,66 C12,36,28,6,50,3 C72,6,88,36,82,66 M18,66 C13,70,9,76,8,84 L3,128 Q50,134,97,128 L92,84 C91,76,87,70,82,66 M30,52 C34,30,66,30,70,52 M24,60 C24,22,76,22,76,60 M30,52 C35,64,44,72,50,74 C56,72,65,64,70,52 M30,52 C38,44,62,44,70,52 M40,56 Q43,58,46,56 M54,56 Q57,58,60,56 M50,57 L48.5,64 L50.5,65 M18,66 Q32,82,50,90 Q68,82,82,66 M12,96 Q32,102,50,104 Q68,102,88,96 M41,103 L43,111 L57,111 L59,103 M28,111 L24,127 M72,111 L76,127 M50,111 L50,130" />
+    </group>
 </vector>

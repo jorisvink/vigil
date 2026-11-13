@@ -46,7 +46,7 @@ var _voiceRate = 1.0;
 
 (Liveness, String, Color) _link(Status status, String peer) {
   if (!status.gospel) {
-    return (Liveness.off, 'GOSPEL IS OFF', Palette.dim);
+    return (Liveness.off, 'Gospel is off', Palette.dim);
   }
 
   if (isGroup(peer)) {
@@ -57,22 +57,22 @@ var _voiceRate = 1.0;
 
   switch (chat?.link) {
     case 'p2p':
-      return (Liveness.online, 'ONLINE · P2P', Palette.good);
+      return (Liveness.online, 'Online · p2p', Palette.good);
     case 'relay':
-      return (Liveness.online, 'ONLINE · RELAY', Palette.good);
+      return (Liveness.online, 'Online · relay', Palette.good);
     case 'connecting':
-      return (Liveness.pending, 'CONNECTING', Palette.amber);
+      return (Liveness.pending, 'Connecting', Palette.amber);
   }
 
   if (_reachable(status, peer)) {
-    return (Liveness.off, 'AROUND · NO LINK', Palette.fg2);
+    return (Liveness.off, 'Around · no link', Palette.fg2);
   }
 
   if ((chat?.queued ?? 0) > 0) {
-    return (Liveness.off, 'WAITING FOR PEER', Palette.dim);
+    return (Liveness.off, 'Waiting for peer', Palette.dim);
   }
 
-  return (Liveness.off, 'OFFLINE', Palette.dim);
+  return (Liveness.off, 'Offline', Palette.dim);
 }
 
 (Liveness, String, Color) _groupLink(Status status, String chat) {
@@ -80,39 +80,39 @@ var _voiceRate = 1.0;
 
   switch (group?.state) {
     case 'ended':
-      return (Liveness.off, 'ENDED', Palette.dim);
+      return (Liveness.off, 'Ended', Palette.dim);
     case 'left':
-      return (Liveness.off, 'YOU LEFT', Palette.dim);
+      return (Liveness.off, 'You left', Palette.dim);
     case 'removed':
-      return (Liveness.off, 'REMOVED', Palette.dim);
+      return (Liveness.off, 'Removed', Palette.dim);
   }
 
   if (group == null) {
-    return (Liveness.pending, 'WAITING FOR THE ROSTER', Palette.amber);
+    return (Liveness.pending, 'Waiting for the roster', Palette.amber);
   }
 
   final members = groupMembers(status, chat);
   final online = members.where((m) => m.online).length;
 
   if (online == 1) {
-    return (Liveness.online, '1 MEMBER ONLINE', Palette.good);
+    return (Liveness.online, '1 member online', Palette.good);
   }
 
   if (online > 0) {
-    return (Liveness.online, '$online MEMBERS ONLINE', Palette.good);
+    return (Liveness.online, '$online members online', Palette.good);
   }
 
   if (members.any((m) => m.link == 'connecting')) {
-    return (Liveness.pending, 'CONNECTING', Palette.amber);
+    return (Liveness.pending, 'Connecting', Palette.amber);
   }
 
   final around = members.where((m) => m.around).length;
 
   if (around > 0) {
-    return (Liveness.off, '$around OF ${members.length} AROUND', Palette.fg2);
+    return (Liveness.off, '$around of ${members.length} around', Palette.fg2);
   }
 
-  return (Liveness.off, '${members.length + 1} MEMBERS', Palette.fg2);
+  return (Liveness.off, '${members.length + 1} members', Palette.fg2);
 }
 
 class ChatMember {
@@ -192,6 +192,33 @@ Widget chatDot(Status status, String peer, {double size = 8}) {
   }
 
   return StateDot(state, size: size);
+}
+
+Widget _presence(Status status, String peer, Widget portrait) {
+  final state = _link(status, peer).$1;
+
+  if (state == Liveness.off && !_reachable(status, peer)) {
+    return portrait;
+  }
+
+  return Stack(
+    clipBehavior: Clip.none,
+    children: [
+      portrait,
+      Positioned(
+        right: -1,
+        bottom: -1,
+        child: Container(
+          padding: const EdgeInsets.all(2.5),
+          decoration: const BoxDecoration(
+            color: Palette.bg,
+            shape: BoxShape.circle,
+          ),
+          child: chatDot(status, peer, size: 9),
+        ),
+      ),
+    ],
+  );
 }
 
 bool _reachable(Status status, String peer) {
@@ -527,6 +554,7 @@ class _SwipeState extends State<_Swipe> {
   double _offset = 0;
   bool _dragging = false;
   bool _marking = false;
+  bool _shown = false;
 
   void _drag(DragUpdateDetails details) {
     var low = 0.0;
@@ -541,6 +569,7 @@ class _SwipeState extends State<_Swipe> {
 
       if (_offset != 0) {
         _marking = _offset < 0;
+        _shown = true;
       }
     });
   }
@@ -581,8 +610,11 @@ class _SwipeState extends State<_Swipe> {
   }
 
   void _settled() {
-    if (_offset == 0 && _marking) {
-      setState(() => _marking = false);
+    if (_offset == 0 && _shown) {
+      setState(() {
+        _marking = false;
+        _shown = false;
+      });
     }
   }
 
@@ -603,7 +635,13 @@ class _SwipeState extends State<_Swipe> {
             children: [
               Glyph(glyph, size: 18, color: Palette.bg),
               const SizedBox(height: 4),
-              Text(text, style: Styles.rubric.copyWith(color: Palette.bg)),
+              Text(
+                text,
+                style: Styles.detail.copyWith(
+                  color: Palette.bg,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
             ],
           ),
         ),
@@ -618,21 +656,23 @@ class _SwipeState extends State<_Swipe> {
     return GestureDetector(
       onHorizontalDragUpdate: _drag,
       onHorizontalDragEnd: _release,
-      child: ClipRect(
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(Metrics.radius),
         child: Stack(
           children: [
-            Positioned(
-              left: 0,
-              top: 0,
-              bottom: 0,
-              width: _width,
-              child: _action(
-                widget.label,
-                'DELETE',
-                GlyphKind.close,
-                widget.onAction,
+            if (_shown && !_marking)
+              Positioned(
+                left: 0,
+                top: 0,
+                bottom: 0,
+                width: _width,
+                child: _action(
+                  widget.label,
+                  'Delete',
+                  GlyphKind.close,
+                  widget.onAction,
+                ),
               ),
-            ),
             if (_marking && widget.onMark != null)
               Positioned(
                 right: 0,
@@ -684,19 +724,17 @@ class ChatRow extends StatelessWidget {
     final last = chat.last;
     final typing = typingLine(status, chat.peer, '');
 
-    var mark = 'FAVORITE';
+    var mark = 'Favorite';
 
     if (chat.star) {
-      mark = 'UNFAVORITE';
+      mark = 'Unfavorite';
     }
 
     final row = _Swipe(
       label: 'Delete chat with ${vigil.name(chat.peer)}',
       onAction: () => removeChat(chat.peer),
       mark: mark,
-      markLabel:
-          '${mark[0]}${mark.substring(1).toLowerCase()} '
-          '${vigil.name(chat.peer)}',
+      markLabel: '$mark ${vigil.name(chat.peer)}',
       onMark: _star,
       child: GestureDetector(
         onLongPress: () => manageTopics(chat.peer, compact: chat.compact),
@@ -714,7 +752,7 @@ class ChatRow extends StatelessWidget {
         children: [
           row,
           Padding(
-            padding: const EdgeInsets.only(top: 6),
+            padding: const EdgeInsets.fromLTRB(_rowInset, 0, 0, 8),
             child: Wrap(
               spacing: 6,
               runSpacing: 6,
@@ -755,121 +793,169 @@ class ChatRow extends StatelessWidget {
   }
 
   Widget _row(Vigil vigil, ChatMessage? last, String? typing) {
-    return Panel(
-      accent: chat.unread > 0,
-      padding: const EdgeInsets.fromLTRB(16, 14, 14, 14),
+    final unread = chat.unread > 0;
+
+    return Pressable(
       onTap: () => push(ChatPage(peer: chat.peer), opaque: false),
-      child: Row(
-        children: [
-          chatDot(status, chat.peer),
-          const SizedBox(width: 12),
-          if (isGroup(chat.peer))
-            const GroupPortrait(size: 40)
-          else
-            Avatar(chat.peer, size: 40),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Row(
-                  children: [
-                    Flexible(
-                      child: PeerName(chat.peer, style: Styles.cardTitle),
-                    ),
-                    if (chat.star) ...[
-                      const SizedBox(width: 6),
-                      const Glyph(
-                        GlyphKind.star,
-                        size: 11,
-                        color: Palette.amber,
+      label: vigil.name(chat.peer),
+      builder: (context, pressed) => Container(
+        decoration: BoxDecoration(
+          color: pressed ? Palette.bg2 : Palette.bg,
+          borderRadius: BorderRadius.circular(Metrics.radius),
+        ),
+        padding: const EdgeInsets.fromLTRB(4, 10, 0, 10),
+        child: Row(
+          children: [
+            _presence(
+              status,
+              chat.peer,
+              isGroup(chat.peer)
+                  ? GroupPortrait(chat: chat.peer, size: 46)
+                  : Avatar(chat.peer, size: 46, margin: EdgeInsets.zero),
+            ),
+            const SizedBox(width: 14),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      Flexible(
+                        child: PeerName(chat.peer, style: Styles.cardTitle),
                       ),
+                      if (chat.star) ...[
+                        const SizedBox(width: 6),
+                        const Glyph(
+                          GlyphKind.star,
+                          size: 13,
+                          color: Palette.amber,
+                        ),
+                      ],
                     ],
-                  ],
-                ),
-                const SizedBox(height: 3),
-                Text(
-                  typing ?? _preview(last),
-                  style: Styles.detail.copyWith(
-                    color: typing != null
-                        ? Palette.amber
-                        : chat.unread > 0
-                        ? Palette.fg
-                        : Palette.dim,
                   ),
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
+                  const SizedBox(height: 3),
+                  Text(
+                    typing ?? _preview(last),
+                    style: Styles.detail.copyWith(
+                      color: typing != null
+                          ? Palette.amber
+                          : unread
+                          ? Palette.fg
+                          : Palette.dim,
+                    ),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(width: 12),
+            Column(
+              crossAxisAlignment: CrossAxisAlignment.end,
+              children: [
+                Text(
+                  last == null ? '' : _when(last.time),
+                  style: Styles.detail.copyWith(
+                    fontSize: 12,
+                    color: unread ? Palette.amber : Palette.dim,
+                  ),
                 ),
+                const SizedBox(height: 6),
+                if (unread)
+                  _Unread(count: chat.unread)
+                else
+                  const SizedBox(height: 20),
               ],
             ),
-          ),
-          const SizedBox(width: 12),
-          Column(
-            crossAxisAlignment: CrossAxisAlignment.end,
-            children: [
-              Text(
-                last == null ? '' : _when(last.time),
-                style: Styles.detail.copyWith(fontSize: 11),
-              ),
-              const SizedBox(height: 6),
-              if (chat.unread > 0)
-                _Unread(count: chat.unread)
-              else
-                const SizedBox(height: 17),
-            ],
-          ),
-          if (handle != null)
-            ReorderableDragStartListener(
-              index: handle!,
-              child: Semantics(
-                label: 'Move ${vigil.name(chat.peer)}',
-                child: Container(
-                  color: Colors.transparent,
-                  padding: const EdgeInsets.fromLTRB(14, 10, 2, 10),
-                  child: const Glyph(GlyphKind.grip, size: 18),
+            if (handle != null)
+              ReorderableDragStartListener(
+                index: handle!,
+                child: Semantics(
+                  label: 'Move ${vigil.name(chat.peer)}',
+                  child: Container(
+                    color: Colors.transparent,
+                    padding: const EdgeInsets.fromLTRB(12, 10, 2, 10),
+                    child: const Glyph(
+                      GlyphKind.grip,
+                      size: 18,
+                      color: Palette.line2,
+                    ),
+                  ),
                 ),
               ),
-            ),
-        ],
+          ],
+        ),
       ),
     );
   }
 }
 
-class GroupPortrait extends StatelessWidget {
-  const GroupPortrait({
-    super.key,
-    this.size = 36,
-    this.margin = const EdgeInsets.only(right: 12),
-  });
+const _rowInset = 64.0;
 
+class GroupPortrait extends StatelessWidget {
+  const GroupPortrait({super.key, required this.chat, this.size = 36});
+
+  final String chat;
   final double size;
-  final EdgeInsets margin;
 
   @override
   Widget build(BuildContext context) {
-    return Padding(
-      padding: margin,
-      child: ClipPath(
-        clipper: const PortraitClipper(),
-        child: Container(
-          width: size,
-          height: size,
-          padding: const EdgeInsets.all(1),
-          color: Palette.line2,
-          child: ClipPath(
-            clipper: const PortraitClipper(),
-            child: ColoredBox(
-              color: Palette.bg3,
-              child: Center(
-                child: Glyph(
-                  GlyphKind.group,
-                  size: size * 0.55,
-                  color: Palette.fg2,
-                ),
+    final vigil = Vigil.instance;
+    final own = vigil.status.chat?.id ?? ownPeer();
+    final members = [
+      for (final id in vigil.group(chat)?.members ?? const <String>[])
+        if (id != own) id,
+    ];
+    final small = size * 0.56;
+    final ring = BoxDecoration(
+      shape: BoxShape.circle,
+      border: Border.all(color: Palette.bg3, width: size * 0.05),
+    );
+
+    if (members.isEmpty) {
+      return Container(
+        width: size,
+        height: size,
+        decoration: const BoxDecoration(
+          color: Palette.bg3,
+          shape: BoxShape.circle,
+        ),
+        child: Center(
+          child: Glyph(GlyphKind.group, size: size * 0.5, color: Palette.fg2),
+        ),
+      );
+    }
+
+    return Container(
+      width: size,
+      height: size,
+      decoration: const BoxDecoration(
+        color: Palette.bg3,
+        shape: BoxShape.circle,
+      ),
+      child: Stack(
+        children: [
+          Positioned(
+            left: size * 0.08,
+            top: size * 0.1,
+            child: Container(
+              decoration: ring,
+              child: Avatar(members[0], size: small, margin: EdgeInsets.zero),
+            ),
+          ),
+          Positioned(
+            right: size * 0.06,
+            bottom: size * 0.08,
+            child: Container(
+              decoration: ring,
+              child: Avatar(
+                members.length > 1 ? members[1] : selfPeer,
+                size: small,
+                margin: EdgeInsets.zero,
               ),
             ),
           ),
-        ),
+        ],
       ),
     );
   }
@@ -1111,8 +1197,11 @@ class _TopicMark extends StatelessWidget {
   final double size;
 
   @override
-  Widget build(BuildContext context) =>
-      Container(width: size, height: size, color: topicColor(color));
+  Widget build(BuildContext context) => Container(
+    width: size,
+    height: size,
+    decoration: BoxDecoration(color: topicColor(color), shape: BoxShape.circle),
+  );
 }
 
 class _TopicPrompt extends StatefulWidget {
@@ -1173,6 +1262,7 @@ class _TopicPromptState extends State<_TopicPrompt> {
                   margin: const EdgeInsets.only(right: 10),
                   padding: const EdgeInsets.all(3),
                   decoration: BoxDecoration(
+                    shape: BoxShape.circle,
                     border: Border.all(
                       color: color == _color ? Palette.fg : Colors.transparent,
                       width: 2,
@@ -1217,64 +1307,61 @@ class _TopicBranch extends StatelessWidget {
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
           SizedBox(
-            width: 34,
+            width: _rowInset,
             child: CustomPaint(painter: _BranchPainter(end: end)),
           ),
           Expanded(
-            child: Padding(
-              padding: const EdgeInsets.only(top: 6),
-              child: GestureDetector(
-                onLongPress: _topicsOwned(peer)
-                    ? () => _removeTopic(peer, topic)
-                    : null,
-                child: Panel(
-                  accent: unread > 0,
-                  padding: const EdgeInsets.fromLTRB(14, 10, 14, 10),
-                  onTap: () =>
-                      push(ChatPage(peer: peer, topic: topic), opaque: false),
+            child: GestureDetector(
+              onLongPress: _topicsOwned(peer)
+                  ? () => _removeTopic(peer, topic)
+                  : null,
+              child: Pressable(
+                onTap: () =>
+                    push(ChatPage(peer: peer, topic: topic), opaque: false),
+                label: unread > 0
+                    ? '${topic.name}, $unread unread'
+                    : 'Open topic ${topic.name}',
+                builder: (context, pressed) => Container(
+                  decoration: BoxDecoration(
+                    color: pressed ? Palette.bg2 : Palette.bg,
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  padding: const EdgeInsets.fromLTRB(2, 7, 0, 7),
                   child: Row(
                     children: [
-                      _TopicMark(color: topic.color, size: 10),
+                      _TopicMark(color: topic.color, size: 8),
                       const SizedBox(width: 10),
-                      Expanded(
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text(
-                              topic.name,
-                              style: Styles.cardTitle,
-                              overflow: TextOverflow.ellipsis,
-                            ),
-                            const SizedBox(height: 2),
-                            Text(
-                              typing ?? _preview(last),
-                              style: Styles.detail.copyWith(
-                                color: typing != null
-                                    ? Palette.amber
-                                    : unread > 0
-                                    ? Palette.fg
-                                    : Palette.dim,
-                              ),
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                            ),
-                          ],
+                      ConstrainedBox(
+                        constraints: const BoxConstraints(maxWidth: 130),
+                        child: Text(
+                          topic.name,
+                          style: Styles.detail.copyWith(
+                            fontWeight: FontWeight.w500,
+                            color: unread > 0 ? Palette.fg : Palette.fg2,
+                          ),
+                          overflow: TextOverflow.ellipsis,
                         ),
                       ),
-                      const SizedBox(width: 12),
-                      Column(
-                        crossAxisAlignment: CrossAxisAlignment.end,
-                        children: [
-                          Text(
-                            last == null ? '' : _when(last.time),
-                            style: Styles.detail.copyWith(fontSize: 11),
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: Text(
+                          typing ?? _preview(last),
+                          style: Styles.detail.copyWith(
+                            fontSize: 13,
+                            color: typing != null
+                                ? Palette.amber
+                                : unread > 0
+                                ? Palette.fg2
+                                : Palette.dim,
                           ),
-                          if (unread > 0) ...[
-                            const SizedBox(height: 4),
-                            _Unread(count: unread),
-                          ],
-                        ],
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        ),
                       ),
+                      if (unread > 0) ...[
+                        const SizedBox(width: 10),
+                        _Unread(count: unread, small: true),
+                      ],
                     ],
                   ),
                 ),
@@ -1317,8 +1404,11 @@ class _TopicTag extends StatelessWidget {
             ? '${topic.name}, $unread unread'
             : 'Open topic ${topic.name}',
         builder: (context, pressed) => Container(
-          padding: const EdgeInsets.fromLTRB(9, 5, 9, 5),
-          color: pressed ? Color.lerp(color, Palette.bg, 0.3) : color,
+          padding: const EdgeInsets.fromLTRB(10, 5, 10, 5),
+          decoration: BoxDecoration(
+            color: pressed ? Color.lerp(color, Palette.bg, 0.3) : color,
+            borderRadius: BorderRadius.circular(12),
+          ),
           child: Row(
             mainAxisSize: MainAxisSize.min,
             children: [
@@ -1343,7 +1433,10 @@ class _TopicTag extends StatelessWidget {
                     horizontal: 5,
                     vertical: 2,
                   ),
-                  color: Palette.bg,
+                  decoration: BoxDecoration(
+                    color: Palette.bg,
+                    borderRadius: BorderRadius.circular(8),
+                  ),
                   child: Text(
                     '$unread',
                     style: Styles.detail.copyWith(
@@ -1363,22 +1456,30 @@ class _TopicTag extends StatelessWidget {
 }
 
 class _Unread extends StatelessWidget {
-  const _Unread({required this.count});
+  const _Unread({required this.count, this.small = false});
 
   final int count;
+  final bool small;
 
   @override
   Widget build(BuildContext context) {
+    final side = small ? 18.0 : 20.0;
+
     return Container(
-      constraints: const BoxConstraints(minWidth: 20),
-      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 3),
-      color: Palette.amber,
+      constraints: BoxConstraints(minWidth: side, minHeight: side),
+      padding: const EdgeInsets.symmetric(horizontal: 6),
+      alignment: Alignment.center,
+      decoration: BoxDecoration(
+        color: Palette.amber,
+        borderRadius: BorderRadius.circular(side / 2),
+      ),
       child: Text(
         '$count',
         textAlign: TextAlign.center,
         style: Styles.detail.copyWith(
           color: Palette.bg,
-          fontSize: 11,
+          fontSize: small ? 10.5 : 11.5,
+          fontWeight: FontWeight.w600,
           height: 1,
         ),
       ),
@@ -1395,12 +1496,21 @@ class _BranchPainter extends CustomPainter {
   void paint(Canvas canvas, Size size) {
     final paint = Paint()
       ..color = Palette.line2
-      ..strokeWidth = 1;
-    final x = size.width / 2;
-    final y = 6 + (size.height - 6) / 2;
+      ..strokeWidth = 1.5
+      ..style = PaintingStyle.stroke;
+    const x = 27.0;
+    final y = size.height / 2;
+    final path = Path()
+      ..moveTo(x, 0)
+      ..lineTo(x, y - 10)
+      ..quadraticBezierTo(x, y, x + 10, y)
+      ..lineTo(size.width - 8, y);
 
-    canvas.drawLine(Offset(x, 0), Offset(x, end ? y : size.height), paint);
-    canvas.drawLine(Offset(x, y), Offset(size.width, y), paint);
+    canvas.drawPath(path, paint);
+
+    if (!end) {
+      canvas.drawLine(Offset(x, y - 10), Offset(x, size.height), paint);
+    }
   }
 
   @override
@@ -2020,10 +2130,10 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
               sheetTitle(vigil.name(peer)),
               const SizedBox(height: 6),
               Text(
-                '${owner ? 'YOURS' : 'OWNED BY ${vigil.name(group?.owner ?? '').toUpperCase()}'}'
-                ' · ${members.where((m) => m.online || m.around).length} OF '
-                '${members.length} AROUND',
-                style: Styles.rubric,
+                '${owner ? 'Yours' : 'Owned by ${vigil.name(group?.owner ?? '')}'}'
+                ' · ${members.where((m) => m.online || m.around).length} of '
+                '${members.length} around',
+                style: Styles.detail,
                 overflow: TextOverflow.ellipsis,
               ),
               const SizedBox(height: 12),
@@ -2290,6 +2400,130 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
     );
   }
 
+  Future<void> _about() async {
+    if (topic != null) {
+      return;
+    }
+
+    if (isGroup(peer)) {
+      await _members();
+    } else {
+      await renamePeer(peer);
+    }
+
+    if (mounted) {
+      setState(() {});
+    }
+  }
+
+  Widget _header(Status status, List<ChatMessage> messages) {
+    final vigil = Vigil.instance;
+    final group = isGroup(peer);
+    final callable = status.call?.peers.contains(peer) ?? false;
+    final (_, presence, color) = _link(status, peer);
+    final shown = topic;
+
+    return SizedBox(
+      height: 64,
+      child: Row(
+        children: [
+          const SizedBox(width: Metrics.edge - 14),
+          GlyphBtn(
+            GlyphKind.back,
+            label: 'Back',
+            onTap: () => Navigator.of(context).maybePop(),
+          ),
+          Expanded(
+            child: GestureDetector(
+              behavior: HitTestBehavior.opaque,
+              onTap: _about,
+              child: Row(
+                children: [
+                  _presence(
+                    status,
+                    peer,
+                    group
+                        ? GroupPortrait(chat: peer, size: 40)
+                        : Avatar(
+                            peer,
+                            size: 40,
+                            margin: EdgeInsets.zero,
+                            zoom: true,
+                          ),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Column(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        if (shown != null)
+                          Row(
+                            children: [
+                              _TopicMark(color: shown.color, size: 9),
+                              const SizedBox(width: 8),
+                              Flexible(
+                                child: Text(
+                                  shown.name,
+                                  style: Styles.barTitle,
+                                  overflow: TextOverflow.ellipsis,
+                                ),
+                              ),
+                            ],
+                          )
+                        else
+                          PeerName(peer, style: Styles.barTitle, shrink: 15),
+                        const SizedBox(height: 1),
+                        Text(
+                          shown == null
+                              ? presence
+                              : '${vigil.name(peer)} · $presence',
+                          style: Styles.detail.copyWith(
+                            fontSize: 12.5,
+                            color: color == Palette.fg2 ? Palette.dim : color,
+                          ),
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+          if (group)
+            GlyphBtn(GlyphKind.group, label: 'Members', onTap: _members),
+          if (group)
+            GlyphBtn(
+              _snoozed ? GlyphKind.snoozed : GlyphKind.bell,
+              label: _snoozed ? 'Snoozed' : 'Snooze',
+              color: _snoozed ? Palette.amber : Palette.fg2,
+              onTap: _snooze,
+            ),
+          if (callable && status.phone == null && videoCalls && topic == null)
+            GlyphBtn(
+              GlyphKind.video,
+              label: 'Video call ${vigil.name(peer)}',
+              onTap: () => callPeer(peer, video: true),
+            ),
+          if (callable && status.phone == null && topic == null)
+            GlyphBtn(
+              GlyphKind.call,
+              label: 'Call ${vigil.name(peer)}',
+              onTap: () => callPeer(peer),
+            ),
+          if (topic == null && messages.any((m) => m.favorite))
+            GlyphBtn(
+              GlyphKind.star,
+              label: 'Favorites',
+              onTap: () => push(_Favorites(peer: peer)),
+            ),
+          const SizedBox(width: Metrics.edge - 14),
+        ],
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final vigil = Vigil.instance;
@@ -2306,7 +2540,6 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
           builder: (context, snapshot) {
             final status = snapshot.data!;
             final joined = vigil.group(peer)?.open ?? false;
-            final callable = status.call?.peers.contains(peer) ?? false;
             final messages = _messages.where((m) => m.topic == _topic).toList();
             final newest = messages.lastIndexWhere(
               (m) => !m.incoming && m.kind.isEmpty,
@@ -2317,144 +2550,24 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
                 ? 0.0
                 : MediaQuery.paddingOf(context).bottom;
 
-            final (_, presence, color) = _link(status, peer);
             final typing = _typers(status);
             final extra = typing == null ? 0 : 1;
 
-            return DotGrid(
+            return Ground(
               child: Padding(
                 padding: EdgeInsets.only(bottom: keyboard),
                 child: SafeArea(
                   bottom: false,
                   child: Column(
                     children: [
-                      SizedBox(
-                        height: 56,
-                        child: Row(
-                          children: [
-                            const SizedBox(width: Metrics.edge - 12),
-                            GlyphBtn(
-                              GlyphKind.back,
-                              label: 'Back',
-                              onTap: () => Navigator.of(context).maybePop(),
-                            ),
-                            const SizedBox(width: 2),
-                            Expanded(
-                              child: GestureDetector(
-                                behavior: HitTestBehavior.opaque,
-                                onTap: () async {
-                                  if (topic != null) {
-                                    return;
-                                  }
-
-                                  if (group) {
-                                    await _members();
-                                  } else {
-                                    await renamePeer(peer);
-                                  }
-
-                                  if (mounted) {
-                                    setState(() {});
-                                  }
-                                },
-                                child: Row(
-                                  children: [
-                                    Avatar(
-                                      peer,
-                                      size: 34,
-                                      margin: const EdgeInsets.only(right: 10),
-                                      zoom: true,
-                                    ),
-                                    Expanded(
-                                      child: Column(
-                                        mainAxisAlignment:
-                                            MainAxisAlignment.center,
-                                        crossAxisAlignment:
-                                            CrossAxisAlignment.start,
-                                        children: [
-                                          Row(
-                                            children: [
-                                              chatDot(status, peer, size: 6),
-                                              const SizedBox(width: 8),
-                                              Flexible(
-                                                child: Text(
-                                                  presence,
-                                                  style: Styles.rubric.copyWith(
-                                                    color: color,
-                                                  ),
-                                                  overflow:
-                                                      TextOverflow.ellipsis,
-                                                ),
-                                              ),
-                                            ],
-                                          ),
-                                          const SizedBox(height: 2),
-                                          if (topic != null)
-                                            Row(
-                                              children: [
-                                                _TopicMark(
-                                                  color: topic!.color,
-                                                  size: 10,
-                                                ),
-                                                const SizedBox(width: 8),
-                                                Flexible(
-                                                  child: Text(
-                                                    topic!.name,
-                                                    style: Styles.barTitle,
-                                                    overflow:
-                                                        TextOverflow.ellipsis,
-                                                  ),
-                                                ),
-                                              ],
-                                            )
-                                          else
-                                            PeerName(
-                                              peer,
-                                              style: Styles.barTitle,
-                                              shrink: 13,
-                                            ),
-                                        ],
-                                      ),
-                                    ),
-                                  ],
-                                ),
-                              ),
-                            ),
-                            if (group)
-                              GlyphBtn(
-                                _snoozed ? GlyphKind.snoozed : GlyphKind.bell,
-                                label: _snoozed ? 'Snoozed' : 'Snooze',
-                                color: _snoozed ? Palette.amber : Palette.fg2,
-                                onTap: _snooze,
-                              ),
-                            if (callable &&
-                                status.phone == null &&
-                                videoCalls &&
-                                topic == null)
-                              GlyphBtn(
-                                GlyphKind.video,
-                                label: 'Video call ${vigil.name(peer)}',
-                                onTap: () => callPeer(peer, video: true),
-                              ),
-                            if (callable &&
-                                status.phone == null &&
-                                topic == null)
-                              GlyphBtn(
-                                GlyphKind.call,
-                                label: 'Call ${vigil.name(peer)}',
-                                onTap: () => callPeer(peer),
-                              ),
-                            if (topic == null &&
-                                messages.any((m) => m.favorite))
-                              GlyphBtn(
-                                GlyphKind.star,
-                                label: 'Favorites',
-                                onTap: () => push(_Favorites(peer: peer)),
-                              ),
-                            const SizedBox(width: Metrics.edge - 10),
-                          ],
+                      _header(status, messages),
+                      if ((_history?.topics ?? const []).isNotEmpty)
+                        _TopicStrip(
+                          peer: peer,
+                          topics: _history!.topics,
+                          current: _topic,
+                          unread: _history!.unread,
                         ),
-                      ),
                       const Line(),
                       if (pinned != null) _Pinned(chat: peer, message: pinned),
                       if (status.running && !status.linked)
@@ -2551,16 +2664,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
                                             children: [
                                               if (previous == null ||
                                                   _day(previous.time) != day)
-                                                Padding(
-                                                  padding:
-                                                      const EdgeInsets.symmetric(
-                                                        vertical: 14,
-                                                      ),
-                                                  child: Text(
-                                                    day.toUpperCase(),
-                                                    style: Styles.rubric,
-                                                  ),
-                                                ),
+                                                _Day(text: day),
                                               if (message.kind == 'ambry')
                                                 _Rotation(
                                                   text: memberLine(message),
@@ -2630,13 +2734,12 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
                         ),
                       Container(
                         decoration: const BoxDecoration(
-                          color: Palette.bg2,
                           border: Border(top: BorderSide(color: Palette.line)),
                         ),
                         padding: EdgeInsets.fromLTRB(
-                          Metrics.edge,
+                          Metrics.edge - 12,
                           10,
-                          Metrics.edge - 8,
+                          Metrics.edge - 12,
                           inset + 10,
                         ),
                         child: _gone
@@ -2707,6 +2810,156 @@ String _snoozeEnd(int until) {
   return '${_day(time)} ${_clock(time)}';
 }
 
+class _Day extends StatelessWidget {
+  const _Day({required this.text});
+
+  final String text;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 14),
+      child: Row(
+        children: [
+          const Expanded(child: Line()),
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 12),
+            child: Text(text.toUpperCase(), style: Styles.rubric),
+          ),
+          const Expanded(child: Line()),
+        ],
+      ),
+    );
+  }
+}
+
+class _TopicStrip extends StatelessWidget {
+  const _TopicStrip({
+    required this.peer,
+    required this.topics,
+    required this.current,
+    required this.unread,
+  });
+
+  final String peer;
+  final List<ChatTopic> topics;
+  final String current;
+  final int unread;
+
+  void _open(ChatTopic? topic) {
+    if ((topic?.id ?? '') == current) {
+      return;
+    }
+
+    replace(ChatPage(peer: peer, topic: topic), opaque: false);
+  }
+
+  Widget _chip({
+    required String label,
+    required bool on,
+    required int count,
+    required VoidCallback onTap,
+    int? color,
+  }) {
+    return Padding(
+      padding: const EdgeInsets.only(right: 8),
+      child: Pressable(
+        label: count > 0 ? '$label, $count unread' : label,
+        onTap: onTap,
+        builder: (context, pressed) => Container(
+          padding: const EdgeInsets.fromLTRB(12, 0, 12, 0),
+          decoration: BoxDecoration(
+            color: on
+                ? Palette.amberWash
+                : pressed
+                ? Palette.bg3
+                : Palette.bg2,
+            border: Border.all(color: on ? Palette.amberDim : Palette.line),
+            borderRadius: BorderRadius.circular(16),
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              if (color != null) ...[
+                _TopicMark(color: color, size: 8),
+                const SizedBox(width: 7),
+              ],
+              ConstrainedBox(
+                constraints: const BoxConstraints(maxWidth: 140),
+                child: Text(
+                  label,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: Styles.detail.copyWith(
+                    fontSize: 13,
+                    fontWeight: FontWeight.w500,
+                    color: on ? Palette.amber2 : Palette.fg2,
+                  ),
+                ),
+              ),
+              if (count > 0) ...[
+                const SizedBox(width: 7),
+                _Unread(count: count, small: true),
+              ],
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final owned = _topicsOwned(peer);
+
+    return SizedBox(
+      height: 48,
+      child: ListView(
+        scrollDirection: Axis.horizontal,
+        padding: const EdgeInsets.fromLTRB(Metrics.edge - 4, 6, 12, 10),
+        children: [
+          _chip(
+            label: 'Main',
+            on: current.isEmpty,
+            count: current.isEmpty ? 0 : unread,
+            onTap: () => _open(null),
+          ),
+          for (final topic in topics)
+            GestureDetector(
+              onLongPress: owned ? () => _removeTopic(peer, topic) : null,
+              child: _chip(
+                label: topic.name,
+                on: topic.id == current,
+                count: topic.id == current ? 0 : topic.unread,
+                color: topic.color,
+                onTap: () => _open(topic),
+              ),
+            ),
+          if (owned)
+            Pressable(
+              label: 'Topics',
+              onTap: () => manageTopics(peer),
+              builder: (context, pressed) => Container(
+                width: 32,
+                decoration: BoxDecoration(
+                  border: Border.all(color: Palette.line),
+                  shape: BoxShape.circle,
+                ),
+                child: Center(
+                  child: Glyph(
+                    GlyphKind.plus,
+                    size: 16,
+                    color: pressed ? Palette.amber : Palette.dim,
+                  ),
+                ),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+}
+
 class _Mentions extends StatelessWidget {
   const _Mentions({required this.members, required this.onPick});
 
@@ -2720,11 +2973,7 @@ class _Mentions extends StatelessWidget {
     return ConstrainedBox(
       constraints: const BoxConstraints(maxHeight: 200),
       child: CustomPaint(
-        painter: const CutPainter(
-          fill: Palette.bg2,
-          stroke: Palette.line2,
-          cut: 8,
-        ),
+        painter: const RoundPainter(fill: Palette.bg2, stroke: Palette.line2),
         child: ListView(
           shrinkWrap: true,
           padding: const EdgeInsets.symmetric(vertical: 4),
@@ -2790,26 +3039,41 @@ class _Member extends StatelessWidget {
     final named = vigil.known(member.id);
 
     final (state, label, color) = member.typing
-        ? (Liveness.online, 'TYPING…', Palette.amber)
+        ? (Liveness.online, 'Typing…', Palette.amber)
         : switch (member.link) {
-            'p2p' => (Liveness.online, 'ONLINE · P2P', Palette.good),
-            'relay' => (Liveness.online, 'ONLINE · RELAY', Palette.good),
-            'connecting' => (Liveness.pending, 'CONNECTING', Palette.amber),
-            _ when member.around => (Liveness.off, 'AROUND', Palette.fg2),
-            _ => (Liveness.off, owner ? 'OWNER' : 'OFFLINE', Palette.dim),
+            'p2p' => (Liveness.online, 'Online · p2p', Palette.good),
+            'relay' => (Liveness.online, 'Online · relay', Palette.good),
+            'connecting' => (Liveness.pending, 'Connecting', Palette.amber),
+            _ when member.around => (Liveness.off, 'Around', Palette.fg2),
+            _ => (Liveness.off, owner ? 'Owner' : 'Offline', Palette.dim),
           };
 
     return Panel(
-      padding: const EdgeInsets.fromLTRB(16, 12, 12, 12),
+      padding: const EdgeInsets.fromLTRB(14, 10, 12, 10),
       onTap: onTap,
       child: Row(
         children: [
-          if (state == Liveness.off && member.around)
-            const AroundDot()
-          else
-            StateDot(state),
-          const SizedBox(width: 12),
-          Avatar(member.id),
+          Stack(
+            clipBehavior: Clip.none,
+            children: [
+              Avatar(member.id, size: 40),
+              if (state != Liveness.off || member.around)
+                Positioned(
+                  right: 10,
+                  bottom: -1,
+                  child: Container(
+                    padding: const EdgeInsets.all(2.5),
+                    decoration: const BoxDecoration(
+                      color: Palette.bg2,
+                      shape: BoxShape.circle,
+                    ),
+                    child: state == Liveness.off && member.around
+                        ? const AroundDot(size: 9)
+                        : StateDot(state, size: 9),
+                  ),
+                ),
+            ],
+          ),
           Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
@@ -2826,8 +3090,8 @@ class _Member extends StatelessWidget {
                 Text(
                   named && member.nick.isNotEmpty
                       ? '$label · ${chosen(member.nick)}'
-                      : '$label · PEER ${member.id}',
-                  style: Styles.rubric.copyWith(color: color),
+                      : '$label · peer ${member.id}',
+                  style: Styles.detail.copyWith(fontSize: 12.5, color: color),
                   overflow: TextOverflow.ellipsis,
                 ),
               ],
@@ -2875,9 +3139,9 @@ class _TypingState extends State<_Typing> with SingleTickerProviderStateMixin {
               child: Padding(
                 padding: const EdgeInsets.only(right: 8),
                 child: Text(
-                  sender,
+                  '$sender is writing',
                   overflow: TextOverflow.ellipsis,
-                  style: Styles.rubric.copyWith(color: Palette.amber),
+                  style: Styles.detail.copyWith(fontSize: 12.5),
                 ),
               ),
             ),
@@ -2888,7 +3152,14 @@ class _TypingState extends State<_Typing> with SingleTickerProviderStateMixin {
                 children: [
                   for (var i = 0; i < 3; i++) ...[
                     if (i > 0) const SizedBox(width: 5),
-                    Container(width: 6, height: 6, color: _dot(i)),
+                    Container(
+                      width: 6,
+                      height: 6,
+                      decoration: BoxDecoration(
+                        color: _dot(i),
+                        shape: BoxShape.circle,
+                      ),
+                    ),
                   ],
                 ],
               ),
@@ -2901,10 +3172,10 @@ class _TypingState extends State<_Typing> with SingleTickerProviderStateMixin {
 
   Color _dot(int i) {
     if ((_pulse.value * 3).floor() == i) {
-      return Palette.fg2;
+      return Palette.amber;
     }
 
-    return Palette.line2;
+    return Palette.amberDim;
   }
 }
 
@@ -2932,10 +3203,11 @@ class _Quote extends StatelessWidget {
       onTap: quote == null ? null : onTap,
       child: Container(
         margin: const EdgeInsets.only(bottom: 6),
-        padding: const EdgeInsets.fromLTRB(8, 3, 8, 3),
-        decoration: const BoxDecoration(
-          color: Palette.bg,
-          border: Border(left: BorderSide(color: Palette.amber, width: 2)),
+        padding: const EdgeInsets.fromLTRB(10, 6, 10, 6),
+        decoration: BoxDecoration(
+          color: Palette.bg2,
+          border: Border.all(color: Palette.line),
+          borderRadius: BorderRadius.circular(12),
         ),
         child: Column(
           mainAxisSize: MainAxisSize.min,
@@ -2945,7 +3217,11 @@ class _Quote extends StatelessWidget {
               Text(
                 _author(quote),
                 overflow: TextOverflow.ellipsis,
-                style: Styles.rubric.copyWith(color: Palette.amber),
+                style: Styles.detail.copyWith(
+                  fontSize: 12.5,
+                  fontWeight: FontWeight.w600,
+                  color: Palette.amber,
+                ),
               ),
             Text(
               quote == null ? 'Original message not found' : _summary(quote),
@@ -2977,7 +3253,6 @@ class _ReplyBar extends StatelessWidget {
   Widget build(BuildContext context) {
     return Container(
       decoration: const BoxDecoration(
-        color: Palette.bg2,
         border: Border(top: BorderSide(color: Palette.line)),
       ),
       padding: const EdgeInsets.fromLTRB(Metrics.edge, 8, Metrics.edge - 10, 0),
@@ -2991,9 +3266,13 @@ class _ReplyBar extends StatelessWidget {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
-                  'REPLY TO ${_author(message).toUpperCase()}',
+                  'Reply to ${_author(message)}',
                   overflow: TextOverflow.ellipsis,
-                  style: Styles.rubric.copyWith(color: Palette.amber),
+                  style: Styles.detail.copyWith(
+                    fontSize: 12.5,
+                    fontWeight: FontWeight.w600,
+                    color: Palette.amber,
+                  ),
                 ),
                 const SizedBox(height: 2),
                 Text(
@@ -3104,14 +3383,20 @@ class _Pinned extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Container(
-      decoration: const BoxDecoration(
-        color: Palette.amberWash,
-        border: Border(bottom: BorderSide(color: Palette.amberDim)),
+      margin: const EdgeInsets.fromLTRB(
+        Metrics.edge - 6,
+        10,
+        Metrics.edge - 6,
+        0,
       ),
-      padding: const EdgeInsets.fromLTRB(Metrics.edge, 8, Metrics.edge - 10, 8),
+      decoration: BoxDecoration(
+        color: Palette.bg2,
+        borderRadius: BorderRadius.circular(14),
+      ),
+      padding: const EdgeInsets.fromLTRB(14, 6, 4, 6),
       child: Row(
         children: [
-          const Glyph(GlyphKind.pin, size: 18, color: Palette.amber),
+          const Glyph(GlyphKind.pin, size: 16, color: Palette.amber),
           const SizedBox(width: 12),
           Expanded(
             child: Column(
@@ -3119,15 +3404,10 @@ class _Pinned extends StatelessWidget {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
-                  'PINNED',
-                  style: Styles.rubric.copyWith(color: Palette.amber),
-                ),
-                const SizedBox(height: 2),
-                Text(
                   _summary(message),
                   maxLines: 2,
                   overflow: TextOverflow.ellipsis,
-                  style: Styles.body.copyWith(color: Palette.fg),
+                  style: Styles.detail.copyWith(color: Palette.pre),
                 ),
               ],
             ),
@@ -3260,12 +3540,12 @@ class _Presence extends StatelessWidget {
       child: Align(
         alignment: Alignment.centerLeft,
         child: Container(
-          padding: const EdgeInsets.fromLTRB(10, 5, 10, 5),
-          decoration: BoxDecoration(border: Border.all(color: Palette.line)),
-          child: Text(
-            text,
-            style: Styles.detail.copyWith(fontStyle: FontStyle.italic),
+          padding: const EdgeInsets.fromLTRB(12, 5, 12, 5),
+          decoration: BoxDecoration(
+            color: Palette.bg2,
+            borderRadius: BorderRadius.circular(12),
           ),
+          child: Text(text, style: Styles.detail.copyWith(fontSize: 12.5)),
         ),
       ),
     );
@@ -3282,9 +3562,10 @@ class _Rotation extends StatelessWidget {
     return Container(
       width: double.infinity,
       margin: const EdgeInsets.symmetric(vertical: 10),
-      padding: const EdgeInsets.symmetric(vertical: 8),
+      padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 12),
       decoration: BoxDecoration(
-        border: Border.symmetric(horizontal: BorderSide(color: Palette.line)),
+        color: Palette.bg2,
+        borderRadius: BorderRadius.circular(12),
       ),
       child: Text(
         text,
@@ -3592,12 +3873,15 @@ class _Photo extends StatelessWidget {
               maxWidth: width,
               maxHeight: width * 1.4,
             ),
-            child: Image.memory(
-              bytes,
-              fit: BoxFit.contain,
-              cacheWidth: (width * MediaQuery.devicePixelRatioOf(context))
-                  .round(),
-              gaplessPlayback: true,
+            child: ClipRRect(
+              borderRadius: BorderRadius.circular(14),
+              child: Image.memory(
+                bytes,
+                fit: BoxFit.contain,
+                cacheWidth: (width * MediaQuery.devicePixelRatioOf(context))
+                    .round(),
+                gaplessPlayback: true,
+              ),
             ),
           ),
         );
@@ -3619,6 +3903,7 @@ class _Removed extends StatelessWidget {
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 14),
       decoration: BoxDecoration(
         border: Border.all(color: Palette.line2),
+        borderRadius: BorderRadius.circular(14),
       ),
       child: Row(
         children: [
@@ -3820,29 +4105,12 @@ class _Portrait extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final plain = name.replaceFirst('~', '');
-    final initial = plain.isEmpty ? '' : String.fromCharCode(plain.runes.first);
-
-    return SizedBox.square(
-      dimension: _portrait,
-      child: Stack(
-        children: [
-          ClipPath(
-            clipper: const PortraitClipper(),
-            child: Container(
-              alignment: Alignment.center,
-              color: Palette.line2,
-              child: ExcludeSemantics(
-                child: Text(
-                  initial.toUpperCase(),
-                  style: Styles.body.copyWith(color: Palette.fg, height: 1),
-                ),
-              ),
-            ),
-          ),
-          Avatar(peer, size: _portrait, margin: EdgeInsets.zero, zoom: true),
-        ],
-      ),
+    return Avatar(
+      peer,
+      size: _portrait,
+      margin: EdgeInsets.zero,
+      zoom: true,
+      name: name,
     );
   }
 }
@@ -3878,7 +4146,9 @@ class _Entry extends StatelessWidget {
     final style = Styles.body.copyWith(
       height: 1.3,
       fontWeight: FontWeight.w600,
-      color: Palette.amber,
+      color: message.incoming
+          ? nameInk(_speaker(chat, message))
+          : Palette.amber,
     );
 
     return Padding(
@@ -3896,7 +4166,7 @@ class _Entry extends StatelessWidget {
                 : PeerName(selfPeer, style: style),
           ),
           const SizedBox(width: 8),
-          Text(time, style: Styles.detail.copyWith(fontSize: 10.5)),
+          Text(time, style: Styles.detail.copyWith(fontSize: 11.5)),
           const SizedBox(width: 8),
           _icons(),
         ],
@@ -3988,11 +4258,16 @@ class _Entry extends StatelessWidget {
           children: [
             if (flash || _named)
               Positioned(
-                top: joined ? -1 : -4,
-                bottom: -1,
-                left: -Metrics.edge,
-                right: -Metrics.edge,
-                child: const ColoredBox(color: Palette.amberWash),
+                top: joined ? -2 : -6,
+                bottom: -2,
+                left: -8,
+                right: -2,
+                child: DecoratedBox(
+                  decoration: BoxDecoration(
+                    color: Palette.amberWash,
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                ),
               ),
             Row(
               crossAxisAlignment: joined
@@ -4088,17 +4363,24 @@ class _Composer extends StatelessWidget {
     }
 
     return CustomPaint(
-      painter: CutPainter(
-        fill: Palette.bg,
+      painter: RoundPainter(
+        fill: Palette.bg2,
         stroke: discard ? Palette.amber2 : Palette.amberDim,
-        cut: 8,
+        radius: 22,
       ),
       child: Padding(
-        padding: const EdgeInsets.fromLTRB(12, 10, 12, 10),
+        padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
         child: Row(
           children: [
             if (started == null || discard)
-              Container(width: 10, height: 10, color: Palette.dim)
+              Container(
+                width: 10,
+                height: 10,
+                decoration: const BoxDecoration(
+                  color: Palette.dim,
+                  shape: BoxShape.circle,
+                ),
+              )
             else
               const _Pulse(color: Palette.amber),
             const SizedBox(width: 10),
@@ -4193,7 +4475,25 @@ class _Composer extends StatelessWidget {
         child: SizedBox(
           width: 44,
           height: 44,
-          child: Center(child: Glyph(GlyphKind.mic, color: color)),
+          child: Center(
+            child: Container(
+              width: 40,
+              height: 40,
+              decoration: BoxDecoration(
+                color: recording != null || starting
+                    ? Palette.amber
+                    : Palette.bg2,
+                shape: BoxShape.circle,
+              ),
+              child: Center(
+                child: Glyph(
+                  GlyphKind.mic,
+                  size: 20,
+                  color: recording != null || starting ? Palette.bg : color,
+                ),
+              ),
+            ),
+          ),
         ),
       ),
     );
@@ -4237,13 +4537,13 @@ class _Composer extends StatelessWidget {
                             ),
                           ),
                         CustomPaint(
-                          painter: const CutPainter(
-                            fill: Palette.bg,
-                            stroke: Palette.line2,
-                            cut: 8,
+                          painter: const RoundPainter(
+                            fill: Palette.bg2,
+                            stroke: Palette.line,
+                            radius: 22,
                           ),
                           child: Padding(
-                            padding: const EdgeInsets.fromLTRB(12, 10, 12, 10),
+                            padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
                             child: TextField(
                               controller: input,
                               focusNode: focus,
@@ -4305,7 +4605,11 @@ class _PulseState extends State<_Pulse> with SingleTickerProviderStateMixin {
   Widget build(BuildContext context) {
     return FadeTransition(
       opacity: Tween(begin: 0.3, end: 1.0).animate(_beat),
-      child: Container(width: 10, height: 10, color: widget.color),
+      child: Container(
+        width: 10,
+        height: 10,
+        decoration: BoxDecoration(color: widget.color, shape: BoxShape.circle),
+      ),
     );
   }
 }
@@ -4577,16 +4881,17 @@ class _VoiceNoteState extends State<_VoiceNote> {
                     button: true,
                     label: on ? 'Stop voice message' : 'Play voice message',
                     child: Container(
-                      width: 34,
-                      height: 34,
-                      decoration: BoxDecoration(
-                        border: Border.all(color: Palette.amberDim),
+                      width: 36,
+                      height: 36,
+                      decoration: const BoxDecoration(
+                        color: Palette.amber,
+                        shape: BoxShape.circle,
                       ),
                       child: Center(
                         child: Glyph(
                           on ? GlyphKind.stop : GlyphKind.play,
-                          size: 16,
-                          color: Palette.amber,
+                          size: 15,
+                          color: Palette.bg,
                         ),
                       ),
                     ),
@@ -4670,7 +4975,10 @@ class _WavePainter extends CustomPainter {
         h,
       );
 
-      canvas.drawRect(rect, (i + 0.5) / bars.length <= played ? lit : dim);
+      canvas.drawRRect(
+        RRect.fromRectAndRadius(rect, Radius.circular(rect.width / 2)),
+        (i + 0.5) / bars.length <= played ? lit : dim,
+      );
     }
   }
 

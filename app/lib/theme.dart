@@ -1,22 +1,24 @@
 import 'package:flutter/widgets.dart';
 
-/// Taken from :root in sanctum.css.
 abstract final class Palette {
-  static const bg = Color(0xff0b0c0e);
-  static const bg2 = Color(0xff111317);
-  static const bg3 = Color(0xff16191e);
-  static const line = Color(0xff23262c);
-  static const line2 = Color(0xff353941);
-  static const fg = Color(0xffe8e6e1);
-  static const fg2 = Color(0xffb9b7b0);
-  static const dim = Color(0xff7e8088);
-  static const amber = Color(0xffffb000);
-  static const amber2 = Color(0xffffc94d);
-  static const amberDim = Color(0xff6b4a00);
-  static const good = Color(0xff6ee7a0);
-  static const pre = Color(0xffcfcdc6);
+  static const bg = Color(0xff15120f);
+  static const bg2 = Color(0xff1e1a16);
+  static const bg3 = Color(0xff26211b);
+  static const well = Color(0xff100e0b);
+  static const line = Color(0xff2a241e);
+  static const line2 = Color(0xff3a3229);
+  static const fg = Color(0xffefe7da);
+  static const fg2 = Color(0xffbfb3a2);
+  static const dim = Color(0xff8c8173);
+  static const amber = Color(0xffe8a33d);
+  static const amber2 = Color(0xfff2bb5e);
+  static const amberDim = Color(0xff5a4220);
+  static const good = Color(0xff8fbf8a);
+  static const pre = Color(0xffd9cdb9);
+  static const mine = Color(0xffd6b98d);
 
-  static const amberWash = Color(0x14ffb000);
+  static const amberWash = Color(0x1fe8a33d);
+  static const veil = Color(0xcc15120f);
 }
 
 abstract final class Fonts {
@@ -25,13 +27,13 @@ abstract final class Fonts {
 }
 
 abstract final class Metrics {
-  static const double edge = 18;
+  static const double edge = 20;
 
-  static const double cut = 10;
+  static const double radius = 16;
 
-  static const double gap = 14;
+  static const double gap = 12;
 
-  static const double tabBar = 62;
+  static const double tabBar = 64;
 }
 
 /// JetBrains Mono only ships regular and bold.
@@ -157,11 +159,17 @@ abstract final class Styles {
   );
 }
 
-String hex(int value, {bool prefix = true}) {
-  final digits = value.toRadixString(16).padLeft(2, '0');
-  if (!prefix) {
-    return digits;
+String roman(int value) {
+  const marks = [(10, 'X'), (9, 'IX'), (5, 'V'), (4, 'IV'), (1, 'I')];
+  final out = StringBuffer();
+  var left = value;
+
+  for (final (worth, mark) in marks) {
+    while (left >= worth) {
+      out.write(mark);
+      left -= worth;
+    }
   }
 
-  return '0x$digits';
+  return out.toString();
 }
