@@ -1302,9 +1302,12 @@ class _TopicTag extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final color = topicColor(topic.color);
-    final ink = color.computeLuminance() > 0.35 ? Palette.bg : Palette.fg;
     final unread = topic.unread;
+    final lit = topicColor(topic.color);
+    final color = unread > 0 ? lit : Color.lerp(lit, Palette.bg, 0.82)!;
+    final ink = unread > 0
+        ? (lit.computeLuminance() > 0.35 ? Palette.bg : Palette.fg)
+        : Color.lerp(lit, Palette.dim, 0.55)!;
 
     return GestureDetector(
       onLongPress: _topicsOwned(peer) ? () => _removeTopic(peer, topic) : null,
