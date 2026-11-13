@@ -244,6 +244,9 @@ enum GlyphKind {
   bell,
   snoozed,
   grip,
+  group,
+  sort,
+  person,
 }
 
 class Glyph extends StatelessWidget {
@@ -542,6 +545,18 @@ class _GlyphPainter extends CustomPainter {
         poly([5, 7, 19, 7]);
         poly([5, 12, 19, 12]);
         poly([5, 17, 19, 17]);
+      case GlyphKind.group:
+        canvas.drawCircle(const Offset(9.5, 9), 3.5, line);
+        poly([3, 20, 3, 17, 6, 14.5, 13, 14.5, 16, 17, 16, 20]);
+        poly([14.5, 3.6, 16, 3, 18.5, 4, 19.5, 6, 18.5, 8.5, 16, 9.5]);
+        poly([17, 12.5, 18.5, 12.5, 21, 15, 21, 18]);
+      case GlyphKind.person:
+        canvas.drawCircle(const Offset(12, 8), 4, line);
+        poly([4, 21, 4, 18, 7, 14.5, 17, 14.5, 20, 18, 20, 21]);
+      case GlyphKind.sort:
+        poly([4, 7, 20, 7]);
+        poly([4, 12, 15, 12]);
+        poly([4, 17, 10, 17]);
     }
   }
 

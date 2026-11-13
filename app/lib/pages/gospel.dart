@@ -27,7 +27,7 @@ class _GospelPageState extends State<GospelPage> with WidgetsBindingObserver {
   String? _error;
   int _version = -1;
   bool _busy = false;
-  bool _collapsed = true;
+  bool _unreadOnly = false;
 
   @override
   void initState() {
@@ -41,22 +41,6 @@ class _GospelPageState extends State<GospelPage> with WidgetsBindingObserver {
     });
 
     _load();
-
-    Vigil.instance
-        .flag(_expandedKey)
-        .then((on) {
-          if (mounted) {
-            setState(() => _collapsed = !on);
-          }
-        })
-        .catchError((Object _) {});
-  }
-
-  static const _expandedKey = 'gospelExpanded';
-
-  void _collapse(bool on) {
-    setState(() => _collapsed = on);
-    Vigil.instance.flag(_expandedKey, !on).catchError((Object _) => !on);
   }
 
   @override
@@ -85,12 +69,6 @@ class _GospelPageState extends State<GospelPage> with WidgetsBindingObserver {
     try {
       final chats = await Vigil.instance.chats();
 
-      chats.sort(
-        (a, b) => (b.last?.time ?? DateTime(0)).compareTo(
-          a.last?.time ?? DateTime(0),
-        ),
-      );
-
       if (mounted) {
         setState(() {
           _chats = chats;
@@ -118,6 +96,27 @@ class _GospelPageState extends State<GospelPage> with WidgetsBindingObserver {
     }
   }
 
+  Future<void> _showPeers() async {
+    final chats = [
+      for (final c in _chats ?? const <ChatSummary>[])
+        if (!isGroup(c.peer)) c.peer,
+    ];
+    final pick = await sheet<String>(
+      context,
+      (context) => _PeerSheet(chats: chats),
+    );
+
+    if (pick == _PeerSheet.group) {
+      await newGroup(knownPeers(Vigil.instance.status, chats));
+    } else if (pick == _PeerSheet.kek) {
+      await chatById();
+    }
+  }
+
+  void _showGospel(Tunnel voice) {
+    sheet<void>(context, (context) => _GospelSheet(voice: voice));
+  }
+
   @override
   Widget build(BuildContext context) {
     final vigil = Vigil.instance;
@@ -132,20 +131,19 @@ class _GospelPageState extends State<GospelPage> with WidgetsBindingObserver {
           return TabPage(
             index: 3,
             rubric: 'Gospel',
-            title: 'Your flock',
             glow: status.call?.alive ?? false,
             actions: [
               if (voice != null) ...[
+                _StatusBtn(
+                  state: gospelState(voice, status),
+                  onTap: () => _showGospel(voice),
+                ),
                 GlyphBtn(
                   GlyphKind.edit,
                   label: 'Chat settings',
                   onTap: chatSettings,
                 ),
-                GlyphBtn(
-                  GlyphKind.plus,
-                  label: 'New chat',
-                  onTap: () => newChat(status),
-                ),
+                GlyphBtn(GlyphKind.person, label: 'Peers', onTap: _showPeers),
               ],
             ],
             children: [
@@ -164,18 +162,10 @@ class _GospelPageState extends State<GospelPage> with WidgetsBindingObserver {
                   ),
                 )
               else ...[
-                _GospelPanel(
-                  voice: voice,
-                  status: status,
-                  busy: _busy,
-                  onGospel: _gospel,
-                  collapsed: _collapsed,
-                  onCollapse: _collapse,
-                ),
+                ?_offline(voice, status),
                 if (status.running && !status.linked) const LinkNotice(),
                 if (!status.background) const BackgroundNotice(),
                 ..._chatList(status),
-                ..._peers(status),
               ],
             ],
           );
@@ -184,11 +174,29 @@ class _GospelPageState extends State<GospelPage> with WidgetsBindingObserver {
     );
   }
 
+  // Only shown when Gospel cannot carry chats at all, everything else
+  // lives behind the status dot in the top bar.
+  Widget? _offline(Tunnel voice, Status status) {
+    final starting = status.connecting == voice.id;
+
+    if (starting || (status.gospel && status.call != null)) {
+      return null;
+    }
+
+    return _Offline(
+      text: status.gospel ? 'Gospel is not running' : 'Gospel is off',
+      action: status.gospel ? 'Start' : 'Turn on',
+      busy: _busy,
+      onAction: () => _gospel(true),
+      onTap: () => _showGospel(voice),
+    );
+  }
+
   List<Widget> _chatList(Status status) {
-    final chats = _list(status, _chats);
-    final groups = chats.where((c) => isGroup(c.peer)).toList()..sort(_placed);
-    final peers = chats.where((c) => !isGroup(c.peer)).toList()
-      ..sort((a, b) => _order(status, a, b));
+    final all = _list(status, _chats);
+    final chats = all.where((c) => !_unreadOnly || _unread(c)).toList()
+      ..sort(_order);
+    final reorder = !_unreadOnly && chats.length > 1;
 
     return [
       if (_error != null) Notice(text: _error!, kind: NoticeKind.warn),
@@ -209,17 +217,23 @@ class _GospelPageState extends State<GospelPage> with WidgetsBindingObserver {
           action: Btn(
             label: 'New chat',
             glyph: GlyphKind.plus,
-            onTap: () => newChat(status),
+            onTap: _showPeers,
           ),
         ),
-      if (groups.isNotEmpty) const GroupLabel('Groups'),
-      if (groups.length == 1)
-        ChatRow(
-          key: ValueKey(groups.first.peer),
-          chat: groups.first,
-          status: status,
+      if (all.isNotEmpty)
+        GroupLabel(
+          'Chats',
+          trailing: _UnreadSort(
+            on: _unreadOnly,
+            onTap: () => setState(() => _unreadOnly = !_unreadOnly),
+          ),
         ),
-      if (groups.length > 1)
+      if (all.isNotEmpty && chats.isEmpty)
+        const Padding(
+          padding: EdgeInsets.symmetric(vertical: 8),
+          child: Text('No unread messages.', style: Styles.detail),
+        ),
+      if (chats.isNotEmpty)
         Gapped(
           child: ReorderableListView(
             shrinkWrap: true,
@@ -227,41 +241,58 @@ class _GospelPageState extends State<GospelPage> with WidgetsBindingObserver {
             physics: const NeverScrollableScrollPhysics(),
             buildDefaultDragHandles: false,
             proxyDecorator: (child, index, animation) => child,
-            onReorderItem: (from, to) => _move(groups, from, to),
+            onReorderItem: (from, to) => _move(chats, from, to),
             children: [
-              for (final (i, chat) in groups.indexed)
+              for (final (i, chat) in chats.indexed)
                 Padding(
                   key: ValueKey(chat.peer),
-                  padding: const EdgeInsets.only(bottom: Metrics.gap),
-                  child: ChatRow(chat: chat, status: status, handle: i),
+                  padding: EdgeInsets.only(
+                    bottom: i == chats.length - 1 ? 0 : Metrics.gap,
+                  ),
+                  child: ChatRow(
+                    chat: chat,
+                    status: status,
+                    handle: reorder ? i : null,
+                  ),
                 ),
             ],
           ),
         ),
-      if (peers.isNotEmpty) const Line(),
-      if (peers.isNotEmpty) const GroupLabel('Chats'),
-      for (final chat in peers)
-        ChatRow(key: ValueKey(chat.peer), chat: chat, status: status),
     ];
   }
 
-  Future<void> _move(List<ChatSummary> groups, int from, int to) async {
-    groups.insert(to, groups.removeAt(from));
+  // Favorites always stay on top, a drag is clamped to the block the
+  // chat belongs to (favorites or the rest).
+  Future<void> _move(List<ChatSummary> chats, int from, int to) async {
+    final chat = chats.removeAt(from);
+    final stars = chats.where((c) => c.star).length;
+
+    if (chat.star) {
+      to = to.clamp(0, stars);
+    } else {
+      to = to.clamp(stars, chats.length);
+    }
+
+    chats.insert(to, chat);
 
     setState(() {
-      for (final (i, chat) in groups.indexed) {
-        chat.json['order'] = i;
+      for (final (i, c) in chats.indexed) {
+        c.json['order'] = i;
       }
     });
 
     try {
-      await Vigil.instance.orderChats([for (final c in groups) c.peer]);
+      await Vigil.instance.orderChats([for (final c in chats) c.peer]);
     } on VigilError catch (e) {
       notify(e.message);
     }
   }
 
-  int _placed(ChatSummary a, ChatSummary b) {
+  int _order(ChatSummary a, ChatSummary b) {
+    if (a.star != b.star) {
+      return a.star ? -1 : 1;
+    }
+
     if (a.order != b.order) {
       if (a.order == -1) {
         return 1;
@@ -274,45 +305,7 @@ class _GospelPageState extends State<GospelPage> with WidgetsBindingObserver {
       return a.order.compareTo(b.order);
     }
 
-    final recent = (b.last?.time ?? DateTime(0)).compareTo(
-      a.last?.time ?? DateTime(0),
-    );
-
-    if (recent != 0) {
-      return recent;
-    }
-
-    return a.peer.compareTo(b.peer);
-  }
-
-  int _order(Status status, ChatSummary a, ChatSummary b) {
     final vigil = Vigil.instance;
-    final online = chatOnline(status, a.peer);
-
-    if (a.star != b.star) {
-      if (a.star) {
-        return -1;
-      }
-
-      return 1;
-    }
-
-    if (online != chatOnline(status, b.peer)) {
-      if (online) {
-        return -1;
-      }
-
-      return 1;
-    }
-
-    final recent = (b.last?.time ?? DateTime(0)).compareTo(
-      a.last?.time ?? DateTime(0),
-    );
-
-    if (recent != 0) {
-      return recent;
-    }
-
     final name = vigil.name(a.peer).toLowerCase();
     final order = name.compareTo(vigil.name(b.peer).toLowerCase());
 
@@ -323,150 +316,249 @@ class _GospelPageState extends State<GospelPage> with WidgetsBindingObserver {
     return a.peer.compareTo(b.peer);
   }
 
-  List<Widget> _peers(Status status) {
-    final own = ownPeer();
-    final online = (status.call?.peers ?? const <String>[])
-        .where((p) => p != own)
-        .length;
-
-    return [
-      GroupLabel(
-        'Peers',
-        trailing: Text('$online online', style: Styles.rubric),
-      ),
-      Btn(
-        label: 'Show all',
-        glyph: GlyphKind.call,
-        kind: BtnKind.secondary,
-        expand: true,
-        onTap: () => sheet<void>(context, (context) => const _PeerSheet()),
-      ),
-    ];
-  }
+  static bool _unread(ChatSummary chat) =>
+      chat.unread > 0 || chat.topics.any((t) => t.unread > 0);
 
   List<ChatSummary> _list(Status status, List<ChatSummary>? chats) =>
       chats ?? const <ChatSummary>[];
 }
 
-class _GospelPanel extends StatelessWidget {
-  const _GospelPanel({
-    required this.voice,
-    required this.status,
-    required this.busy,
-    required this.onGospel,
-    required this.collapsed,
-    required this.onCollapse,
-  });
+class _UnreadSort extends StatelessWidget {
+  const _UnreadSort({required this.on, required this.onTap});
 
-  final Tunnel voice;
-  final Status status;
-  final bool busy;
-  final void Function(bool) onGospel;
-  final bool collapsed;
-  final void Function(bool) onCollapse;
+  final bool on;
+  final VoidCallback onTap;
 
   @override
   Widget build(BuildContext context) {
-    final on = status.gospel;
-    final calls = status.call;
-    final starting = status.connecting == voice.id;
-    final state = _state(on, starting, calls);
-    final toggle = Toggle(
-      on: on,
-      pending: busy || starting,
-      label: 'Gospel',
-      onTap: busy || starting ? null : () => onGospel(!on),
-    );
-    final fold = _Fold(
-      collapsed: collapsed,
-      onTap: () => onCollapse(!collapsed),
-    );
+    return Pressable(
+      onTap: onTap,
+      label: on ? 'Show all chats' : 'Show only unread chats',
+      builder: (context, pressed) {
+        final tint = on || pressed ? Palette.amber : Palette.dim;
 
-    final header = Row(
-      children: [
-        StateDot(state),
-        const SizedBox(width: 10),
-        Expanded(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Rubric(text: voice.summary.instance),
-              const SizedBox(height: 4),
-              Text(
-                _brief(on, starting, calls),
-                style: Styles.detail,
-                overflow: TextOverflow.ellipsis,
-              ),
-            ],
+        return Padding(
+          padding: const EdgeInsets.symmetric(vertical: 6),
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 4),
+            decoration: BoxDecoration(
+              color: on ? Palette.amberWash : null,
+              border: Border.all(color: on ? Palette.amberDim : Palette.line2),
+            ),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Glyph(GlyphKind.sort, size: 12, color: tint),
+                const SizedBox(width: 5),
+                Text(
+                  'UNREAD',
+                  style: Styles.rubric.copyWith(
+                    fontSize: 9.5,
+                    height: 1,
+                    color: tint,
+                  ),
+                ),
+              ],
+            ),
           ),
-        ),
-        const SizedBox(width: 12),
-        toggle,
-        const SizedBox(width: 4),
-        fold,
-      ],
+        );
+      },
     );
-    final liturgies = status.liturgies;
+  }
+}
 
-    return Panel(
-      accent: state == Liveness.online,
-      padding: const EdgeInsets.fromLTRB(18, 12, 8, 12),
-      onTap: () => push(TunnelPage(tunnel: voice)),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          header,
-          if (!collapsed && !on) ...[
-            const SizedBox(height: 10),
-            Text(_detail(on, calls), style: Styles.detail),
-          ],
-          if (on && calls == null && !starting) ...[
-            const SizedBox(height: 14),
-            Padding(
-              padding: const EdgeInsets.only(right: 10),
-              child: Btn(
-                label: 'Start',
-                expand: true,
-                busy: busy,
-                onTap: busy ? null : () => onGospel(true),
+Liveness gospelState(Tunnel voice, Status status) {
+  final calls = status.call;
+
+  if (status.connecting == voice.id) {
+    return Liveness.pending;
+  }
+
+  if (!status.gospel || calls == null) {
+    return Liveness.off;
+  }
+
+  if (!calls.alive) {
+    return Liveness.pending;
+  }
+
+  return Liveness.online;
+}
+
+class _StatusBtn extends StatelessWidget {
+  const _StatusBtn({required this.state, required this.onTap});
+
+  final Liveness state;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return Pressable(
+      onTap: onTap,
+      label: 'Gospel status',
+      builder: (context, pressed) => SizedBox(
+        width: 44,
+        height: 44,
+        child: Center(
+          child: Container(
+            padding: const EdgeInsets.all(5),
+            decoration: BoxDecoration(
+              border: Border.all(
+                color: pressed ? Palette.amber : Palette.line2,
               ),
             ),
-          ],
-          if (!collapsed && on && liturgies.isNotEmpty) ...[
-            const SizedBox(height: 12),
-            for (final l in liturgies) _LiturgyRow(liturgy: l),
-          ],
+            child: StateDot(state),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _Offline extends StatelessWidget {
+  const _Offline({
+    required this.text,
+    required this.action,
+    required this.busy,
+    required this.onAction,
+    required this.onTap,
+  });
+
+  final String text;
+  final String action;
+  final bool busy;
+  final VoidCallback onAction;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return Panel(
+      padding: const EdgeInsets.fromLTRB(16, 8, 8, 8),
+      onTap: onTap,
+      child: Row(
+        children: [
+          const StateDot(Liveness.off),
+          const SizedBox(width: 10),
+          Expanded(child: Text(text, style: Styles.detail)),
+          Btn(
+            label: action,
+            kind: BtnKind.secondary,
+            busy: busy,
+            onTap: busy ? null : onAction,
+          ),
         ],
       ),
     );
   }
+}
 
-  String _brief(bool on, bool starting, CallStatus? calls) {
-    if (!on || starting || calls == null) {
-      return _title(on, starting, calls);
+class _GospelSheet extends StatefulWidget {
+  const _GospelSheet({required this.voice});
+
+  final Tunnel voice;
+
+  @override
+  State<_GospelSheet> createState() => _GospelSheetState();
+}
+
+class _GospelSheetState extends State<_GospelSheet> {
+  bool _busy = false;
+
+  Future<void> _gospel(bool on) async {
+    setState(() => _busy = true);
+
+    try {
+      await Vigil.instance.gospel(on);
+    } on VigilError catch (e) {
+      notify(e.message);
     }
 
-    return '↓ ${bytes(status.gospelRx)} · ↑ ${bytes(status.gospelTx)}';
+    if (mounted) {
+      setState(() => _busy = false);
+    }
   }
 
-  Liveness _state(bool on, bool starting, CallStatus? calls) {
-    if (starting) {
-      return Liveness.pending;
-    }
+  @override
+  Widget build(BuildContext context) {
+    final vigil = Vigil.instance;
+    final voice = widget.voice;
 
-    if (!on) {
-      return Liveness.off;
-    }
+    return StreamBuilder<Status>(
+      stream: vigil.statuses,
+      initialData: vigil.status,
+      builder: (context, snapshot) {
+        final status = snapshot.data!;
+        final on = status.gospel;
+        final calls = status.call;
+        final starting = status.connecting == voice.id;
 
-    if (calls == null) {
-      return Liveness.off;
-    }
-
-    if (!calls.alive) {
-      return Liveness.pending;
-    }
-
-    return Liveness.online;
+        return Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            sheetTitle(voice.summary.instance),
+            const SizedBox(height: 16),
+            Row(
+              children: [
+                StateDot(gospelState(voice, status)),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(_title(on, starting, calls), style: Styles.value),
+                      const SizedBox(height: 2),
+                      Text(
+                        _detail(voice, on, calls),
+                        style: Styles.detail,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Toggle(
+                  on: on,
+                  pending: _busy || starting,
+                  label: 'Gospel',
+                  onTap: _busy || starting ? null : () => _gospel(!on),
+                ),
+              ],
+            ),
+            if (on && calls != null) ...[
+              const SizedBox(height: 10),
+              Text(
+                '↓ ${bytes(status.gospelRx)} · ↑ ${bytes(status.gospelTx)}',
+                style: Styles.detail,
+              ),
+            ],
+            if (on && calls == null && !starting) ...[
+              const SizedBox(height: 14),
+              Btn(
+                label: 'Start',
+                expand: true,
+                busy: _busy,
+                onTap: _busy ? null : () => _gospel(true),
+              ),
+            ],
+            if (on && status.liturgies.isNotEmpty) ...[
+              const SizedBox(height: 12),
+              for (final l in status.liturgies) _LiturgyRow(liturgy: l),
+            ],
+            const SizedBox(height: 16),
+            Btn(
+              label: 'Tunnel details',
+              kind: BtnKind.secondary,
+              expand: true,
+              onTap: () {
+                Navigator.of(context).pop();
+                push(TunnelPage(tunnel: voice));
+              },
+            ),
+          ],
+        );
+      },
+    );
   }
 
   String _title(bool on, bool starting, CallStatus? calls) {
@@ -489,9 +581,9 @@ class _GospelPanel extends StatelessWidget {
     return 'Ready for calls and messages';
   }
 
-  String _detail(bool on, CallStatus? calls) {
+  String _detail(Tunnel voice, bool on, CallStatus? calls) {
     if (!on) {
-      return 'Turn it on to make calls and send messages';
+      return 'No calls or messages';
     }
 
     if (calls == null) {
@@ -506,8 +598,25 @@ class _GospelPanel extends StatelessWidget {
   }
 }
 
+List<String> knownPeers(Status status, List<String> chats) {
+  final vigil = Vigil.instance;
+  final own = ownPeer();
+
+  return <String>{
+    ...?status.call?.peers,
+    ...?status.chat?.peers.where((p) => p.present).map((p) => p.id),
+    ...vigil.names.keys.where((p) => !isGroup(p)),
+    ...chats,
+  }.where((p) => p != own).toList()..sort();
+}
+
 class _PeerSheet extends StatefulWidget {
-  const _PeerSheet();
+  const _PeerSheet({required this.chats});
+
+  static const group = 'group';
+  static const kek = 'kek';
+
+  final List<String> chats;
 
   @override
   State<_PeerSheet> createState() => _PeerSheetState();
@@ -530,14 +639,9 @@ class _PeerSheetState extends State<_PeerSheet> {
 
   List<String> _peers(Status status) {
     final vigil = Vigil.instance;
-    final own = ownPeer();
     final calls = status.call?.peers ?? const <String>[];
     final needle = _filter.text.trim().toLowerCase();
-    final peers = <String>{
-      ...calls,
-      ...?status.chat?.peers.where((p) => p.present).map((p) => p.id),
-      ...vigil.names.keys.where((p) => !isGroup(p)),
-    }.where((p) => p != own).toList();
+    final peers = knownPeers(status, widget.chats);
 
     peers.retainWhere(
       (p) => p.contains(needle) || vigil.name(p).toLowerCase().contains(needle),
@@ -572,8 +676,24 @@ class _PeerSheetState extends State<_PeerSheet> {
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            sheetTitle('Peers'),
+            Row(
+              children: [
+                Expanded(child: sheetTitle('Peers')),
+                Text('${calls.length} online', style: Styles.rubric),
+              ],
+            ),
             const SizedBox(height: 16),
+            _Action(
+              title: 'New group',
+              text: 'Pick the members, you own the group',
+              onTap: () => Navigator.of(context).pop(_PeerSheet.group),
+            ),
+            _Action(
+              title: 'Chat by KEK ID',
+              text: 'Anyone in your flock, messages wait until they are online',
+              onTap: () => Navigator.of(context).pop(_PeerSheet.kek),
+            ),
+            const SizedBox(height: 4),
             Pre(
               child: TextField(
                 controller: _filter,
@@ -694,26 +814,33 @@ class _PeerRow extends StatelessWidget {
   }
 }
 
-class _Fold extends StatelessWidget {
-  const _Fold({required this.collapsed, required this.onTap});
+class _Action extends StatelessWidget {
+  const _Action({required this.title, required this.text, required this.onTap});
 
-  final bool collapsed;
+  final String title;
+  final String text;
   final VoidCallback onTap;
 
   @override
   Widget build(BuildContext context) {
-    return Semantics(
-      button: true,
-      label: collapsed ? 'Show Gospel details' : 'Hide Gospel details',
-      child: GestureDetector(
-        behavior: HitTestBehavior.opaque,
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 8),
+      child: Panel(
+        padding: const EdgeInsets.fromLTRB(16, 12, 12, 12),
         onTap: onTap,
-        child: Padding(
-          padding: const EdgeInsets.all(8),
-          child: RotatedBox(
-            quarterTurns: collapsed ? 1 : 3,
-            child: const Glyph(GlyphKind.chevron, size: 18, color: Palette.dim),
-          ),
+        child: Row(
+          children: [
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(title, style: Styles.cardTitle),
+                  Text(text, style: Styles.detail),
+                ],
+              ),
+            ),
+            const Glyph(GlyphKind.plus, color: Palette.amber),
+          ],
         ),
       ),
     );
@@ -730,7 +857,7 @@ class _LiturgyRow extends StatelessWidget {
     final l = liturgy;
 
     return Padding(
-      padding: const EdgeInsets.only(right: 10),
+      padding: EdgeInsets.zero,
       child: Column(
         children: [
           const Line(),

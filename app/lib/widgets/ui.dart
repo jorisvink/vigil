@@ -138,15 +138,15 @@ class TabPage extends StatelessWidget {
   const TabPage({
     super.key,
     required this.rubric,
-    required this.title,
     required this.index,
     required this.children,
+    this.title,
     this.actions = const [],
     this.glow = false,
   });
 
   final String rubric;
-  final String title;
+  final String? title;
   final int index;
   final List<Widget> children;
   final List<Widget> actions;
@@ -164,7 +164,10 @@ class TabPage extends StatelessWidget {
             child: ListView(
               padding: EdgeInsets.only(bottom: tabBarSpace(context)),
               children: [
-                PageTitle(rubric: rubric, title: title, index: index),
+                if (title != null)
+                  PageTitle(rubric: rubric, title: title!, index: index)
+                else
+                  const SizedBox(height: 6),
                 for (final child in children)
                   Padding(
                     padding: EdgeInsets.fromLTRB(

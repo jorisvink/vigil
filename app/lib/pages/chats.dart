@@ -414,130 +414,7 @@ String _when(DateTime time) {
   return day;
 }
 
-Future<void> newChat(Status status) async {
-  final context = navigatorKey.currentContext;
-  if (context == null) {
-    return;
-  }
-
-  final vigil = Vigil.instance;
-  final own = ownPeer();
-  final chats = await vigil.chats().catchError((Object _) => <ChatSummary>[]);
-  final peers = <String>{
-    ...?status.call?.peers,
-    ...?status.chat?.peers.where((p) => p.present).map((p) => p.id),
-    ...vigil.names.keys.where((p) => !isGroup(p)),
-    ...chats.map((c) => c.peer).where((p) => !isGroup(p)),
-  }.where((p) => p != own).toList()..sort();
-
-  if (!context.mounted) {
-    return;
-  }
-
-  final peer = await sheet<String>(
-    context,
-    (context) => Column(
-      mainAxisSize: MainAxisSize.min,
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        sheetTitle('Chat with'),
-        const SizedBox(height: 12),
-        Padding(
-          padding: const EdgeInsets.only(bottom: 8),
-          child: Panel(
-            padding: const EdgeInsets.fromLTRB(16, 12, 12, 12),
-            onTap: () => Navigator.of(context).pop(''),
-            child: Row(
-              children: [
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text('New group', style: Styles.cardTitle),
-                      const Text(
-                        'Pick the members, you own the group',
-                        style: Styles.detail,
-                        overflow: TextOverflow.ellipsis,
-                      ),
-                    ],
-                  ),
-                ),
-                const Glyph(GlyphKind.plus, color: Palette.amber),
-              ],
-            ),
-          ),
-        ),
-        Padding(
-          padding: const EdgeInsets.only(bottom: 8),
-          child: Panel(
-            padding: const EdgeInsets.fromLTRB(16, 12, 12, 12),
-            onTap: () => Navigator.of(context).pop('#'),
-            child: Row(
-              children: [
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text('Chat by KEK ID', style: Styles.cardTitle),
-                      const Text(
-                        'Anyone in your flock, messages wait until they are '
-                        'online',
-                        style: Styles.detail,
-                      ),
-                    ],
-                  ),
-                ),
-                const Glyph(GlyphKind.plus, color: Palette.amber),
-              ],
-            ),
-          ),
-        ),
-        if (peers.isEmpty)
-          const Text(
-            'Nobody is around right now. Use a KEK ID to leave someone a '
-            'message.',
-            style: Styles.body,
-          ),
-        for (final id in peers)
-          Padding(
-            padding: const EdgeInsets.only(bottom: 8),
-            child: Panel(
-              padding: const EdgeInsets.fromLTRB(16, 12, 12, 12),
-              onTap: () => Navigator.of(context).pop(id),
-              child: Row(
-                children: [
-                  chatDot(status, id),
-                  const SizedBox(width: 12),
-                  Avatar(id),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        PeerName(id, style: Styles.cardTitle),
-                        if (vigil.name(id) != 'Peer $id')
-                          Text('Peer $id', style: Styles.detail),
-                      ],
-                    ),
-                  ),
-                  const Glyph(GlyphKind.chat, color: Palette.amber),
-                ],
-              ),
-            ),
-          ),
-      ],
-    ),
-  );
-
-  if (peer == '') {
-    await newGroup(peers);
-  } else if (peer == '#') {
-    await _chatById();
-  } else if (peer != null) {
-    await push(ChatPage(peer: peer), opaque: false);
-  }
-}
-
-Future<void> _chatById() async {
+Future<void> chatById() async {
   final context = navigatorKey.currentContext;
   if (context == null) {
     return;
@@ -820,7 +697,7 @@ class ChatRow extends StatelessWidget {
       markLabel:
           '${mark[0]}${mark.substring(1).toLowerCase()} '
           '${vigil.name(chat.peer)}',
-      onMark: isGroup(chat.peer) ? null : _star,
+      onMark: _star,
       child: GestureDetector(
         onLongPress: () => manageTopics(chat.peer),
         child: _row(vigil, last, typing),
@@ -862,7 +739,10 @@ class ChatRow extends StatelessWidget {
         children: [
           chatDot(status, chat.peer),
           const SizedBox(width: 12),
-          Avatar(chat.peer, size: 40),
+          if (isGroup(chat.peer))
+            const GroupPortrait(size: 40)
+          else
+            Avatar(chat.peer, size: 40),
           Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
@@ -926,6 +806,46 @@ class ChatRow extends StatelessWidget {
               ),
             ),
         ],
+      ),
+    );
+  }
+}
+
+class GroupPortrait extends StatelessWidget {
+  const GroupPortrait({
+    super.key,
+    this.size = 36,
+    this.margin = const EdgeInsets.only(right: 12),
+  });
+
+  final double size;
+  final EdgeInsets margin;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: margin,
+      child: ClipPath(
+        clipper: const PortraitClipper(),
+        child: Container(
+          width: size,
+          height: size,
+          padding: const EdgeInsets.all(1),
+          color: Palette.line2,
+          child: ClipPath(
+            clipper: const PortraitClipper(),
+            child: ColoredBox(
+              color: Palette.bg3,
+              child: Center(
+                child: Glyph(
+                  GlyphKind.group,
+                  size: size * 0.55,
+                  color: Palette.fg2,
+                ),
+              ),
+            ),
+          ),
+        ),
       ),
     );
   }
@@ -2029,14 +1949,11 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
       return;
     }
 
-    final picked = await sheet<(String, List<String>)>(
-      context,
-      (context) => _GroupForm(
-        peers: peers,
-        edit: true,
-        name: group.name,
-        members: members,
-      ),
+    final picked = await _groupFlow(
+      peers: peers,
+      edit: true,
+      name: group.name,
+      members: members,
     );
 
     if (picked == null) {
@@ -4686,15 +4603,7 @@ class _Utf8Limit extends TextInputFormatter {
 }
 
 Future<void> newGroup(List<String> peers) async {
-  final context = navigatorKey.currentContext;
-  if (context == null) {
-    return;
-  }
-
-  final picked = await sheet<(String, List<String>)>(
-    context,
-    (context) => _GroupForm(peers: peers),
-  );
+  final picked = await _groupFlow(peers: peers);
 
   if (picked == null) {
     return;
@@ -4709,32 +4618,156 @@ Future<void> newGroup(List<String> peers) async {
   }
 }
 
-class _GroupForm extends StatefulWidget {
-  const _GroupForm({
-    required this.peers,
-    this.edit = false,
-    this.name = '',
-    this.members = const [],
-  });
+// Two steps so neither feels cramped: a small sheet for the name, then
+// a full page to pick the members. Going back from the members brings
+// the name sheet back up, the picks are kept.
+Future<(String, List<String>)?> _groupFlow({
+  required List<String> peers,
+  bool edit = false,
+  String name = '',
+  List<String> members = const [],
+}) async {
+  final picks = {...members};
+  var current = name;
 
-  final List<String> peers;
-  final bool edit;
-  final String name;
-  final List<String> members;
+  while (true) {
+    final context = navigatorKey.currentContext;
 
-  @override
-  State<_GroupForm> createState() => _GroupFormState();
+    if (context == null || !context.mounted) {
+      return null;
+    }
+
+    final named = await sheet<String>(
+      context,
+      (context) => _GroupName(edit: edit, name: current),
+    );
+
+    if (named == null) {
+      return null;
+    }
+
+    current = named;
+
+    final done = await push<bool>(
+      _GroupMembers(
+        name: named,
+        edit: edit,
+        peers: {...peers, ...members}.toList()..sort(),
+        picks: picks,
+      ),
+    );
+
+    if (done == true) {
+      return (named, picks.toList()..sort());
+    }
+  }
 }
 
-class _GroupFormState extends State<_GroupForm> {
+class _GroupName extends StatefulWidget {
+  const _GroupName({required this.edit, required this.name});
+
+  final bool edit;
+  final String name;
+
+  @override
+  State<_GroupName> createState() => _GroupNameState();
+}
+
+class _GroupNameState extends State<_GroupName> {
   late final _name = TextEditingController(text: widget.name);
-  final _id = TextEditingController();
-  late final _picked = {...widget.members};
-  late final _peers = {...widget.peers, ...widget.members}.toList()..sort();
+
+  @override
+  void initState() {
+    super.initState();
+    _name.addListener(() => setState(() {}));
+  }
 
   @override
   void dispose() {
     _name.dispose();
+    super.dispose();
+  }
+
+  void _next() {
+    final name = _name.text.trim();
+
+    if (name.isEmpty) {
+      return;
+    }
+
+    Navigator.of(context).pop(name);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        sheetTitle(widget.edit ? 'Edit group' : 'New group'),
+        const SizedBox(height: 8),
+        const Text(
+          'Every member gets the name and the list of members. Messages wait '
+          'for members that are away.',
+          style: Styles.detail,
+        ),
+        const SizedBox(height: 16),
+        Text('NAME', style: Styles.key),
+        const SizedBox(height: 6),
+        Pre(
+          child: TextField(
+            controller: _name,
+            autofocus: !widget.edit,
+            enableIMEPersonalizedLearning: false,
+            textCapitalization: TextCapitalization.words,
+            textInputAction: TextInputAction.next,
+            inputFormatters: [_Utf8Limit(_groupNameMax)],
+            onSubmitted: (_) => _next(),
+            style: Styles.pre,
+            cursorColor: Palette.amber,
+            decoration: InputDecoration.collapsed(
+              hintText: 'Seen by every member',
+              hintStyle: Styles.pre.copyWith(color: Palette.dim),
+            ),
+          ),
+        ),
+        const SizedBox(height: 20),
+        Btn(
+          label: 'Select members',
+          glyph: GlyphKind.person,
+          expand: true,
+          onTap: _name.text.trim().isEmpty ? null : _next,
+        ),
+      ],
+    );
+  }
+}
+
+class _GroupMembers extends StatefulWidget {
+  const _GroupMembers({
+    required this.name,
+    required this.edit,
+    required this.peers,
+    required this.picks,
+  });
+
+  final String name;
+  final bool edit;
+  final List<String> peers;
+  final Set<String> picks;
+
+  @override
+  State<_GroupMembers> createState() => _GroupMembersState();
+}
+
+class _GroupMembersState extends State<_GroupMembers> {
+  final _id = TextEditingController();
+  late final _peers = {...widget.peers, ...widget.picks}.toList()..sort();
+
+  Set<String> get _picked => widget.picks;
+
+  @override
+  void dispose() {
     _id.dispose();
     super.dispose();
   }
@@ -4768,88 +4801,33 @@ class _GroupFormState extends State<_GroupForm> {
     });
   }
 
+  void _done() {
+    if (_picked.isEmpty) {
+      notify('Pick at least one member.');
+      return;
+    }
+
+    Navigator.of(context).pop(true);
+  }
+
   @override
   Widget build(BuildContext context) {
     final vigil = Vigil.instance;
+    final count = _picked.length;
 
-    return Column(
-      mainAxisSize: MainAxisSize.min,
-      crossAxisAlignment: CrossAxisAlignment.start,
+    return PushedPage(
+      rubric: widget.edit ? 'Edit group' : 'New group',
+      title: widget.name,
+      bottom: Btn(
+        label: widget.edit
+            ? 'Save'
+            : count == 0
+            ? 'Create group'
+            : 'Create group with $count',
+        expand: true,
+        onTap: count == 0 ? null : _done,
+      ),
       children: [
-        sheetTitle(widget.edit ? 'Edit group' : 'New group'),
-        const SizedBox(height: 8),
-        const Text(
-          'Every member gets the name and the list of members. Messages wait '
-          'for members that are away.',
-          style: Styles.detail,
-        ),
-        const SizedBox(height: 16),
-        Text('NAME', style: Styles.key),
-        const SizedBox(height: 6),
-        Pre(
-          child: TextField(
-            controller: _name,
-            autofocus: !widget.edit,
-            enableIMEPersonalizedLearning: false,
-            textCapitalization: TextCapitalization.words,
-            inputFormatters: [_Utf8Limit(_groupNameMax)],
-            style: Styles.pre,
-            cursorColor: Palette.amber,
-            decoration: InputDecoration.collapsed(
-              hintText: 'Seen by every member',
-              hintStyle: Styles.pre.copyWith(color: Palette.dim),
-            ),
-          ),
-        ),
-        const SizedBox(height: 14),
-        Text('MEMBERS', style: Styles.key),
-        const SizedBox(height: 6),
-        ConstrainedBox(
-          constraints: BoxConstraints(
-            maxHeight: MediaQuery.sizeOf(context).height * 0.35,
-          ),
-          child: SingleChildScrollView(
-            child: Column(
-              children: [
-                for (final id in _peers)
-                  Padding(
-                    padding: const EdgeInsets.only(bottom: 8),
-                    child: Panel(
-                      padding: const EdgeInsets.fromLTRB(16, 10, 12, 10),
-                      onTap: () => setState(() {
-                        if (!_picked.remove(id)) {
-                          _picked.add(id);
-                        }
-                      }),
-                      child: Row(
-                        children: [
-                          Avatar(id),
-                          Expanded(
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                PeerName(id, style: Styles.cardTitle),
-                                if (vigil.name(id) != 'Peer $id')
-                                  Text('Peer $id', style: Styles.detail),
-                              ],
-                            ),
-                          ),
-                          Glyph(
-                            _picked.contains(id)
-                                ? GlyphKind.close
-                                : GlyphKind.plus,
-                            color: _picked.contains(id)
-                                ? Palette.amber
-                                : Palette.dim,
-                          ),
-                        ],
-                      ),
-                    ),
-                  ),
-              ],
-            ),
-          ),
-        ),
         Row(
           children: [
             Expanded(
@@ -4859,6 +4837,7 @@ class _GroupFormState extends State<_GroupForm> {
                   maxLength: 2,
                   style: Styles.pre,
                   cursorColor: Palette.amber,
+                  textInputAction: TextInputAction.done,
                   inputFormatters: [
                     FilteringTextInputFormatter.allow(RegExp('[0-9A-Fa-f]')),
                   ],
@@ -4874,20 +4853,52 @@ class _GroupFormState extends State<_GroupForm> {
             Btn(label: 'Add', kind: BtnKind.secondary, onTap: _add),
           ],
         ),
-        const SizedBox(height: 20),
-        Btn(
-          label: widget.edit ? 'Save' : 'Create group',
-          expand: true,
-          onTap: () {
-            if (_picked.isEmpty) {
-              notify('Pick at least one member.');
-              return;
-            }
-
-            Navigator.of(
-              context,
-            ).pop((_name.text.trim(), (_picked.toList()..sort())));
-          },
+        GroupLabel(
+          'Members',
+          trailing: Text('$count picked', style: Styles.rubric),
+        ),
+        if (_peers.isEmpty)
+          const Text(
+            'Nobody is around right now, add members by their KEK ID.',
+            style: Styles.body,
+          ),
+        Column(
+          children: [
+            for (final id in _peers)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 8),
+                child: Panel(
+                  accent: _picked.contains(id),
+                  padding: const EdgeInsets.fromLTRB(16, 10, 12, 10),
+                  onTap: () => setState(() {
+                    if (!_picked.remove(id)) {
+                      _picked.add(id);
+                    }
+                  }),
+                  child: Row(
+                    children: [
+                      Avatar(id),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            PeerName(id, style: Styles.cardTitle),
+                            if (vigil.name(id) != 'Peer $id')
+                              Text('Peer $id', style: Styles.detail),
+                          ],
+                        ),
+                      ),
+                      Glyph(
+                        _picked.contains(id) ? GlyphKind.close : GlyphKind.plus,
+                        color: _picked.contains(id)
+                            ? Palette.amber
+                            : Palette.dim,
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+          ],
         ),
       ],
     );

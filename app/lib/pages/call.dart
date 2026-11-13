@@ -120,6 +120,7 @@ Future<T?> sheet<T>(BuildContext context, WidgetBuilder builder) =>
     showModalBottomSheet<T>(
       context: context,
       isScrollControlled: true,
+      useSafeArea: true,
       backgroundColor: const Color(0x00000000),
       barrierColor: const Color(0xcc0b0c0e),
       elevation: 0,
@@ -143,7 +144,9 @@ Future<T?> sheet<T>(BuildContext context, WidgetBuilder builder) =>
                   child: Container(width: 32, height: 3, color: Palette.amber),
                 ),
                 const SizedBox(height: 20),
-                builder(context),
+                // Bounded by the screen minus the keyboard, so a sheet can
+                // let a Flexible part give way when the keyboard comes up.
+                Flexible(child: builder(context)),
               ],
             ),
           ),
