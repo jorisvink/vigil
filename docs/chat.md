@@ -165,8 +165,8 @@ typing_topic  the topic we type in, of this chat or of the group, 0 if
               none or if this peer does not get the typing or group
 ```
 
-We send `DATA`, `REPLY`, `TOPIC`, `GROUP` and `RETRACT` always, `NAME` when our flock
-signed our name and `AVATAR` while we have an avatar.
+We send `DATA`, `REPLY`, `TOPIC`, `GROUP` and `RETRACT` always, `NAME`
+when our flock signed our name and `AVATAR` while we have an avatar.
 
 ## Tunnels
 
@@ -292,8 +292,8 @@ platform did not store within 10 s is handed over again under a new token
 when it is sent again.
 
 An empty text frame is acked and not handed over. A reply, topic, topic
-text or group frame too short for its fixed fields is ignored and not
-acked, so our peer keeps sending it.
+text, retract or group frame too short for its fixed fields is ignored and
+not acked, so our peer keeps sending it.
 
 Each tunnel remembers the last 64 messages it received, text and parcels
 together. A new uid in a heartbeat means the peer restarted and its ids
