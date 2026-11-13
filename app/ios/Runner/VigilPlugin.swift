@@ -1412,8 +1412,8 @@ final class VigilPlugin: NSObject, FlutterPlugin, UIDocumentPickerDelegate,
         if call.method == "chatOrder" {
             let chats = call.arguments as? [String] ?? []
 
-            guard chats.allSatisfy({ ChatVault.group($0) != nil }) else {
-                throw ChatVault.Failure(description: "Only groups can be ordered.")
+            guard chats.allSatisfy({ ChatVault.chat($0) != nil }) else {
+                throw ChatVault.Failure(description: "There is no such chat to order.")
             }
 
             ChatVault.order(chats)
