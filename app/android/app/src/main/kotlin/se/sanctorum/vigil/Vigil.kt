@@ -109,6 +109,11 @@ object Vigil {
     external fun chatGroupLeave(owner: Int, ref: Long, group: Long): Boolean
 
     @JvmStatic
+    external fun chatRetract(
+        peer: Int, ref: Long, owner: Int, group: Long, serial: Int, topic: Long, hash: Long
+    ): Boolean
+
+    @JvmStatic
     external fun chatEvents(): ByteArray
 
     @JvmStatic

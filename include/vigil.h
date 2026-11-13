@@ -252,6 +252,14 @@ struct vigil_chat_topic_text {
 } __attribute__((packed));
 
 /*
+ * A retract for data we sent, the topic it was in and the hash of its data.
+ */
+struct vigil_chat_retract {
+	u_int64_t		topic;
+	u_int64_t		hash;
+} __attribute__((packed));
+
+/*
  * A frame in a group, the owner and random id of the group, the serial of
  * the roster the sender knows and the type of the frame it carries.
  */

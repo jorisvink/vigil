@@ -49,6 +49,7 @@
 #define CHAT_EVENT_TOPIC		8
 #define CHAT_EVENT_ROSTER		9
 #define CHAT_EVENT_LEAVE		10
+#define CHAT_EVENT_RETRACT		11
 
 /* Time between heartbeats we send to our peers. */
 #define CHAT_HEARTBEAT			(12 * 1000)
@@ -177,9 +178,11 @@ TAILQ_HEAD(chat_blob_list, chat_blob);
 
 /*
  * The message a reply is for, who wrote it and its hash. A hash of 0 means
- * there is no reply and an author of 0 is us.
+ * there is no reply and an author of 0 is us. For a retract the hash is
+ * that of the data being retracted.
  */
 struct chat_quote {
+	int			retract;
 	u_int8_t		author;
 	u_int64_t		hash;
 };
@@ -456,6 +459,11 @@ static void	chat_liturgy_cathedral_check(struct chat_liturgy *);
 static void	chat_liturgy_event(KYRKA *, union kyrka_event *, void *);
 static void	chat_liturgy_send(struct kyrka_packet *, u_int64_t, void *);
 
+static void	chat_retract_frame(struct chat_tunnel *,
+		    struct vigil_chat_frame *, const struct chat_msg *);
+static void	chat_retract_recv(struct chat_tunnel *, u_int64_t,
+		    const struct chat_group *, u_int8_t *, u_int16_t);
+
 static void	chat_group_frame(struct vigil_chat_frame *,
 		    const struct chat_msg *);
 static void	chat_group_recv(struct chat_tunnel *, u_int64_t,
@@ -508,8 +516,8 @@ static void	chat_hb_name(struct chat_peer *, const struct vigil_chat_hb *);
 static void	chat_text_recv(struct chat_tunnel *, u_int64_t,
 		    const struct chat_quote *, const struct chat_topic *,
 		    const struct chat_group *, u_int8_t *, u_int16_t);
-static int	chat_text_empty(const struct chat_topic *,
-		    const struct chat_group *);
+static int	chat_text_empty(const struct chat_quote *,
+		    const struct chat_topic *, const struct chat_group *);
 static int	chat_text_report(struct chat_tunnel *, u_int64_t,
 		    const struct chat_quote *, const struct chat_topic *,
 		    const struct chat_group *, const u_int8_t *, size_t);
@@ -1102,6 +1110,69 @@ vigil_chat_group_topic(u_int8_t peer, u_int64_t ref, u_int64_t id,
 
 	ret = chat_command_queue(CHAT_COMMAND_SEND,
 	    peer, ref, NULL, &topic, &group, name, len);
+
+	return (ret);
+}
+
+/*
+ * Queue a retract for the data with the given hash for the given peer.
+ */
+int
+vigil_chat_retract(u_int8_t peer, u_int64_t ref, u_int64_t tid,
+    u_int64_t hash)
+{
+	int			ret;
+	struct chat_quote	quote;
+	struct chat_topic	topic;
+
+	PRECOND(peer > 0 && peer < KYRKA_PEERS_PER_FLOCK);
+	PRECOND(hash != 0);
+
+	memset(&quote, 0, sizeof(quote));
+	memset(&topic, 0, sizeof(topic));
+
+	topic.id = tid;
+	quote.hash = hash;
+	quote.retract = 1;
+
+	ret = chat_command_queue(CHAT_COMMAND_SEND,
+	    peer, ref, &quote, &topic, NULL, NULL, 0);
+
+	return (ret);
+}
+
+/*
+ * Queue a retract for the data with the given hash in the given group.
+ */
+int
+vigil_chat_group_retract(u_int8_t peer, u_int64_t ref, u_int8_t owner,
+    u_int64_t id, u_int32_t serial, u_int64_t tid, u_int64_t hash)
+{
+	int			ret;
+	struct chat_quote	quote;
+	struct chat_group	group;
+	struct chat_topic	topic;
+
+	PRECOND(peer > 0 && peer < KYRKA_PEERS_PER_FLOCK);
+	PRECOND(owner > 0 && owner < KYRKA_PEERS_PER_FLOCK);
+	PRECOND(id != 0);
+	PRECOND(hash != 0);
+
+	memset(&quote, 0, sizeof(quote));
+	memset(&group, 0, sizeof(group));
+	memset(&topic, 0, sizeof(topic));
+
+	topic.id = tid;
+	quote.hash = hash;
+	quote.retract = 1;
+
+	group.id = id;
+	group.owner = owner;
+	group.serial = serial;
+	group.type = VIGIL_CHAT_TYPE_TEXT;
+
+	ret = chat_command_queue(CHAT_COMMAND_SEND,
+	    peer, ref, &quote, &topic, &group, NULL, 0);
 
 	return (ret);
 }
@@ -2529,6 +2600,9 @@ chat_heaven_input(struct kyrka_packet *pkt, u_int64_t seq, void *udata)
 	case VIGIL_CHAT_TYPE_GROUP:
 		chat_group_recv(tun, id, frame->data, len);
 		break;
+	case VIGIL_CHAT_TYPE_RETRACT:
+		chat_retract_recv(tun, id, NULL, frame->data, len);
+		break;
 	case VIGIL_CHAT_TYPE_ACK:
 		chat_ack_recv(tun, id);
 		break;
@@ -2895,6 +2969,8 @@ chat_frame_send(struct chat_tunnel *tun, struct chat_msg *msg)
 				frame->len = 0;
 				memset(frame->data, 0, sizeof(frame->data));
 			}
+		} else if (msg->quote.retract) {
+			chat_retract_frame(tun, frame, msg);
 		} else if (msg->topic.id != 0) {
 			chat_topic_frame(tun, frame, msg);
 		} else if (msg->quote.hash != 0 &&
@@ -2924,7 +3000,7 @@ chat_frame_send(struct chat_tunnel *tun, struct chat_msg *msg)
 		hb->uid = tun->local_uid;
 		hb->features = VIGIL_CHAT_FEATURE_DATA |
 		    VIGIL_CHAT_FEATURE_REPLY | VIGIL_CHAT_FEATURE_TOPIC |
-		    VIGIL_CHAT_FEATURE_GROUP;
+		    VIGIL_CHAT_FEATURE_GROUP | VIGIL_CHAT_FEATURE_RETRACT;
 
 		if (named) {
 			hb->features |= VIGIL_CHAT_FEATURE_NAME;
@@ -3186,7 +3262,7 @@ chat_text_recv(struct chat_tunnel *tun, u_int64_t id,
 	PRECOND(data != NULL);
 	PRECOND(len <= VIGIL_CHAT_MESSAGE_MAX);
 
-	if (len == 0 && chat_text_empty(topic, group)) {
+	if (len == 0 && chat_text_empty(quote, topic, group)) {
 		chat_ack_queue(tun, id);
 		return;
 	}
@@ -3233,13 +3309,16 @@ chat_text_recv(struct chat_tunnel *tun, u_int64_t id,
 
 /*
  * Returns 1 if an empty text with the given topic and group is one we drop.
- * A topic without a name was removed and a roster or leave may carry no
- * text.
+ * A topic without a name was removed, a roster, leave or retract may carry
+ * no text.
  */
 static int
-chat_text_empty(const struct chat_topic *topic,
-    const struct chat_group *group)
+chat_text_empty(const struct chat_quote *quote,
+    const struct chat_topic *topic, const struct chat_group *group)
 {
+	if (quote != NULL && quote->retract)
+		return (0);
+
 	if (group != NULL && group->type != VIGIL_CHAT_TYPE_TEXT)
 		return (0);
 
@@ -3534,6 +3613,10 @@ chat_group_recv(struct chat_tunnel *tun, u_int64_t id, u_int8_t *data,
 		group.type = VIGIL_CHAT_TYPE_TEXT;
 		chat_topic_text_recv(tun, id, &group, wire->data, len);
 		break;
+	case VIGIL_CHAT_TYPE_RETRACT:
+		group.type = VIGIL_CHAT_TYPE_TEXT;
+		chat_retract_recv(tun, id, &group, wire->data, len);
+		break;
 	case VIGIL_CHAT_TYPE_ROSTER:
 		chat_group_roster(tun, id, &group, wire->data, len);
 		break;
@@ -3610,6 +3693,7 @@ chat_group_frame(struct vigil_chat_frame *frame, const struct chat_msg *msg)
 	struct vigil_chat_topic		*topic;
 	struct vigil_chat_reply		*reply;
 	struct vigil_chat_roster	*roster;
+	struct vigil_chat_retract	*retract;
 	struct vigil_chat_topic_text	*text;
 
 	PRECOND(frame != NULL);
@@ -3641,6 +3725,17 @@ chat_group_frame(struct vigil_chat_frame *frame, const struct chat_msg *msg)
 		off = 0;
 		break;
 	default:
+		if (msg->quote.retract) {
+			retract = (struct vigil_chat_retract *)wire->data;
+
+			retract->topic = htobe64(msg->topic.id);
+			retract->hash = htobe64(msg->quote.hash);
+
+			wire->type = VIGIL_CHAT_TYPE_RETRACT;
+			off = sizeof(*retract);
+			break;
+		}
+
 		if (msg->topic.set) {
 			topic = (struct vigil_chat_topic *)wire->data;
 
@@ -3696,6 +3791,72 @@ chat_group_frame(struct vigil_chat_frame *frame, const struct chat_msg *msg)
 }
 
 /*
+ * Our peer retracted data it sent us, in the given group if any.
+ */
+static void
+chat_retract_recv(struct chat_tunnel *tun, u_int64_t id,
+    const struct chat_group *group, u_int8_t *data, u_int16_t len)
+{
+	struct chat_quote		quote;
+	struct chat_topic		topic;
+	struct vigil_chat_retract	*wire;
+
+	PRECOND(tun != NULL);
+	PRECOND(id != 0);
+	PRECOND(data != NULL);
+	PRECOND(len <= VIGIL_CHAT_MESSAGE_MAX);
+
+	if (len < sizeof(*wire))
+		return;
+
+	wire = (struct vigil_chat_retract *)data;
+
+	memset(&quote, 0, sizeof(quote));
+	memset(&topic, 0, sizeof(topic));
+
+	quote.retract = 1;
+	quote.author = tun->peer->id;
+	quote.hash = be64toh(wire->hash);
+	topic.id = be64toh(wire->topic);
+
+	if (quote.hash == 0) {
+		chat_ack_queue(tun, id);
+		return;
+	}
+
+	chat_text_recv(tun, id, &quote, &topic, group, data, 0);
+}
+
+/*
+ * Turn the given frame into a retract, for peers that take them.
+ */
+static void
+chat_retract_frame(struct chat_tunnel *tun, struct vigil_chat_frame *frame,
+    const struct chat_msg *msg)
+{
+	struct vigil_chat_retract	*retract;
+
+	PRECOND(tun != NULL);
+	PRECOND(frame != NULL);
+	PRECOND(msg != NULL);
+	PRECOND(msg->quote.retract);
+
+	memset(frame->data, 0, sizeof(frame->data));
+
+	if (!(tun->features & VIGIL_CHAT_FEATURE_RETRACT)) {
+		frame->len = 0;
+		return;
+	}
+
+	retract = (struct vigil_chat_retract *)frame->data;
+	retract->topic = htobe64(msg->topic.id);
+	retract->hash = htobe64(msg->quote.hash);
+
+	frame->type = VIGIL_CHAT_TYPE_RETRACT;
+	frame->len = htobe16(sizeof(*retract));
+}
+
+/*
  * Queue an event for a message we got, a message that sets a topic is a
  * topic event. Returns -1 if there are too many.
  */
@@ -3735,6 +3896,9 @@ chat_text_report(struct chat_tunnel *tun, u_int64_t token,
 
 	if (evt->group.type == VIGIL_CHAT_TYPE_LEAVE)
 		evt->type = CHAT_EVENT_LEAVE;
+
+	if (evt->quote.retract)
+		evt->type = CHAT_EVENT_RETRACT;
 
 	memcpy(evt->text, data, len);
 	memcpy(evt->name, tun->peer->name, sizeof(evt->name));
@@ -3874,7 +4038,7 @@ chat_outbox_add(struct chat_peer *peer, u_int64_t ref,
 	PRECOND(topic != NULL);
 	PRECOND(group != NULL);
 	PRECOND(data != NULL);
-	PRECOND(len > 0 || topic->set ||
+	PRECOND(len > 0 || topic->set || quote->retract ||
 	    group->type == VIGIL_CHAT_TYPE_ROSTER ||
 	    group->type == VIGIL_CHAT_TYPE_LEAVE);
 	PRECOND(len <= VIGIL_CHAT_MESSAGE_MAX);
@@ -4537,6 +4701,17 @@ chat_event_render(struct vigil_buf *buf, struct chat_event *evt, int first)
 	case CHAT_EVENT_LEAVE:
 		vigil_buf_appendf(buf,
 		    ",\"type\":\"leave\",\"token\":%" PRIu64, evt->value);
+		break;
+	case CHAT_EVENT_RETRACT:
+		vigil_buf_appendf(buf,
+		    ",\"type\":\"retract\",\"token\":%" PRIu64
+		    ",\"hash\":\"%016" PRIx64 "\"", evt->value,
+		    evt->quote.hash);
+
+		if (evt->topic.id != 0) {
+			vigil_buf_appendf(buf, ",\"topic\":\"%016" PRIx64 "\"",
+			    evt->topic.id);
+		}
 		break;
 	case CHAT_EVENT_DATA:
 		vigil_buf_appendf(buf, ",\"type\":\"data\",\"kind\":\"%s\""

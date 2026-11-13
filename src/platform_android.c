@@ -80,6 +80,8 @@ static void		android_chat_group_typing(JNIEnv *, jclass, jint,
 			    jlong, jlong, jbyteArray);
 static jboolean		android_chat_group_leave(JNIEnv *, jclass, jint, jlong,
 			    jlong);
+static jboolean		android_chat_retract(JNIEnv *, jclass, jint, jlong,
+			    jint, jlong, jint, jlong, jlong);
 static jboolean		android_chat_send(JNIEnv *, jclass, jint, jlong,
 			    jbyteArray, jint, jlong, jlong);
 static jboolean		android_chat_topic(JNIEnv *, jclass, jint, jlong,
@@ -135,6 +137,7 @@ static JNINativeMethod	methods[] = {
 	{ "chatGroupRoster", "(IJJIZ[B[B)Z",
 	    (void *)android_chat_group_roster },
 	{ "chatGroupLeave", "(IJJ)Z", (void *)android_chat_group_leave },
+	{ "chatRetract", "(IJIJIJJ)Z", (void *)android_chat_retract },
 	{ "chatEvents", "()[B", (void *)android_chat_events },
 	{ "chatDataSend", "(IJI[B[BJ)Z", (void *)android_chat_data_send },
 	{ "chatGroupDataSend", "(IJIJIJI[B[B)Z",
@@ -1019,6 +1022,38 @@ android_chat_group_leave(JNIEnv *env, jclass cls, jint owner, jlong ref,
 		return (JNI_FALSE);
 
 	ret = vigil_chat_group_leave(owner, ref, group);
+	if (ret == -1)
+		return (JNI_FALSE);
+
+	return (JNI_TRUE);
+}
+
+/*
+ * Vigil.chatRetract(), queues a retract for the data with the given hash,
+ * in the given group if it is not 0.
+ */
+static jboolean
+android_chat_retract(JNIEnv *env, jclass cls, jint peer, jlong ref,
+    jint owner, jlong group, jint serial, jlong topic, jlong hash)
+{
+	int		ret;
+
+	if (peer <= 0 || peer >= KYRKA_PEERS_PER_FLOCK)
+		return (JNI_FALSE);
+
+	if (hash == 0)
+		return (JNI_FALSE);
+
+	if (group == 0) {
+		ret = vigil_chat_retract(peer, ref, topic, hash);
+	} else {
+		if (owner <= 0 || owner >= KYRKA_PEERS_PER_FLOCK)
+			return (JNI_FALSE);
+
+		ret = vigil_chat_group_retract(peer, ref, owner, group,
+		    serial, topic, hash);
+	}
+
 	if (ret == -1)
 		return (JNI_FALSE);
 

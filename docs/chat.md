@@ -59,7 +59,7 @@ frame, 523 bytes
   8          2     1      len bytes used, the rest zero
 
 type  1 text, 2 ack, 3 heartbeat, 4 data ack, 5 reply, 6 topic,
-      7 topic text, 8 group
+      7 topic text, 8 group, 11 retract
 id    the message id, the id of the message acked for an ack,
       ffffffffffffffff for a heartbeat
 ```
@@ -103,6 +103,18 @@ hash    as in a reply, 0 if the text replies to nothing
 ```
 
 ```
+retract data
++-------+------+
+| topic | hash |
++-------+------+
+  8       8
+
+topic   the topic the data was in, 0 for none
+hash    the first 8 bytes of the SHA-256 of the content of the data,
+        1 if those are all 0, never 0
+```
+
+```
 group data
 +-------+----+--------+------+--------------------------------------+
 | owner | id | serial | type | data                                 |
@@ -114,7 +126,8 @@ id      the random id the owner gave the group, not 0
 serial  the serial of the roster the sender knows, for a roster the
         serial of that roster, it goes up with every change the owner
         makes
-type    1 text, 5 reply, 6 topic, 7 topic text, 9 roster, 10 leave
+type    1 text, 5 reply, 6 topic, 7 topic text, 9 roster, 10 leave,
+        11 retract
 data    as in a frame of that type, the roster, or empty for a leave
 ```
 
@@ -141,7 +154,7 @@ uid           random for each tunnel, a new one means the peer started over
 nick          our nickname, empty if we have none
 typing        1 while we type in this chat
 features      0x01 DATA, 0x02 REPLY, 0x04 NAME, 0x08 AVATAR, 0x10 TOPIC,
-              0x20 GROUP
+              0x20 GROUP, 0x40 RETRACT
 instance      our name, signed by our flock, zero without NAME
 signature     the signature of our flock over our instance, zero without NAME
 avatar_have   the hash of the avatar of this peer that we hold, 0 if none
@@ -152,7 +165,7 @@ typing_topic  the topic we type in, of this chat or of the group, 0 if
               none or if this peer does not get the typing or group
 ```
 
-We send `DATA`, `REPLY`, `TOPIC` and `GROUP` always, `NAME` when our flock
+We send `DATA`, `REPLY`, `TOPIC`, `GROUP` and `RETRACT` always, `NAME` when our flock
 signed our name and `AVATAR` while we have an avatar.
 
 ## Tunnels
@@ -242,6 +255,22 @@ topic                an empty text frame, acked and dropped
 topic text           a text or reply frame
 parcel in a topic    the parcel, which the peer drops
 ```
+
+### Retracts
+
+The sender of an image takes it back with `vigil_chat_retract()`, or
+`vigil_chat_group_retract()` once for every member of a group. A retract
+carries the topic the image was in and the hash of its content, it is a
+message on the outbox like any other and is acked once the peer stored
+it. It waits for a heartbeat like a reply does. A peer without `RETRACT`
+gets an empty text frame, which it acks and drops, in a group a peer
+without it acks and drops the unknown type.
+
+The core does not check what a retract points at. The platform removes
+only data that came from the peer the retract came from, so nobody can
+take back data someone else sent. It removes the data file of the newest
+image of that peer in that topic whose content has the hash, the record
+of the image stays in the log and the image shows as removed.
 
 ## Receiving
 
@@ -412,6 +441,9 @@ vigil_chat_topic_send(peer, ref, topic,
 vigil_chat_group_roster(peer, ref, group,   queue the roster of a group we
     serial, state, members, name, len)      own
 vigil_chat_group_leave(owner, ref, group)   queue a leave for the owner
+vigil_chat_retract(peer, ref, topic, hash)  queue a retract of data we sent
+vigil_chat_group_retract(peer, ref, owner,  queue a retract in a group
+    group, serial, topic, hash)
 vigil_chat_topic(peer, ref, topic, color,   queue a topic, no name removes
     name, len)                              the topic
 vigil_chat_stored(token)                    ACK the message to the sender
@@ -447,13 +479,15 @@ delivered    ref                       the peer stored the message
 roster       token, ended, members,    the roster of a group, from
              name                      its owner
 leave        token                     a member left a group we own
+retract      token, hash, topic if     the peer took back data it sent
+             in a topic
 name         nick, signed              who the peer is
 data         see parcel.md
 avatar       see parcel.md
 ambry        generation                the ambry generation of a tunnel
 ```
 
-The platform stores a roster or leave and calls `vigil_chat_stored()`
+The platform stores a roster, leave or retract and calls `vigil_chat_stored()`
 with its token like for a message.
 
 At most 256 events wait for the platform. A message that does not fit is

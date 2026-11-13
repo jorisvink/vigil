@@ -3329,6 +3329,8 @@ Future<void> _actions(
   unawaited(HapticFeedback.mediumImpact());
 
   final text = message.data.isEmpty;
+  final removable =
+      !message.incoming && message.media == 'image' && !message.gone;
   final tick = _tick(message);
   final keep = Btn(
     label: text ? 'Copy' : _saveLabel(message),
@@ -3401,9 +3403,23 @@ Future<void> _actions(
             onTap: () => Navigator.of(context).pop('select'),
           ),
         ],
+        if (removable) ...[
+          const SizedBox(height: 10),
+          Btn(
+            label: 'Delete for everyone',
+            glyph: GlyphKind.close,
+            kind: BtnKind.secondary,
+            expand: true,
+            onTap: () => Navigator.of(context).pop('retract'),
+          ),
+        ],
       ],
     ),
   );
+
+  if (action == 'retract') {
+    await _retract(chat, message);
+  }
 
   if (action == 'reply') {
     onReply?.call();
@@ -3474,6 +3490,27 @@ Future<void> _pin(String chat, ChatMessage message) async {
   }
 }
 
+Future<void> _retract(String chat, ChatMessage message) async {
+  final ok = await confirm(
+    title: 'Delete image',
+    text:
+        'The image is removed from this phone and from everyone who got '
+        'it. They will see that you removed it.',
+    action: 'Yes, Delete',
+    risky: true,
+  );
+
+  if (!ok) {
+    return;
+  }
+
+  try {
+    await Vigil.instance.retract(chat, message.ref, message.data);
+  } on VigilError catch (e) {
+    notify(e.message);
+  }
+}
+
 Future<void> _favorite(String chat, ChatMessage message) async {
   try {
     await Vigil.instance.favorite(chat, message.ref, !message.favorite);
@@ -3483,6 +3520,11 @@ Future<void> _favorite(String chat, ChatMessage message) async {
 }
 
 Future<void> _save(String chat, ChatMessage message) async {
+  if (message.gone) {
+    notify('This image was removed.');
+    return;
+  }
+
   try {
     final saved = await Vigil.instance.saveData(
       chat,
@@ -3512,6 +3554,13 @@ class _Photo extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final width = MediaQuery.sizeOf(context).width * 0.6;
+
+    if (message.gone) {
+      return _Removed(
+        by: message.incoming ? sender(message) : 'you',
+        width: width,
+      );
+    }
 
     return FutureBuilder<Uint8List?>(
       future: Vigil.instance.chatData(chat, message.data),
@@ -3550,6 +3599,36 @@ class _Photo extends StatelessWidget {
           ),
         );
       },
+    );
+  }
+}
+
+class _Removed extends StatelessWidget {
+  const _Removed({required this.by, required this.width});
+
+  final String by;
+  final double width;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: width,
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 14),
+      decoration: BoxDecoration(
+        border: Border.all(color: Palette.line2),
+      ),
+      child: Row(
+        children: [
+          const Glyph(GlyphKind.image, size: 18, color: Palette.dim),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Text(
+              'Image removed by $by',
+              style: Styles.detail.copyWith(fontStyle: FontStyle.italic),
+            ),
+          ),
+        ],
+      ),
     );
   }
 }

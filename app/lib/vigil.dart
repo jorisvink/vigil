@@ -342,6 +342,7 @@ class ChatMessage {
   int get pending => json['pending'] as int? ?? 0;
   bool get favorite => json['fav'] as bool? ?? false;
   bool get pinned => json['pinned'] as bool? ?? false;
+  bool get gone => json['gone'] as bool? ?? false;
   bool get quoted => json['quoted'] as bool? ?? false;
   int get reply => json['reply'] as int? ?? 0;
   String get topic => json['tp'] as String? ?? '';
@@ -1130,6 +1131,12 @@ class Vigil {
 
   Future<void> read(String peer, {String topic = ''}) =>
       _invoke('chatRead', {'peer': peer, 'topic': topic});
+
+  Future<void> retract(String peer, int ref, String data) async {
+    await _invoke('chatRetract', {'peer': peer, 'ref': ref});
+    _data.remove('$peer/$data');
+    await refresh();
+  }
 
   Future<void> favorite(String peer, int ref, bool on) async {
     await _invoke('chatFavorite', {'peer': peer, 'ref': ref, 'on': on});

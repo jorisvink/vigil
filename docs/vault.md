@@ -129,6 +129,24 @@ encrypted with the conversation key. The encryption is bound to the
 conversation and the file name, so files cannot be swapped between
 conversations.
 
+## Removing an image
+
+You can take back an image you sent. Its data file is overwritten with
+zeros and deleted, the record of the image stays in the log, which is
+never changed, and the chat shows that you removed it. A retract goes to
+the peer of the chat, or to every member of the group while it is open,
+see [chat.md](chat.md). Members that got the image but are no longer in
+the group, or every member once the group closed, get no retract and
+keep the image. Any copies of the image that still waited in the outbox
+are dropped, on iOS with the data waiting for the network side.
+
+A retract that arrives is written to the inbox like a message. When the
+app merges the inbox it looks for the newest image from the sender of the
+retract in the same chat and topic whose content has the hash the retract
+carries, and wipes its data file the same way. A retract never touches
+data that someone else sent. On iOS the network side cannot read the log,
+so this always happens at the merge.
+
 ## Pictures and names
 
 The picture of a peer is sealed to the inbox public key the same way an

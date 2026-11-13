@@ -482,6 +482,21 @@ class MainActivity : FlutterActivity() {
                     Chats.changed()
                     result.success("")
                 }
+                "chatRetract" -> {
+                    val id = chat(call.argument<String>("peer")!!)
+                    val ref = call.argument<Number>("ref")!!.toLong()
+
+                    background(result) {
+                        val vault = Chats.vault(this)
+                        val self = if (ChatVault.group(id) != null) self() else ""
+                        val retracted = vault.retract(id, ref, self)
+
+                        Chats.drop(retracted.dropped)
+                        Chats.submit(vault, retracted.queued)
+                        Chats.changed()
+                        ""
+                    }
+                }
                 "chatTopic" -> {
                     val id = chat(call.argument<String>("peer")!!)
                     val name = call.argument<String>("name")!!.trim()

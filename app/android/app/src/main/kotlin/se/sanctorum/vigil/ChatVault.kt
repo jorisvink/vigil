@@ -179,6 +179,12 @@ class ChatVault(context: Context) {
                     continue
                 }
 
+                if (kind == "retract") {
+                    retracted(chat, message.getString("peer"), message.optString("tp"), message.getString("text"))
+                    wipe(file)
+                    continue
+                }
+
                 if (kind == "topic") {
                     topicSet(
                         chat, ref(), "in", message.getString("tp"), message.getString("text"),
@@ -320,14 +326,14 @@ class ChatVault(context: Context) {
         if (epoch == current.epoch) {
             for (i in current.messages.indices) {
                 if (current.stamps[i] > stamp) {
-                    list.put(current.messages[i])
+                    list.put(gone(current.messages[i]))
                 }
             }
 
             out.put("delta", true)
         } else {
             for (message in current.messages) {
-                list.put(message)
+                list.put(gone(message))
             }
         }
 
@@ -1461,6 +1467,141 @@ class ChatVault(context: Context) {
             .digest((message.optString("media") + "\n" + content).toByteArray())
 
         return sum.copyOf(8).joinToString("") { "%02x".format(it) }
+    }
+
+    class Retracted(val queued: JSONArray, val dropped: List<Pair<String, Long>>)
+
+    @Synchronized
+    fun retract(chat: String, ref: Long, self: String = ""): Retracted {
+        val conversation = conversation(chat, false) ?: throw IllegalArgumentException("That image is gone.")
+        val current = cached(chat)
+
+        load(chat, conversation, current)
+
+        val at = current.index[ref] ?: throw IllegalArgumentException("That image is gone.")
+        val message = current.messages[at]
+        val file = message.optString("data")
+
+        require(message.getString("dir") == "out" && message.optString("media") == "image" && file.isNotEmpty()) {
+            "Only your own images can be deleted."
+        }
+
+        val hash = contentHash(chat, file) ?: throw IllegalArgumentException("That image was already removed.")
+        val topic = message.optString("tp")
+
+        wipe(File(dir, file))
+        history = null
+
+        val list = outboxList()
+        val kept = JSONArray()
+        val dropped = mutableListOf<Pair<String, Long>>()
+
+        for (i in 0 until list.length()) {
+            val entry = list.getJSONObject(i)
+
+            if (entry.getLong("ref") == ref && entry.optString("chat", entry.getString("peer")) == chat) {
+                dropped.add(entry.getString("peer") to ref)
+                continue
+            }
+
+            kept.put(entry)
+        }
+
+        val entry = JSONObject().put("peer", chat).put("ref", ref()).put("op", "retract")
+            .put("hash", "%016x".format(hash))
+        val queued = JSONArray()
+
+        if (topic.isNotEmpty()) {
+            entry.put("tp", topic)
+        }
+
+        if (group(chat) == null) {
+            kept.put(entry)
+            queued.put(entry)
+            outboxSave(kept)
+            return Retracted(queued, dropped)
+        }
+
+        val info = groupInfo(chat)
+
+        if (info != null && info.getString("state") == "open") {
+            for (member in members(info)) {
+                if (member == self) {
+                    continue
+                }
+
+                val copy = JSONObject(entry.toString()).put("peer", member).put("chat", chat)
+                    .put("gs", info.getInt("serial")).put("at", System.currentTimeMillis())
+
+                kept.put(copy)
+                queued.put(copy)
+            }
+        }
+
+        outboxSave(kept)
+
+        return Retracted(queued, dropped)
+    }
+
+    private fun gone(message: JSONObject): JSONObject {
+        val file = message.optString("data")
+
+        if (file.isNotEmpty() && !message.has("gone") && !File(dir, file).exists()) {
+            message.put("gone", true)
+        }
+
+        return message
+    }
+
+    private fun retracted(chat: String, author: String, topic: String, hash: String) {
+        val want = java.lang.Long.parseUnsignedLong(hash, 16)
+        val conversation = conversation(chat, false) ?: return
+        val full = History(chat, 0)
+
+        load(chat, conversation, full)
+
+        for (message in full.messages.asReversed()) {
+            val file = message.optString("data")
+
+            if (file.isEmpty()) {
+                continue
+            }
+
+            if (message.optString("media") != "image") {
+                continue
+            }
+
+            if (message.optString("tp") != topic) {
+                continue
+            }
+
+            if (!wrote(message, author)) {
+                continue
+            }
+
+            if (contentHash(chat, file) == want) {
+                wipe(File(dir, file))
+                history = null
+                return
+            }
+        }
+    }
+
+    private fun contentHash(chat: String, file: String): Long? {
+        val data = data(chat, file) ?: return null
+
+        try {
+            val sum = MessageDigest.getInstance("SHA-256").digest(data)
+            val hash = ByteBuffer.wrap(sum, 0, 8).long
+
+            if (hash == 0L) {
+                return 1L
+            }
+
+            return hash
+        } finally {
+            data.fill(0)
+        }
     }
 
     private fun dataWrite(chat: String, ref: Long, data: ByteArray): String {

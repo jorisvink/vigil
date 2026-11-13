@@ -260,6 +260,21 @@ object Chats {
 
                         avatarChanged()
                     }
+                    "retract" -> {
+                        when (check(vault, id, peer, event)) {
+                            ChatVault.GROUP_DROP -> {
+                                stored(event.getLong("token"))
+                                continue
+                            }
+                            ChatVault.GROUP_HOLD -> continue
+                        }
+
+                        vault.deliver(
+                            id, peer, event.optString("nick"), event.getString("hash"),
+                            System.currentTimeMillis(), "retract", topic = event.optString("topic")
+                        )
+                        stored(event.getLong("token"))
+                    }
                     "roster" -> {
                         roster(service, vault, id, peer, event)
                         stored(event.getLong("token"))
@@ -524,6 +539,13 @@ object Chats {
                 )
             }
             "leave" -> return Vigil.chatGroupLeave(peer, ref, group!!.id)
+            "retract" -> {
+                val hash = java.lang.Long.parseUnsignedLong(entry.getString("hash"), 16)
+
+                return Vigil.chatRetract(
+                    peer, ref, group?.owner ?: 0, group?.id ?: 0L, entry.optInt("gs"), topic, hash
+                )
+            }
         }
 
         val quote = ChatVault.quote(entry.optString("qa"), entry.optString("qh"))

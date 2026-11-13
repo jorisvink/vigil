@@ -22,7 +22,7 @@
  *	    [-i peer:file] [-I file] [-f peer:file] [-F file] [-o dir]
  *	    [-t peer] [-T] [-O peer] [-e count] [-x secs] [-l count]
  *	    [-r author:hash] [-c topic:name] [-C peer:topic] [-P file]
- *	    [-D datadir] <gospel>
+ *	    [-R peer:hash] [-D datadir] <gospel>
  *
  * With -m we send the text to the given peer, -m may be given more
  * than once. With -g we own the group with the given id and name, its
@@ -41,6 +41,9 @@
  * our messages and data go in it, in a group only its owner sets it up.
  * With -C we remove the given topic with the given peer, -C may be given
  * more than once.
+ * With -R we retract the data with the given hash we sent to the given
+ * peer, in our group and topic if we have them, -R may be given more
+ * than once.
  * With -i we send the image in the given file to the given peer and with
  * -I to our group, -f and -F do the same for any file. All of them may be
  * given more than once. Data we get is written to the directory given
@@ -157,6 +160,11 @@ static int		remove_count = 0;
 static u_int8_t		remove_peer[CHATTER_MESSAGES_MAX];
 static u_int64_t	remove_topic[CHATTER_MESSAGES_MAX];
 
+/* The data we retract. */
+static int		retract_count = 0;
+static u_int8_t		retract_peer[CHATTER_MESSAGES_MAX];
+static u_int64_t	retract_hash[CHATTER_MESSAGES_MAX];
+
 static void
 usage(void)
 {
@@ -167,7 +175,7 @@ usage(void)
 	    "[-a peer:file] [-A file] "
 	    "[-o dir] [-t peer] [-T] [-O peer] [-e count] [-x secs] "
 	    "[-l count] [-r author:hash] [-c topic:name] [-C peer:topic] "
-	    "[-P file] [-D datadir] <gospel>\n");
+	    "[-P file] [-R peer:hash] [-D datadir] <gospel>\n");
 	exit(1);
 }
 
@@ -191,7 +199,7 @@ main(int argc, char **argv)
 	delivered = 0;
 
 	while ((ch = getopt(argc, argv,
-	    "a:A:c:C:D:e:f:F:g:G:i:I:j:K:l:Lm:n:o:O:P:r:t:Tx:")) != -1) {
+	    "a:A:c:C:D:e:f:F:g:G:i:I:j:K:l:Lm:n:o:O:P:r:R:t:Tx:")) != -1) {
 		switch (ch) {
 		case 'c':
 			topic = strtoull(optarg, &ep, 16);
@@ -218,6 +226,20 @@ main(int argc, char **argv)
 			break;
 		case 'P':
 			chatter_avatar(optarg);
+			break;
+		case 'R':
+			if (retract_count == CHATTER_MESSAGES_MAX)
+				usage();
+			peer = strtol(optarg, &ep, 16);
+			if (*ep != ':')
+				usage();
+			if (peer <= 0 || peer >= KYRKA_PEERS_PER_FLOCK)
+				usage();
+			retract_peer[retract_count] = peer;
+			retract_hash[retract_count] = strtoull(ep + 1, &ep, 16);
+			if (*ep != '\0' || retract_hash[retract_count] == 0)
+				usage();
+			retract_count++;
 			break;
 		case 'D':
 			datadir = optarg;
@@ -407,7 +429,7 @@ main(int argc, char **argv)
 			usage();
 	}
 
-	wanted = message_count + data_count + remove_count;
+	wanted = message_count + data_count + remove_count + retract_count;
 	gwanted = group_count + group_data_count + group_leave;
 
 	if (group_kick != 0)
@@ -495,6 +517,21 @@ main(int argc, char **argv)
 					    980 + idx, remove_topic[idx], 0,
 					    NULL, 0) == -1)
 						fatal("vigil_chat_topic");
+				}
+
+				for (idx = 0; idx < retract_count; idx++) {
+					if (group != 0 &&
+					    vigil_chat_group_retract(
+					    retract_peer[idx], 960 + idx, owner,
+					    group, group_serial, topic,
+					    retract_hash[idx]) == -1)
+						fatal("vigil_chat_group_retract");
+
+					if (group == 0 &&
+					    vigil_chat_retract(retract_peer[idx],
+					    960 + idx, topic,
+					    retract_hash[idx]) == -1)
+						fatal("vigil_chat_retract");
 				}
 
 				for (idx = 0; idx < data_count; idx++) {

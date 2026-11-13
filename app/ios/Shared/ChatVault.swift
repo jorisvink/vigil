@@ -224,6 +224,12 @@ final class ChatVault {
                     continue
                 }
 
+                if kind == "retract" {
+                    try retracted(chat, author: peer, topic: message["tp"] as? String ?? "", hash: text)
+                    try wipe(file)
+                    continue
+                }
+
                 if kind == "topic" {
                     if let topic = message["tp"] as? String {
                         try topicSet(chat, ref: ref(), direction: "in", topic: topic, name: text,
@@ -367,12 +373,12 @@ final class ChatVault {
             ]
 
             if epoch == current.epoch {
-                out["messages"] = current.messages.indices
+                out["messages"] = try current.messages.indices
                     .filter { current.stamps[$0] > stamp }
-                    .map { current.messages[$0] }
+                    .map { try gone(current.messages[$0]) }
                 out["delta"] = true
             } else {
-                out["messages"] = current.messages
+                out["messages"] = try current.messages.map { try gone($0) }
             }
 
             let meta = Self.topicMeta(conversation)
@@ -1130,6 +1136,133 @@ final class ChatVault {
 
             try wipe(try folder(dir).appendingPathComponent(data))
         }
+    }
+
+    func retract(_ chat: String, ref: Int64, local: String = "") throws -> [(String, Int64)] {
+        try locked {
+            guard let conversation = try conversation(chat, create: false) else {
+                throw Failure(description: "That image is gone.")
+            }
+
+            let current = try cached(chat)
+
+            try load(chat, conversation, current)
+
+            guard let at = current.index[ref] else {
+                throw Failure(description: "That image is gone.")
+            }
+
+            let message = current.messages[at]
+
+            guard message["dir"] as? String == "out", message["media"] as? String == "image",
+                  let file = message["data"] as? String, !file.isEmpty else {
+                throw Failure(description: "Only your own images can be deleted.")
+            }
+
+            guard let hash = try contentHash(chat, file: file) else {
+                throw Failure(description: "That image was already removed.")
+            }
+
+            let topic = message["tp"] as? String ?? ""
+            var dropped = [(String, Int64)]()
+
+            try wipe(try folder(dir).appendingPathComponent(file))
+            try wipe(try folder(dir).appendingPathComponent(Self.queuedName(UInt64(bitPattern: ref))))
+            history = nil
+
+            var entry: [String: Any] = [
+                "peer": chat, "ref": self.ref(), "op": "retract", "hash": String(format: "%016llx", hash),
+            ]
+
+            if !topic.isEmpty {
+                entry["tp"] = topic
+            }
+
+            let info = try Self.group(chat) == nil ? nil : groupInfo(chat)
+
+            try exclusive {
+                var list = [[String: Any]]()
+
+                for queued in try outboxList() {
+                    let peer = queued["peer"] as? String ?? ""
+
+                    if (queued["ref"] as? NSNumber)?.int64Value == ref,
+                       queued["chat"] as? String ?? peer == chat {
+                        dropped.append((peer, ref))
+                        continue
+                    }
+
+                    list.append(queued)
+                }
+
+                if Self.group(chat) == nil {
+                    list.append(entry)
+                } else if let info, info["state"] as? String == "open" {
+                    for member in Self.members(info) where member != local {
+                        var copy = entry
+                        copy["peer"] = member
+                        copy["chat"] = chat
+                        copy["gs"] = info["serial"] ?? 0
+                        copy["at"] = Self.now()
+                        list.append(copy)
+                    }
+                }
+
+                try outboxSave(list)
+            }
+
+            return dropped
+        }
+    }
+
+    private func gone(_ message: [String: Any]) throws -> [String: Any] {
+        guard let file = message["data"] as? String, !file.isEmpty else { return message }
+
+        let path = try folder(dir).appendingPathComponent(file).path
+
+        guard !FileManager.default.fileExists(atPath: path) else { return message }
+
+        var marked = message
+        marked["gone"] = true
+
+        return marked
+    }
+
+    private func retracted(_ chat: String, author: String, topic: String, hash: String) throws {
+        guard let want = UInt64(hash, radix: 16),
+              let conversation = try conversation(chat, create: false) else { return }
+
+        let full = History(chat: chat, epoch: 0)
+
+        try load(chat, conversation, full)
+
+        for message in full.messages.reversed() {
+            guard message["media"] as? String == "image",
+                  let file = message["data"] as? String, !file.isEmpty,
+                  message["tp"] as? String ?? "" == topic,
+                  Self.wrote(message, author) else { continue }
+
+            if try contentHash(chat, file: file) == want {
+                try wipe(try folder(dir).appendingPathComponent(file))
+                history = nil
+                return
+            }
+        }
+    }
+
+    private func contentHash(_ chat: String, file: String) throws -> UInt64? {
+        guard Self.data(file, of: chat),
+              let conversation = try conversation(chat, create: false),
+              let sealed = try? Data(contentsOf: try folder(dir).appendingPathComponent(file)) else { return nil }
+
+        let data = try openBox(sealed, key: conversation.key, aad: Self.dataAad(chat, file))
+        let hash = SHA256.hash(data: data).prefix(8).reduce(UInt64(0)) { $0 << 8 | UInt64($1) }
+
+        if hash == 0 {
+            return 1
+        }
+
+        return hash
     }
 
     func data(_ chat: String, file: String) throws -> Data? {

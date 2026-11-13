@@ -401,6 +401,23 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
                                       topic: topic,
                                       color: Int(event["color"] as? String ?? "", radix: 16) ?? 0)
                     stored((event["token"] as? NSNumber)?.uint64Value ?? 0)
+                case "retract":
+                    guard let hash = event["hash"] as? String else { continue }
+
+                    switch try admit(chat, hex, event) {
+                    case .drop:
+                        stored((event["token"] as? NSNumber)?.uint64Value ?? 0)
+                        continue
+                    case .hold:
+                        continue
+                    case .store:
+                        break
+                    }
+
+                    try vault.deliver(chat: chat, peer: peer, nick: event["nick"] as? String ?? "", text: hash,
+                                      time: Int64(Date().timeIntervalSince1970 * 1000), kind: kind,
+                                      topic: event["topic"] as? String ?? "")
+                    stored((event["token"] as? NSNumber)?.uint64Value ?? 0)
                 case "roster", "leave":
                     let changes = try kind == "roster" ? roster(chat, peer, event) : left(chat, hex)
 
@@ -777,6 +794,24 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
 
             if entry["op"] as? String == "leave", let group {
                 submitted(ref, vigil_chat_group_leave(peer, ref, group.id))
+                continue
+            }
+
+            if entry["op"] as? String == "retract" {
+                guard let hash = (entry["hash"] as? String).flatMap({ UInt64($0, radix: 16) }), hash != 0 else {
+                    NSLog("vigil: the retract \(ref) for \(chat) has no hash, dropping it")
+                    receipt(hex, ref: Int64(bitPattern: ref), kind: "delivered")
+                    continue
+                }
+
+                if let group {
+                    let serial = UInt32(truncatingIfNeeded: (entry["gs"] as? NSNumber)?.intValue ?? 0)
+
+                    submitted(ref, vigil_chat_group_retract(peer, ref, group.owner, group.id, serial, topic, hash))
+                    continue
+                }
+
+                submitted(ref, vigil_chat_retract(peer, ref, topic, hash))
                 continue
             }
 

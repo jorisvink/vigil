@@ -172,6 +172,7 @@
 #define VIGIL_CHAT_TYPE_TOPIC		6
 #define VIGIL_CHAT_TYPE_TOPIC_TEXT	7
 #define VIGIL_CHAT_TYPE_GROUP		8
+#define VIGIL_CHAT_TYPE_RETRACT		11
 
 /* The types that only go inside a group frame. */
 #define VIGIL_CHAT_TYPE_ROSTER		9
@@ -184,6 +185,7 @@
 #define VIGIL_CHAT_FEATURE_AVATAR	0x08
 #define VIGIL_CHAT_FEATURE_TOPIC	0x10
 #define VIGIL_CHAT_FEATURE_GROUP	0x20
+#define VIGIL_CHAT_FEATURE_RETRACT	0x40
 
 /* The maximum length of a reply, it carries who wrote what it replies to. */
 #define VIGIL_CHAT_REPLY_MAX		(VIGIL_CHAT_MESSAGE_MAX - 9)
@@ -362,6 +364,9 @@ int	vigil_chat_group_topic(u_int8_t, u_int64_t, u_int64_t, u_int32_t,
 	    u_int64_t, u_int32_t, const char *, size_t);
 int	vigil_chat_group_data_send(u_int8_t, u_int64_t, u_int8_t, u_int64_t,
 	    u_int32_t, u_int64_t, int, const char *, const void *, size_t);
+int	vigil_chat_retract(u_int8_t, u_int64_t, u_int64_t, u_int64_t);
+int	vigil_chat_group_retract(u_int8_t, u_int64_t, u_int8_t, u_int64_t,
+	    u_int32_t, u_int64_t, u_int64_t);
 
 /* src/link.c */
 void	vigil_link_close(void);

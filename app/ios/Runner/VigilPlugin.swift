@@ -364,7 +364,7 @@ final class VigilPlugin: NSObject, FlutterPlugin, UIDocumentPickerDelegate,
         case "chatSend", "chatImageSend", "chatRead", "chatOpen", "chatTyping",
              "chatImageData", "chatDelete", "chatSettings", "chatFavorite",
              "chatPin", "chatMute", "chatTopic", "groupCreate", "groupEdit", "groupLeave",
-             "chatStar", "chatCompact", "chatOrder":
+             "chatStar", "chatCompact", "chatOrder", "chatRetract":
             result(Self.reply { try chat(call) })
         case "flag":
             let args = call.arguments as? [String: Any] ?? [:]
@@ -1120,6 +1120,8 @@ final class VigilPlugin: NSObject, FlutterPlugin, UIDocumentPickerDelegate,
     }
 
     private func open(_ hex: String, file: String, name: String) throws {
+        try ChatVault.shared.merge()
+
         guard let data = try ChatVault.shared.data(hex, file: file) else {
             throw ChatVault.Failure(description: "That file is gone.")
         }
@@ -1145,6 +1147,8 @@ final class VigilPlugin: NSObject, FlutterPlugin, UIDocumentPickerDelegate,
     }
 
     private func savePhoto(_ hex: String, file: String, result: @escaping FlutterResult) throws {
+        try ChatVault.shared.merge()
+
         guard let data = try ChatVault.shared.data(hex, file: file) else {
             throw ChatVault.Failure(description: "That image is gone.")
         }
@@ -1179,6 +1183,8 @@ final class VigilPlugin: NSObject, FlutterPlugin, UIDocumentPickerDelegate,
         guard picking == nil, saving == nil, let top = Self.top() else {
             throw ChatVault.Failure(description: "Cannot save a file now.")
         }
+
+        try ChatVault.shared.merge()
 
         guard let data = try ChatVault.shared.data(hex, file: file) else {
             throw ChatVault.Failure(description: "That file is gone.")
@@ -1493,6 +1499,20 @@ final class VigilPlugin: NSObject, FlutterPlugin, UIDocumentPickerDelegate,
             }
 
             return try dataSend(hex, media: "image", name: Self.photoName(), data: image, topic: topic)
+        case "chatRetract":
+            guard let ref = (args["ref"] as? NSNumber)?.int64Value else {
+                throw ChatVault.Failure(description: "There is no such image.")
+            }
+
+            let local = try group == nil ? "" : Self.local()
+
+            for (peer, dropped) in try vault.retract(hex, ref: ref, local: local) {
+                VigilCall.shared.send?("chat-drop \(peer) " + String(format: "%016llx", UInt64(bitPattern: dropped)))
+            }
+
+            VigilCall.shared.send?("chat")
+            version += 1
+            return ""
         case "chatTopic":
             let name = (args["name"] as? String ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
             let color = ((args["color"] as? NSNumber)?.intValue ?? 0) & 0xffffff
