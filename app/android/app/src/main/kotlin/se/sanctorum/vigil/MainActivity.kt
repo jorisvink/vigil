@@ -576,6 +576,11 @@ class MainActivity : FlutterActivity() {
                     Chats.changed()
                     result.success("")
                 }
+                "chatCompact" -> {
+                    Chats.compact(this, chat(call.argument<String>("peer")!!), call.argument<Boolean>("on")!!)
+                    Chats.changed()
+                    result.success("")
+                }
                 "chatOrder" -> {
                     Chats.order(this, (call.arguments as List<*>).map { chat(it as String) })
                     Chats.changed()

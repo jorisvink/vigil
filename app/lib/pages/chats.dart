@@ -699,13 +699,37 @@ class ChatRow extends StatelessWidget {
           '${vigil.name(chat.peer)}',
       onMark: _star,
       child: GestureDetector(
-        onLongPress: () => manageTopics(chat.peer),
+        onLongPress: () => manageTopics(chat.peer, compact: chat.compact),
         child: _row(vigil, last, typing),
       ),
     );
 
     if (chat.topics.isEmpty) {
       return row;
+    }
+
+    if (chat.compact) {
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          row,
+          Padding(
+            padding: const EdgeInsets.only(top: 6),
+            child: Wrap(
+              spacing: 6,
+              runSpacing: 6,
+              children: [
+                for (final topic in chat.topics)
+                  _TopicTag(
+                    peer: chat.peer,
+                    topic: topic,
+                    typing: typingLine(status, chat.peer, topic.id) != null,
+                  ),
+              ],
+            ),
+          ),
+        ],
+      );
     }
 
     return Column(
@@ -864,7 +888,7 @@ bool _topicsOwned(String peer) {
   return group != null && group.open && group.owner == own;
 }
 
-Future<void> manageTopics(String peer) async {
+Future<void> manageTopics(String peer, {bool? compact}) async {
   final context = navigatorKey.currentContext;
   if (context == null) {
     return;
@@ -909,6 +933,8 @@ Future<void> manageTopics(String peer) async {
           style: Styles.detail,
         ),
         const SizedBox(height: 16),
+        if (compact != null && topics.isNotEmpty)
+          _CompactSwitch(peer: peer, on: compact),
         for (final topic in topics)
           Padding(
             padding: const EdgeInsets.only(bottom: 8),
@@ -1022,6 +1048,59 @@ Future<void> _newTopic(String peer) async {
     await Vigil.instance.createTopic(peer, name, picked.$2);
   } on VigilError catch (e) {
     notify(e.message);
+  }
+}
+
+class _CompactSwitch extends StatefulWidget {
+  const _CompactSwitch({required this.peer, required this.on});
+
+  final String peer;
+  final bool on;
+
+  @override
+  State<_CompactSwitch> createState() => _CompactSwitchState();
+}
+
+class _CompactSwitchState extends State<_CompactSwitch> {
+  late bool _on = widget.on;
+
+  Future<void> _flip() async {
+    setState(() => _on = !_on);
+
+    try {
+      await Vigil.instance.compactTopics(widget.peer, _on);
+    } on VigilError catch (e) {
+      notify(e.message);
+
+      if (mounted) {
+        setState(() => _on = !_on);
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 12),
+      child: Row(
+        children: [
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text('Show as tags', style: Styles.cardTitle),
+                const SizedBox(height: 2),
+                const Text(
+                  'Small colored tags under the chat',
+                  style: Styles.detail,
+                ),
+              ],
+            ),
+          ),
+          Toggle(on: _on, label: 'Show topics as tags', onTap: _flip),
+        ],
+      ),
+    );
   }
 }
 
@@ -1203,6 +1282,78 @@ class _TopicBranch extends StatelessWidget {
             ),
           ),
         ],
+      ),
+    );
+  }
+}
+
+// The condensed look of a topic: a small tag in the topic its color,
+// tap opens it, a long press removes it for whoever may.
+class _TopicTag extends StatelessWidget {
+  const _TopicTag({
+    required this.peer,
+    required this.topic,
+    required this.typing,
+  });
+
+  final String peer;
+  final ChatTopic topic;
+  final bool typing;
+
+  @override
+  Widget build(BuildContext context) {
+    final color = topicColor(topic.color);
+    final ink = color.computeLuminance() > 0.35 ? Palette.bg : Palette.fg;
+    final unread = topic.unread;
+
+    return GestureDetector(
+      onLongPress: _topicsOwned(peer) ? () => _removeTopic(peer, topic) : null,
+      child: Pressable(
+        onTap: () => push(ChatPage(peer: peer, topic: topic), opaque: false),
+        label: unread > 0
+            ? '${topic.name}, $unread unread'
+            : 'Open topic ${topic.name}',
+        builder: (context, pressed) => Container(
+          padding: const EdgeInsets.fromLTRB(9, 5, 9, 5),
+          color: pressed ? Color.lerp(color, Palette.bg, 0.3) : color,
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              ConstrainedBox(
+                constraints: const BoxConstraints(maxWidth: 160),
+                child: Text(
+                  typing ? '${topic.name} …' : topic.name,
+                  style: Styles.detail.copyWith(
+                    fontSize: 12,
+                    height: 1.2,
+                    color: ink,
+                    fontWeight: FontWeight.w600,
+                  ),
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
+              if (unread > 0) ...[
+                const SizedBox(width: 6),
+                Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 5,
+                    vertical: 2,
+                  ),
+                  color: Palette.bg,
+                  child: Text(
+                    '$unread',
+                    style: Styles.detail.copyWith(
+                      fontSize: 10.5,
+                      height: 1,
+                      color: Palette.amber,
+                    ),
+                  ),
+                ),
+              ],
+            ],
+          ),
+        ),
       ),
     );
   }

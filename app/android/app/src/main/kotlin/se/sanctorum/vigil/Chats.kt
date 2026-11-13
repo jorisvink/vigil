@@ -713,6 +713,18 @@ object Chats {
         prefs(context).edit().putString("stars", stars.toString()).apply()
     }
 
+    fun compact(context: Context, id: String, on: Boolean) {
+        val compacts = compacts(context)
+
+        if (on) {
+            compacts.put(id, true)
+        } else {
+            compacts.remove(id)
+        }
+
+        prefs(context).edit().putString("compacts", compacts.toString()).apply()
+    }
+
     fun order(context: Context, chats: List<String>) {
         prefs(context).edit().putString("order", JSONArray(chats).toString()).apply()
     }
@@ -721,6 +733,7 @@ object Chats {
         val order = order(context)
 
         star(context, id, false)
+        compact(context, id, false)
 
         if (order.remove(id)) {
             order(context, order)
@@ -729,13 +742,16 @@ object Chats {
 
     fun arrange(context: Context, chats: JSONArray): JSONArray {
         val stars = stars(context)
+        val compacts = compacts(context)
         val order = order(context)
 
         for (idx in 0 until chats.length()) {
             val chat = chats.getJSONObject(idx)
             val id = chat.getString("peer")
 
-            chat.put("star", stars.has(id)).put("order", order.indexOf(id))
+            chat.put("star", stars.has(id))
+                .put("compact", compacts.has(id))
+                .put("order", order.indexOf(id))
         }
 
         return chats
@@ -743,6 +759,9 @@ object Chats {
 
     private fun stars(context: Context): JSONObject =
         JSONObject(prefs(context).getString("stars", "{}") ?: "{}")
+
+    private fun compacts(context: Context): JSONObject =
+        JSONObject(prefs(context).getString("compacts", "{}") ?: "{}")
 
     private fun order(context: Context): MutableList<String> {
         val saved = JSONArray(prefs(context).getString("order", "[]") ?: "[]")

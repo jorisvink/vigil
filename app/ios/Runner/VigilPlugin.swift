@@ -364,7 +364,7 @@ final class VigilPlugin: NSObject, FlutterPlugin, UIDocumentPickerDelegate,
         case "chatSend", "chatImageSend", "chatRead", "chatOpen", "chatTyping",
              "chatImageData", "chatDelete", "chatSettings", "chatFavorite",
              "chatPin", "chatMute", "chatTopic", "groupCreate", "groupEdit", "groupLeave",
-             "chatStar", "chatOrder":
+             "chatStar", "chatCompact", "chatOrder":
             result(Self.reply { try chat(call) })
         case "flag":
             let args = call.arguments as? [String: Any] ?? [:]
@@ -1584,6 +1584,10 @@ final class VigilPlugin: NSObject, FlutterPlugin, UIDocumentPickerDelegate,
             return "\(ChatVault.muted(hex))"
         case "chatStar":
             ChatVault.star(hex, on: args["on"] as? Bool ?? false)
+            version += 1
+            return ""
+        case "chatCompact":
+            ChatVault.compact(hex, on: args["on"] as? Bool ?? false)
             version += 1
             return ""
         case "chatDelete":

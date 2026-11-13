@@ -2006,17 +2006,31 @@ final class ChatVault {
         defaults.set(stars, forKey: starsKey)
     }
 
+    static func compact(_ chat: String, on: Bool) {
+        var compacts = defaults.stringArray(forKey: compactsKey) ?? []
+
+        compacts.removeAll { $0 == chat }
+
+        if on {
+            compacts.append(chat)
+        }
+
+        defaults.set(compacts, forKey: compactsKey)
+    }
+
     static func order(_ chats: [String]) {
         defaults.set(chats, forKey: orderKey)
     }
 
     static func unlist(_ chat: String) {
         star(chat, on: false)
+        compact(chat, on: false)
         order((defaults.stringArray(forKey: orderKey) ?? []).filter { $0 != chat })
     }
 
     static func arrange(_ chats: [[String: Any]]) -> [[String: Any]] {
         let stars = defaults.stringArray(forKey: starsKey) ?? []
+        let compacts = defaults.stringArray(forKey: compactsKey) ?? []
         let order = defaults.stringArray(forKey: orderKey) ?? []
 
         return chats.map { chat in
@@ -2024,6 +2038,7 @@ final class ChatVault {
             var entry = chat
 
             entry["star"] = stars.contains(id)
+            entry["compact"] = compacts.contains(id)
             entry["order"] = order.firstIndex(of: id) ?? -1
 
             return entry
@@ -2045,4 +2060,5 @@ final class ChatVault {
     private static let mutesKey = "chatMutes"
     private static let starsKey = "chatStars"
     private static let orderKey = "chatOrder"
+    private static let compactsKey = "chatCompacts"
 }
