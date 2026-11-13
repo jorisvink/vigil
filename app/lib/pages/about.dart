@@ -25,7 +25,6 @@ class AboutPage extends StatelessWidget {
     return TabPage(
       index: 5,
       rubric: 'About',
-      title: 'Vigil',
       children: [
         Panel(
           child: Column(

@@ -131,7 +131,9 @@ class _GospelPageState extends State<GospelPage> with WidgetsBindingObserver {
           return TabPage(
             index: 3,
             rubric: 'Gospel',
+            heading: false,
             glow: status.call?.alive ?? false,
+            fill: voice != null && _quiet(status) ? const _Quiet() : null,
             actions: [
               if (voice != null) ...[
                 _StatusBtn(
@@ -192,6 +194,12 @@ class _GospelPageState extends State<GospelPage> with WidgetsBindingObserver {
     );
   }
 
+  bool _quiet(Status status) {
+    final all = _list(status, _chats);
+
+    return _unreadOnly && all.isNotEmpty && !all.any(_unread);
+  }
+
   List<Widget> _chatList(Status status) {
     final all = _list(status, _chats);
     final chats = all.where((c) => !_unreadOnly || _unread(c)).toList()
@@ -227,11 +235,6 @@ class _GospelPageState extends State<GospelPage> with WidgetsBindingObserver {
             on: _unreadOnly,
             onTap: () => setState(() => _unreadOnly = !_unreadOnly),
           ),
-        ),
-      if (all.isNotEmpty && chats.isEmpty)
-        const Padding(
-          padding: EdgeInsets.symmetric(vertical: 8),
-          child: Text('It sure is quiet here.', style: Styles.detail),
         ),
       if (chats.isNotEmpty)
         Gapped(
@@ -914,5 +917,30 @@ class _LiturgyRow extends StatelessWidget {
     }
 
     return 'Liturgy ${l.group}';
+  }
+}
+
+class _Quiet extends StatelessWidget {
+  const _Quiet();
+
+  @override
+  Widget build(BuildContext context) {
+    return const Padding(
+      padding: EdgeInsets.symmetric(vertical: 32),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Priest(),
+          SizedBox(height: 18),
+          SolidCross(),
+          SizedBox(height: 18),
+          Text(
+            'In silentio et spe erit fortitudo vestra.',
+            style: Styles.detail,
+            textAlign: TextAlign.center,
+          ),
+        ],
+      ),
+    );
   }
 }

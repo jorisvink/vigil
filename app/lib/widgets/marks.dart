@@ -603,3 +603,88 @@ class FinderPainter extends CustomPainter {
   bool shouldRepaint(covariant FinderPainter oldDelegate) =>
       oldDelegate.length != length;
 }
+
+class Priest extends StatelessWidget {
+  const Priest({super.key, this.height = 120, this.color = Palette.dim});
+
+  final double height;
+  final Color color;
+
+  @override
+  Widget build(BuildContext context) {
+    return CustomPaint(
+      size: Size(height * 100 / 130, height),
+      painter: _PriestPainter(color),
+    );
+  }
+}
+
+// Drawn on a 100 by 130 grid: the hood, the face bowed in it with
+// closed eyes, the cowl over the chest and the folded sleeves.
+class _PriestPainter extends CustomPainter {
+  const _PriestPainter(this.color);
+
+  final Color color;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final scale = size.height / 130;
+    final path = Path()
+      ..moveTo(18, 66)
+      ..cubicTo(12, 36, 28, 6, 50, 3)
+      ..cubicTo(72, 6, 88, 36, 82, 66)
+      ..moveTo(18, 66)
+      ..cubicTo(13, 70, 9, 76, 8, 84)
+      ..lineTo(3, 128)
+      ..quadraticBezierTo(50, 134, 97, 128)
+      ..lineTo(92, 84)
+      ..cubicTo(91, 76, 87, 70, 82, 66)
+      ..moveTo(30, 52)
+      ..cubicTo(34, 30, 66, 30, 70, 52)
+      ..moveTo(24, 60)
+      ..cubicTo(24, 22, 76, 22, 76, 60)
+      ..moveTo(30, 52)
+      ..cubicTo(35, 64, 44, 72, 50, 74)
+      ..cubicTo(56, 72, 65, 64, 70, 52)
+      ..moveTo(30, 52)
+      ..cubicTo(38, 44, 62, 44, 70, 52)
+      ..moveTo(40, 56)
+      ..quadraticBezierTo(43, 58, 46, 56)
+      ..moveTo(54, 56)
+      ..quadraticBezierTo(57, 58, 60, 56)
+      ..moveTo(50, 57)
+      ..lineTo(48.5, 64)
+      ..lineTo(50.5, 65)
+      ..moveTo(18, 66)
+      ..quadraticBezierTo(32, 82, 50, 90)
+      ..quadraticBezierTo(68, 82, 82, 66)
+      ..moveTo(12, 96)
+      ..quadraticBezierTo(32, 102, 50, 104)
+      ..quadraticBezierTo(68, 102, 88, 96)
+      ..moveTo(41, 103)
+      ..lineTo(43, 111)
+      ..lineTo(57, 111)
+      ..lineTo(59, 103)
+      ..moveTo(28, 111)
+      ..lineTo(24, 127)
+      ..moveTo(72, 111)
+      ..lineTo(76, 127)
+      ..moveTo(50, 111)
+      ..lineTo(50, 130);
+
+    canvas.scale(scale);
+    canvas.drawPath(
+      path,
+      Paint()
+        ..color = color
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1.2 / scale
+        ..strokeCap = StrokeCap.round
+        ..strokeJoin = StrokeJoin.round,
+    );
+  }
+
+  @override
+  bool shouldRepaint(covariant _PriestPainter oldDelegate) =>
+      oldDelegate.color != color;
+}

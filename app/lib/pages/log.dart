@@ -27,7 +27,6 @@ class LogPage extends StatelessWidget {
         return TabPage(
           index: 4,
           rubric: 'Log',
-          title: 'Log',
           glow: status.online,
           actions: [
             if (log.isNotEmpty)

@@ -104,13 +104,13 @@ class PageTitle extends StatelessWidget {
   const PageTitle({
     super.key,
     required this.rubric,
-    required this.title,
     required this.index,
+    this.title,
   });
 
   final String rubric;
-  final String title;
   final int index;
+  final String? title;
 
   @override
   Widget build(BuildContext context) {
@@ -126,8 +126,10 @@ class PageTitle extends StatelessWidget {
               Rubric(text: rubric, index: index),
             ],
           ),
-          const SizedBox(height: 10),
-          Text(title, style: Styles.title),
+          if (title != null) ...[
+            const SizedBox(height: 10),
+            Text(title!, style: Styles.title),
+          ],
         ],
       ),
     );
@@ -140,17 +142,21 @@ class TabPage extends StatelessWidget {
     required this.rubric,
     required this.index,
     required this.children,
+    this.heading = true,
     this.title,
     this.actions = const [],
     this.glow = false,
+    this.fill,
   });
 
   final String rubric;
+  final bool heading;
   final String? title;
   final int index;
   final List<Widget> children;
   final List<Widget> actions;
   final bool glow;
+  final Widget? fill;
 
   @override
   Widget build(BuildContext context) {
@@ -161,22 +167,46 @@ class TabPage extends StatelessWidget {
           TopBar(actions: actions, glow: glow),
           const Line(),
           Expanded(
-            child: ListView(
-              padding: EdgeInsets.only(bottom: tabBarSpace(context)),
-              children: [
-                if (title != null)
-                  PageTitle(rubric: rubric, title: title!, index: index)
-                else
-                  const SizedBox(height: 6),
-                for (final child in children)
-                  Padding(
-                    padding: EdgeInsets.fromLTRB(
-                      Metrics.edge,
-                      0,
-                      Metrics.edge,
-                      child is Gapped ? 0 : Metrics.gap,
+            child: CustomScrollView(
+              slivers: [
+                SliverPadding(
+                  padding: EdgeInsets.only(
+                    bottom: fill == null ? tabBarSpace(context) : 0,
+                  ),
+                  sliver: SliverList.list(
+                    children: [
+                      if (heading)
+                        PageTitle(rubric: rubric, index: index, title: title)
+                      else
+                        const SizedBox(height: 6),
+                      for (final child in children)
+                        Padding(
+                          padding: EdgeInsets.fromLTRB(
+                            Metrics.edge,
+                            0,
+                            Metrics.edge,
+                            child is Gapped ? 0 : Metrics.gap,
+                          ),
+                          child: child,
+                        ),
+                    ],
+                  ),
+                ),
+                if (fill != null)
+                  SliverFillRemaining(
+                    hasScrollBody: false,
+                    child: Padding(
+                      padding: EdgeInsets.fromLTRB(
+                        Metrics.edge,
+                        0,
+                        Metrics.edge,
+                        tabBarSpace(context),
+                      ),
+                      child: Align(
+                        alignment: const Alignment(0, -0.5),
+                        child: fill,
+                      ),
                     ),
-                    child: child,
                   ),
               ],
             ),

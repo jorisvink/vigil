@@ -53,7 +53,6 @@ class _TunnelsPageState extends State<TunnelsPage> {
           return TabPage(
             index: 1,
             rubric: 'Tunnels',
-            title: 'Your tunnels',
             glow: tunnel.online,
             actions: [
               GlyphBtn(
