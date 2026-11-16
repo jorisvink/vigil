@@ -535,8 +535,8 @@ class _DesktopSheet extends StatelessWidget {
     if (!await confirm(
       title: 'Unlink desktop',
       text:
-          'Your desktop stops hearing from this phone, what it has stays '
-          'on the desktop.',
+          'Unlink your desktop from this phone. All synchronization is '
+          'stopped and your desktop state remains as-is.',
       action: 'Unlink',
     )) {
       return;
