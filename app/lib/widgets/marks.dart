@@ -177,6 +177,7 @@ enum GlyphKind {
   group,
   sort,
   person,
+  desktop,
 }
 
 class Glyph extends StatelessWidget {
@@ -487,6 +488,10 @@ class _GlyphPainter extends CustomPainter {
         poly([4, 7, 20, 7]);
         poly([4, 12, 15, 12]);
         poly([4, 17, 10, 17]);
+      case GlyphKind.desktop:
+        canvas.drawRect(const Rect.fromLTWH(2.5, 4, 19, 12.5), line);
+        poly([12, 16.5, 12, 20]);
+        poly([7.5, 20.5, 16.5, 20.5]);
     }
   }
 

@@ -117,6 +117,10 @@ class _GospelPageState extends State<GospelPage> with WidgetsBindingObserver {
     sheet<void>(context, (context) => _GospelSheet(voice: voice));
   }
 
+  void _showDesktop() {
+    sheet<void>(context, (context) => const _DesktopSheet());
+  }
+
   @override
   Widget build(BuildContext context) {
     final vigil = Vigil.instance;
@@ -140,6 +144,11 @@ class _GospelPageState extends State<GospelPage> with WidgetsBindingObserver {
                   state: gospelState(voice, status),
                   onTap: () => _showGospel(voice),
                 ),
+                if (status.chat?.companion case final desktop?)
+                  _DesktopBtn(
+                    state: _desktopState(desktop).$1,
+                    onTap: _showDesktop,
+                  ),
                 GlyphBtn(
                   GlyphKind.edit,
                   label: 'Chat settings',
@@ -167,8 +176,6 @@ class _GospelPageState extends State<GospelPage> with WidgetsBindingObserver {
                 ?_offline(voice, status),
                 if (status.running && !status.linked) const LinkNotice(),
                 if (!status.background) const BackgroundNotice(),
-                if (status.chat?.companion case final desktop?)
-                  _Desktop(desktop: desktop),
                 ..._chatList(status),
               ],
             ],
@@ -459,12 +466,72 @@ class _Offline extends StatelessWidget {
   }
 }
 
-class _Desktop extends StatelessWidget {
-  const _Desktop({required this.desktop});
+(Liveness, String, String?) _desktopState(Map<String, dynamic> desktop) {
+  final online = desktop['online'] as bool? ?? false;
+  final queued = desktop['queued'] as int? ?? 0;
+  final version = desktop['version'] as int? ?? 0;
+  final other = desktop['other'] as int?;
+  final title = online ? 'Linked' : 'Away';
+  final waiting = queued > 0 ? '$queued waiting' : null;
 
-  final Map<String, dynamic> desktop;
+  if (online && other != null && other < version) {
+    return (
+      Liveness.pending,
+      title,
+      'Your desktop runs an older Vigil, update it to sync',
+    );
+  }
 
-  Future<void> _unlink() async {
+  if (online && other != null && other > version) {
+    return (
+      Liveness.pending,
+      title,
+      'Update Vigil on this phone to sync with your desktop',
+    );
+  }
+
+  if (!online) {
+    return (Liveness.pending, title, waiting);
+  }
+
+  return (Liveness.online, title, waiting);
+}
+
+class _DesktopBtn extends StatelessWidget {
+  const _DesktopBtn({required this.state, required this.onTap});
+
+  final Liveness state;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return Pressable(
+      onTap: onTap,
+      label: 'Desktop status',
+      builder: (context, pressed) => SizedBox(
+        width: 44,
+        height: 44,
+        child: Center(
+          child: Stack(
+            clipBehavior: Clip.none,
+            children: [
+              Glyph(
+                GlyphKind.desktop,
+                color: pressed ? Palette.amber : Palette.fg2,
+              ),
+              Positioned(right: -2, top: -1, child: StateDot(state, size: 6)),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _DesktopSheet extends StatelessWidget {
+  const _DesktopSheet();
+
+  Future<void> _unlink(BuildContext context) async {
     if (!await confirm(
       title: 'Unlink desktop',
       text:
@@ -479,42 +546,64 @@ class _Desktop extends StatelessWidget {
       await Vigil.instance.unlinkDesktop();
     } on VigilError catch (e) {
       notify(e.message);
+      return;
+    }
+
+    if (context.mounted) {
+      Navigator.of(context).pop();
     }
   }
 
   @override
   Widget build(BuildContext context) {
-    final online = desktop['online'] as bool? ?? false;
-    final queued = desktop['queued'] as int? ?? 0;
-    final version = desktop['version'] as int? ?? 0;
-    final other = desktop['other'] as int?;
-    var synced = online;
+    final vigil = Vigil.instance;
 
-    var text = online ? 'Desktop linked' : 'Desktop away';
-    if (queued > 0) {
-      text = '$text, $queued waiting';
-    }
+    return StreamBuilder<Status>(
+      stream: vigil.statuses,
+      initialData: vigil.status,
+      builder: (context, snapshot) {
+        final desktop = snapshot.data!.chat?.companion;
 
-    if (online && other != null && other < version) {
-      text = 'Your desktop runs an older Vigil, update it to sync';
-      synced = false;
-    }
+        if (desktop == null) {
+          return const SizedBox.shrink();
+        }
 
-    if (online && other != null && other > version) {
-      text = 'Update Vigil on this phone to sync with your desktop';
-      synced = false;
-    }
+        final (state, title, detail) = _desktopState(desktop);
 
-    return Panel(
-      padding: const EdgeInsets.fromLTRB(16, 8, 8, 8),
-      child: Row(
-        children: [
-          StateDot(synced ? Liveness.online : Liveness.pending),
-          const SizedBox(width: 10),
-          Expanded(child: Text(text, style: Styles.detail)),
-          Btn(label: 'Unlink', kind: BtnKind.secondary, onTap: _unlink),
-        ],
-      ),
+        return Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            sheetTitle('Desktop'),
+            const SizedBox(height: 16),
+            Row(
+              children: [
+                StateDot(state),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(title, style: Styles.value),
+                      if (detail != null) ...[
+                        const SizedBox(height: 2),
+                        Text(detail, style: Styles.detail),
+                      ],
+                    ],
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 16),
+            Btn(
+              label: 'Unlink',
+              kind: BtnKind.secondary,
+              expand: true,
+              onTap: () => _unlink(context),
+            ),
+          ],
+        );
+      },
     );
   }
 }
