@@ -508,34 +508,7 @@ call_liturgy_init(struct call_liturgy *lit, int sig)
 
 	lit->group = cfg.group;
 
-	if (kyrka_cathedral_config(lit->ctx, &cfg) == -1) {
-		fatal("failed to configure cathedral: %d",
-		    kyrka_last_error(lit->ctx));
-	}
-
-	if (kyrka_cathedral_secret_load(lit->ctx, gospel->cathedral_secret,
-	    sizeof(gospel->cathedral_secret)) == -1) {
-		fatal("kyrka_cathedral_secret_load: %d",
-		    kyrka_last_error(lit->ctx));
-	}
-
-	if (kyrka_cathedral_cosk_load(lit->ctx, gospel->cathedral_cosk,
-	    sizeof(gospel->cathedral_cosk)) == -1) {
-		fatal("kyrka_cathedral_cosk_load: %d",
-		    kyrka_last_error(lit->ctx));
-	}
-
-	if (gospel->flags & VIGIL_CONFIG_FLAG_SHROUD) {
-		if (kyrka_shroud_enable(lit->ctx) == -1) {
-			fatal("failed to enable shroud: %d",
-			    kyrka_last_error(lit->ctx));
-		}
-	}
-
-	if (kyrka_mtu_size(lit->ctx, gospel->mtu) == -1) {
-		fatal("failed to set libkyrka mtu size: %d",
-		    kyrka_last_error(lit->ctx));
-	}
+	vigil_kyrka_cathedral(lit->ctx, &cfg, gospel, 0, gospel->mtu);
 
 	return (0);
 }

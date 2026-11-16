@@ -12,3 +12,5 @@ tests/chatter
 tests/video_test
 tests/link_test
 tests/video_path_test
+tests/companion
+app/linux/flutter/ephemeral/

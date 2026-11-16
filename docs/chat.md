@@ -195,7 +195,7 @@ still signal the peer. Otherwise the tunnel is closed. The messages on
 that tunnel stay on the outbox and get new ids on the next tunnel.
 
 A tunnel is online once its keys are up and while we heard from the peer
-in the last 30 s. Frames only go out once the keys are up.
+in the last 40 s. Frames only go out once the keys are up.
 
 Each tunnel goes through a cathedral of its own, picked at random. A
 cathedral that does not answer for 45 s (10 s for a new one) is replaced.
@@ -506,14 +506,14 @@ not acked, so our peer sends the message again.
 | VIGIL_CHAT_GROUP_TOPIC_MAX| 481 B  | text in a topic in a group              |
 | VIGIL_CHAT_GROUP_NAME_MAX | 32 B   | name of a group                         |
 | VIGIL_CHAT_NICK_MAX       | 16     | nickname length                         |
-| CHAT_HEARTBEAT            | 12 s   | between heartbeats                      |
+| CHAT_HEARTBEAT            | 15 s   | between heartbeats                      |
 | CHAT_RESEND               | 5 s    | before an unacked message goes again    |
 | CHAT_STORE_WAIT           | 10 s   | for the platform to store a message     |
 | CHAT_IDLE                 | 60 s   | signaling after the last message        |
 | CHAT_RETRY_EAGER          | 5 min  | signaling for a new group copy          |
 | CHAT_RETRY_WINDOW         | 1 min  | signaling each time we try again        |
 | CHAT_RETRY_START / MAX    | 5 / 60 min | first and longest wait between tries |
-| CHAT_RX_TIMEOUT           | 30 s   | silence before a tunnel is offline      |
+| CHAT_RX_TIMEOUT           | 40 s   | silence before a tunnel is offline      |
 | VIGIL_CALL_PRESENT_EXPIRE | 9 s    | a peer the cathedral stopped pushing    |
 | CHAT_P2P_VERIFY           | 30 s   | for a p2p path to show it works         |
 | CHAT_HOLEPUNCH            | 10 s   | of 1 s heartbeats after moving to p2p   |

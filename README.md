@@ -18,8 +18,9 @@ Vigil also supports talking to the sanctum-based tier6 daemon
 to join your phone into an L2 network.
 
 On top of that Vigil also implements the sanctum confessions
-(https://github.com/jorisvink/confessions) and gospel protocols
-(https://github.com/jorisvink/gospel) to support the following:
+(https://github.com/jorisvink/confessions) protocol for voice
+and a more modern gospel protocols (https://github.com/jorisvink/gospel)
+for text and more:
 
 - Voice calls
 - Video calls
@@ -64,6 +65,28 @@ $ xcrun devicectl list devices
 $ xcrun devicectl device install app --device <device> \
     app/build/ios/iphoneos/Runner.app
 ```
+
+### Linux
+
+The Linux version is a desktop companion for Vigil on your phone.
+
+```
+$ make linux
+$ ./app/build/linux/x64/release/bundle/vigil
+```
+
+To install it for your user, with a launcher and icon in GNOME:
+
+```
+$ make linux
+$ make linux-install
+```
+
+This puts the app under ~/.local/lib/vigil, a vigil symlink in
+~/.local/bin and the desktop entry and icon under ~/.local/share. Set
+PREFIX to install somewhere else, make linux-uninstall removes it again.
+
+The linux version stores things under $HOME/.local/share/vigil-companion.
 
 ## Running
 

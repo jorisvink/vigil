@@ -87,36 +87,8 @@ vigil_liturgy_init(void)
 	if (vigil->config->flags & VIGIL_CONFIG_FLAG_HIDDEN)
 		cfg.hidden = 1;
 
-	if (kyrka_cathedral_config(liturgy, &cfg) == -1) {
-		fatal("failed to configure cathedral: %d",
-		    kyrka_last_error(liturgy));
-	}
-
-	if (kyrka_cathedral_secret_load(liturgy,
-	    vigil->config->cathedral_secret,
-	    sizeof(vigil->config->cathedral_secret)) == -1) {
-		fatal("kyrka_cathedral_secret_load: %d",
-		    kyrka_last_error(liturgy));
-	}
-
-	if (kyrka_cathedral_cosk_load(liturgy,
-	    vigil->config->cathedral_cosk,
-	    sizeof(vigil->config->cathedral_cosk)) == -1) {
-		fatal("kyrka_cathedral_cosk_load: %d",
-		    kyrka_last_error(liturgy));
-	}
-
-	if (vigil->config->flags & VIGIL_CONFIG_FLAG_SHROUD) {
-		if (kyrka_shroud_enable(liturgy) == -1) {
-			fatal("failed to enable shroud: %d",
-			    kyrka_last_error(liturgy));
-		}
-	}
-
-	if (kyrka_mtu_size(liturgy, vigil->config->mtu) == -1) {
-		fatal("failed to set libkyrka mtu size: %d",
-		    kyrka_last_error(liturgy));
-	}
+	vigil_kyrka_cathedral(liturgy, &cfg, vigil->config, 0,
+	    vigil->config->mtu);
 
 	vigil_log(LOG_INFO, "liturgy running (%s) group %04x",
 	    vigil_address(&cathedral.addr), vigil->config->liturgy_group);

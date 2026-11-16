@@ -316,6 +316,9 @@ status_render(char *buf, size_t len)
 		vigil_chat_status(&out);
 	}
 
+	if (cfg->mode == VIGIL_MODE_COMPANION)
+		vigil_chat_status(&out);
+
 	if (cfg->mode != VIGIL_MODE_TUNNEL) {
 		vigil_buf_appendf(&out, ",\"remembrances\":[");
 

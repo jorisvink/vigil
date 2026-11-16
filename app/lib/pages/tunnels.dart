@@ -346,5 +346,6 @@ String modeTag(Summary summary) => switch (summary.mode) {
   'cathedral' => 'Cathedral',
   'liturgy' => summary.tier6 ? 'Tier6' : 'Liturgy',
   'gospel' => 'Gospel',
+  'companion' => 'Desktop',
   _ => 'Direct',
 };

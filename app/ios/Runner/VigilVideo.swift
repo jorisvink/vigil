@@ -42,7 +42,7 @@ final class VigilVideo: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate {
     private var sps: Data?
     private var pps: Data?
 
-    var front: Bool { locked { facing } }
+    var front: Bool { lock.withLock { facing } }
 
     static func install() {
         var hooks = vigil_ios_video(
@@ -61,7 +61,7 @@ final class VigilVideo: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate {
             throw VigilVideoError.textures
         }
 
-        let (remote, local) = locked { () -> (Texture, Texture) in
+        let (remote, local) = lock.withLock { () -> (Texture, Texture) in
             let remote = self.remote ?? Texture(registry)
             let local = self.local ?? Texture(registry)
 
@@ -75,7 +75,7 @@ final class VigilVideo: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate {
     }
 
     func release() {
-        let (remote, local) = locked { () -> (Texture?, Texture?) in
+        let (remote, local) = lock.withLock { () -> (Texture?, Texture?) in
             let textures = (self.remote, self.local)
 
             self.remote = nil
@@ -89,7 +89,7 @@ final class VigilVideo: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate {
     }
 
     func state() -> [String: Any] {
-        locked { () -> [String: Any] in
+        lock.withLock { () -> [String: Any] in
             [
                 "decoding": decoding,
                 "capturing": capturing,
@@ -106,7 +106,7 @@ final class VigilVideo: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate {
     }
 
     func flip() {
-        let on = locked { () -> Bool in
+        let on = lock.withLock { () -> Bool in
             facing.toggle()
             return capturing
         }
@@ -117,7 +117,7 @@ final class VigilVideo: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate {
     }
 
     private func coreStart() -> Int32 {
-        locked {
+        lock.withLock {
             guard !decoding else { return }
 
             let stopped = DispatchSemaphore(value: 0)
@@ -141,7 +141,7 @@ final class VigilVideo: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate {
     private func coreStop() {
         coreCamera(false)
 
-        let stopped = locked { () -> DispatchSemaphore? in
+        let stopped = lock.withLock { () -> DispatchSemaphore? in
             let stopped = self.stopped
 
             decoding = false
@@ -152,14 +152,14 @@ final class VigilVideo: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate {
 
         stopped?.wait()
 
-        locked {
+        lock.withLock {
             remoteWidth = 0
             remoteHeight = 0
         }
     }
 
     private func coreCamera(_ on: Bool) {
-        let changed = locked { () -> Bool in
+        let changed = lock.withLock { () -> Bool in
             guard capturing != on else { return false }
             capturing = on
             return true
@@ -177,11 +177,11 @@ final class VigilVideo: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate {
     }
 
     private func coreKeyframe() {
-        locked { keyframe = true }
+        lock.withLock { keyframe = true }
     }
 
     private func coreBitrate(_ bps: UInt32) {
-        locked { bitrate = bps }
+        lock.withLock { bitrate = bps }
 
         queue.async {
             guard let compressor = self.compressor else { return }
@@ -190,7 +190,7 @@ final class VigilVideo: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate {
     }
 
     private func open() {
-        guard session == nil, locked({ capturing }) else { return }
+        guard session == nil, lock.withLock({ capturing }) else { return }
 
         guard AVCaptureDevice.authorizationStatus(for: .video) == .authorized else {
             NSLog("vigil: no camera access")
@@ -249,7 +249,7 @@ final class VigilVideo: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate {
         compressor = nil
         size = (0, 0)
 
-        if locked({ capturing }) {
+        if lock.withLock({ capturing }) {
             open()
         }
     }
@@ -270,11 +270,11 @@ final class VigilVideo: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate {
         orient(output)
         session.commitConfiguration()
 
-        locked { keyframe = true }
+        lock.withLock { keyframe = true }
     }
 
     private func attach(_ session: AVCaptureSession) -> Bool {
-        let position: AVCaptureDevice.Position = locked({ facing }) ? .front : .back
+        let position: AVCaptureDevice.Position = lock.withLock({ facing }) ? .front : .back
 
         guard let device = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: position)
                 ?? AVCaptureDevice.default(for: .video),
@@ -303,12 +303,12 @@ final class VigilVideo: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate {
                        from connection: AVCaptureConnection) {
         guard let image = CMSampleBufferGetImageBuffer(sample) else { return }
 
-        locked({ local })?.show(image)
+        lock.withLock({ local })?.show(image)
 
         let width = Int32(CVPixelBufferGetWidth(image))
         let height = Int32(CVPixelBufferGetHeight(image))
 
-        locked {
+        lock.withLock {
             localWidth = Int(width)
             localHeight = Int(height)
         }
@@ -320,12 +320,12 @@ final class VigilVideo: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate {
 
             compressor = compression(width, height)
             size = (width, height)
-            locked { keyframe = true }
+            lock.withLock { keyframe = true }
         }
 
         guard let compressor else { return }
 
-        let key = locked { () -> Bool in
+        let key = lock.withLock { () -> Bool in
             let key = keyframe
             keyframe = false
             return key
@@ -381,7 +381,7 @@ final class VigilVideo: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate {
         VTSessionSetProperty(session, key: kVTCompressionPropertyKey_ExpectedFrameRate,
                              value: NSNumber(value: Self.fps))
 
-        rate(session, locked { bitrate })
+        rate(session, lock.withLock { bitrate })
         VTCompressionSessionPrepareToEncodeFrames(session)
 
         return session
@@ -490,7 +490,7 @@ final class VigilVideo: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate {
             reset()
         }
 
-        while locked({ decoding }) {
+        while lock.withLock({ decoding }) {
             let length = vigil_video_take(buffer, max, &flags)
 
             guard length > 0 else {
@@ -645,7 +645,7 @@ final class VigilVideo: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate {
         let width = CVPixelBufferGetWidth(image)
         let height = CVPixelBufferGetHeight(image)
 
-        let remote = locked { () -> Texture? in
+        let remote = lock.withLock { () -> Texture? in
             remoteRotation = rotation
             remoteWidth = width
             remoteHeight = height
@@ -681,12 +681,6 @@ final class VigilVideo: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate {
         }
 
         return units
-    }
-
-    private func locked<T>(_ body: () throws -> T) rethrows -> T {
-        lock.lock()
-        defer { lock.unlock() }
-        return try body()
     }
 
     final class Texture: NSObject, FlutterTexture {

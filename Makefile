@@ -35,6 +35,7 @@ SRC=	src/vigil.c \
 	src/grace.c \
 	src/inet.c \
 	src/io.c \
+	src/journal.c \
 	src/link.c \
 	src/liturgy.c \
 	src/peer.c \
@@ -51,7 +52,8 @@ ifeq ("$(SANITIZE)", "1")
 endif
 
 ifeq ("$(PLATFORM)", "host")
-	SRC+=src/platform_host.c src/audio_host.c src/video_host.c
+	SRC+=src/platform_host.c src/platform_posix.c src/audio_host.c
+	SRC+=src/video_host.c
 	CFLAGS+=-DPLATFORM_HOST
 	CFLAGS+=-D_GNU_SOURCE=1 -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=2
 else ifeq ("$(PLATFORM)", "ios")
@@ -125,7 +127,8 @@ $(KYRKA)/lib/libkyrka.a: $(wildcard dist-build/patches/libkyrka-*.patch)
 tests: $(KYRKA)/lib/libkyrka.a
 	$(MAKE) $(OBJDIR)
 	$(MAKE) $(LIB)
-	$(MAKE) $(TESTS) tests/pong tests/vigild tests/caller tests/chatter
+	$(MAKE) $(TESTS) tests/pong tests/vigild tests/caller tests/chatter \
+	    tests/companion
 
 tests-run: tests
 	@for t in $(TESTS); do \
@@ -156,16 +159,28 @@ android-deps:
 ios-deps:
 	./dist-build/ios-build.sh
 
+linux:
+	FLUTTER=$(FLUTTER) ./dist-build/linux-app.sh --release
+	@echo "built app/build/linux/x64/release/bundle/vigil"
+
+linux-install:
+	./dist-build/linux-install.sh
+
+linux-uninstall:
+	./dist-build/linux-install.sh uninstall
+
 clean: clean-objs
 	find build -mindepth 1 -maxdepth 1 ! -name dl -exec rm -rf {} + \
 	    2> /dev/null || true
 	rm -rf app/build app/.dart_tool app/android/app/.cxx
 	rm -rf app/android/.gradle app/ios/Flutter/ephemeral
+	rm -rf app/linux/flutter/ephemeral
 
 clean-objs:
 	rm -f $(VERSION)
 	rm -rf $(OBJDIR) $(LIB) $(TESTS) tests/pong tests/vigild tests/caller \
-	    tests/chatter
+	    tests/chatter tests/companion
 
 .PHONY: all clean clean-objs force deps tests tests-run version
-.PHONY: android android-deps android-run ios ios-deps
+.PHONY: android android-deps android-run ios ios-deps linux
+.PHONY: linux-install linux-uninstall

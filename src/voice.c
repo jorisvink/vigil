@@ -101,9 +101,6 @@
  */
 #define VOICE_TONE_HZ			425
 #define VOICE_TONE_LEVEL		4000
-#define VOICE_TONE_NONE			0
-#define VOICE_TONE_RINGBACK		1
-#define VOICE_TONE_PIPS			2
 
 /* The milliseconds a tone is on and its period. */
 #define VOICE_RINGBACK_ON		1000
@@ -123,6 +120,19 @@ struct voice_ring {
 };
 
 /*
+ * A call of our phone that we hold as its desktop, we encode what we
+ * capture and decode what our phone forwards.
+ */
+struct voice_relay {
+	int			live;
+	u_int8_t		peer;
+	u_int16_t		rx_seq;
+	u_int16_t		tx_seq;
+	OpusEncoder		*encoder;
+	OpusDecoder		*decoder;
+};
+
+/*
  * The state of the running voice session, only touched by its thread.
  */
 struct voice_session {
@@ -133,6 +143,7 @@ struct voice_session {
 	u_int8_t		peer;
 	int			audio;
 	int			owned;
+	int			relay;
 
 	KYRKA			*ctx;
 	struct vigil_config	*config;
@@ -182,7 +193,6 @@ static void	voice_cathedral_send(struct kyrka_packet *, u_int64_t, void *);
 static void	voice_io_event(void *);
 static void	voice_io_read(struct voice_session *);
 
-static const char	*voice_end_name(int);
 static int		voice_stop_check(void);
 static void		voice_rings_reset(void);
 static void		voice_tone_fill(int16_t *, size_t);
@@ -190,7 +200,11 @@ static void		voice_p2p_fail(struct voice_session *);
 static void		voice_p2p_follow(struct voice_session *);
 static void		voice_p2p_abandon(struct voice_session *);
 static void		voice_socket_buffers(int);
+static void		voice_relay_stop(void);
 static void		voice_audio_send(struct voice_session *);
+static void		voice_codec_open(OpusEncoder **, OpusDecoder **);
+static void		voice_audio_recv(OpusDecoder *, u_int16_t *,
+			    const u_int8_t *);
 static void		voice_video_update(struct voice_session *);
 static void		voice_video_link(struct voice_session *,
 			    struct vigil_video_link *);
@@ -237,6 +251,9 @@ static volatile u_int8_t	request_peer = 0;
 static volatile int		request_mode = 0;
 static volatile u_int64_t	request_hangup = 0;
 
+/* Set if our desktop holds the session we were asked for. */
+static volatile int		request_relay = 0;
+
 /* The last request the vigil core handled. */
 static u_int64_t		request_handled = 0;
 
@@ -254,12 +271,19 @@ static volatile u_int64_t	rx_frames = 0;
 static volatile u_int64_t	tx_frames = 0;
 static volatile int		state = VIGIL_VOICE_STATE_IDLE;
 static volatile int		ended_why = VIGIL_VOICE_END_LOCAL;
+static volatile int		ended_peer = 0;
 
 /* Where we send to and the cathedral we relay via, for vigil_voice_status(). */
 static volatile u_int32_t	path_ip = 0;
 static volatile u_int32_t	relay_ip = 0;
 static volatile u_int16_t	path_port = 0;
 static volatile u_int16_t	relay_port = 0;
+
+/* Set while our desktop holds the call of the session we run. */
+static volatile int		relayed = 0;
+
+/* The call of our phone we hold as a desktop, peer is 0 without one. */
+static struct voice_relay	held;
 
 /* The captured frames, filled by the platform audio. */
 static struct voice_ring	capture;
@@ -272,7 +296,7 @@ static size_t			capture_offset = 0;
 static int16_t			*capture_frame = NULL;
 
 /* The tone to play until we hear our peer. */
-static volatile int		tone = VOICE_TONE_NONE;
+static volatile int		tone = VIGIL_VOICE_TONE_NONE;
 
 /* Only touched by the platform audio playback. */
 static u_int64_t		tone_sample = 0;
@@ -366,9 +390,288 @@ vigil_voice_call(u_int8_t peer, int mode)
 	    mode == VIGIL_VOICE_MODE_ANSWER ||
 	    mode == VIGIL_VOICE_MODE_DECLINE);
 
+	vigil_atomic_write(&request_relay, 0);
 	vigil_atomic_write(&request_peer, peer);
 	vigil_atomic_write(&request_mode, mode);
 	vigil_atomic_add(&request_seq, 1);
+}
+
+/*
+ * Request a voice session with the given peer that our desktop holds, we
+ * only relay its audio. Only called from the vigil core.
+ */
+void
+vigil_voice_relay_call(u_int8_t peer, int mode)
+{
+	PRECOND(peer > 0 && peer < KYRKA_PEERS_PER_FLOCK);
+	PRECOND(mode == VIGIL_VOICE_MODE_CALL ||
+	    mode == VIGIL_VOICE_MODE_ANSWER);
+
+	vigil_atomic_write(&request_relay, 1);
+	vigil_atomic_write(&request_peer, peer);
+	vigil_atomic_write(&request_mode, mode);
+	vigil_atomic_add(&request_seq, 1);
+}
+
+/*
+ * Our desktop answers the session ringing for the given peer, returns -1
+ * if no session rings for that peer. A session we answered ourselves
+ * already stays ours.
+ */
+int
+vigil_voice_relay_answer(u_int8_t peer)
+{
+	if (!embedded_open)
+		return (-1);
+
+	if (embedded.end != -1)
+		return (-1);
+
+	if (embedded.peer != peer)
+		return (-1);
+
+	if (embedded.mode != VIGIL_VOICE_MODE_RING)
+		return (-1);
+
+	if (vigil_atomic_read(&answered))
+		return (0);
+
+	embedded.relay = 1;
+	vigil_atomic_write(&relayed, 1);
+	vigil_atomic_write(&answered, 1);
+
+	return (0);
+}
+
+/*
+ * Send a voice frame from our desktop on to the peer of the call our
+ * desktop holds.
+ */
+void
+vigil_voice_relay_input(const u_int8_t *data, size_t len)
+{
+	const struct vigil_voice_hdr	*hdr;
+	u_int16_t			size;
+
+	PRECOND(data != NULL);
+	PRECOND(len == VIGIL_VOICE_PAYLOAD);
+
+	if (!embedded_open || !embedded.relay)
+		return;
+
+	if (embedded.end != -1 || embedded.online == 0)
+		return;
+
+	if (embedded.mode != VIGIL_VOICE_MODE_CALL &&
+	    embedded.mode != VIGIL_VOICE_MODE_ANSWER)
+		return;
+
+	if (embedded.mode != VIGIL_VOICE_MODE_ANSWER &&
+	    vigil_atomic_read(&state) != VIGIL_VOICE_STATE_TALKING)
+		return;
+
+	hdr = (const struct vigil_voice_hdr *)data;
+	size = ntohs(hdr->length);
+
+	if (hdr->type != VIGIL_VOICE_TYPE_VOICE)
+		return;
+
+	if (size > VIGIL_VOICE_OPUS_MAX)
+		return;
+
+	voice_frame_send(&embedded, VIGIL_VOICE_TYPE_VOICE,
+	    data + sizeof(*hdr), size);
+	vigil_atomic_add(&tx_frames, 1);
+}
+
+/*
+ * Fill in the peer of the last call that ended, why it ended and how many
+ * calls ended so far. Only called from the thread that runs our calls.
+ */
+void
+vigil_voice_ended(u_int8_t *peer, u_int8_t *why, u_int64_t *count)
+{
+	PRECOND(peer != NULL);
+	PRECOND(why != NULL);
+	PRECOND(count != NULL);
+
+	*peer = vigil_atomic_read(&ended_peer);
+	*why = vigil_atomic_read(&ended_why);
+	*count = vigil_atomic_read(&ended);
+
+	/* A call that is over but not closed yet has ended too. */
+	if (embedded_open && embedded.end != -1) {
+		*peer = embedded.peer;
+		*why = embedded.end;
+		*count = *count + 1;
+	}
+}
+
+/*
+ * Fill in the call our desktop must know about, peer is 0 without one.
+ */
+void
+vigil_voice_relay_state(u_int8_t *peer, u_int8_t *st, u_int8_t *flags)
+{
+	PRECOND(peer != NULL);
+	PRECOND(st != NULL);
+	PRECOND(flags != NULL);
+
+	*peer = 0;
+	*st = 0;
+	*flags = 0;
+
+	if (!embedded_open || embedded.end != -1)
+		return;
+
+	if (embedded.mode == VIGIL_VOICE_MODE_DECLINE)
+		return;
+
+	*peer = embedded.peer;
+	*st = vigil_atomic_read(&state);
+
+	if (embedded.relay)
+		*flags |= VIGIL_COMPANION_CALL_RELAY;
+
+	if (embedded.mode == VIGIL_VOICE_MODE_RING)
+		*flags |= VIGIL_COMPANION_CALL_RINGING;
+
+	if (embedded.mode == VIGIL_VOICE_MODE_CALL)
+		*flags |= VIGIL_COMPANION_CALL_OUTGOING;
+}
+
+/*
+ * As a desktop, hold the call of our phone with the given peer and play
+ * the given tone until we hear our peer, live is set once we may talk.
+ * A peer of 0 ends the call we hold.
+ */
+void
+vigil_voice_relay(u_int8_t peer, int sound, int live)
+{
+	PRECOND(peer < KYRKA_PEERS_PER_FLOCK);
+	PRECOND(sound == VIGIL_VOICE_TONE_NONE ||
+	    sound == VIGIL_VOICE_TONE_RINGBACK ||
+	    sound == VIGIL_VOICE_TONE_PIPS);
+	PRECOND(live == 0 || live == 1);
+
+	if (held.peer != 0 && held.peer != peer)
+		voice_relay_stop();
+
+	if (peer == 0)
+		return;
+
+	if (held.peer == 0) {
+		voice_rings_reset();
+
+		vigil_atomic_write(&muted, 0);
+		vigil_atomic_write(&talking, 0);
+		vigil_atomic_write(&rx_frames, 0);
+		vigil_atomic_write(&tx_frames, 0);
+		vigil_atomic_write(&peer_id, peer);
+		vigil_atomic_write(&state, VIGIL_VOICE_STATE_CONNECTING);
+
+		if (vigil_platform_audio_start() == -1) {
+			vigil_log(LOG_ERR, "[voice] no audio");
+			vigil_atomic_write(&state, VIGIL_VOICE_STATE_IDLE);
+			return;
+		}
+
+		voice_codec_open(&held.encoder, &held.decoder);
+
+		held.peer = peer;
+		held.rx_seq = 0;
+		held.tx_seq = 0;
+
+		vigil_log(LOG_INFO, "[voice] holding the call with %02x", peer);
+	}
+
+	held.live = live;
+
+	if (vigil_atomic_read(&state) != VIGIL_VOICE_STATE_TALKING)
+		vigil_atomic_write(&tone, sound);
+}
+
+/*
+ * As a desktop, play the voice our phone got from the peer of the call
+ * we hold.
+ */
+void
+vigil_voice_relay_play(const u_int8_t *data, size_t len)
+{
+	const struct vigil_voice_hdr	*hdr;
+
+	PRECOND(data != NULL);
+	PRECOND(len == VIGIL_VOICE_PAYLOAD);
+
+	if (held.peer == 0 || !held.live)
+		return;
+
+	hdr = (const struct vigil_voice_hdr *)data;
+
+	if (hdr->type != VIGIL_VOICE_TYPE_VOICE)
+		return;
+
+	if (ntohs(hdr->length) > VIGIL_VOICE_OPUS_MAX)
+		return;
+
+	vigil_atomic_add(&rx_frames, 1);
+
+	if (vigil_atomic_read(&state) != VIGIL_VOICE_STATE_TALKING) {
+		vigil_atomic_write(&talking, vigil_time_ms());
+		vigil_atomic_write(&state, VIGIL_VOICE_STATE_TALKING);
+	}
+
+	voice_audio_recv(held.decoder, &held.rx_seq, data);
+}
+
+/*
+ * As a desktop, encode what we captured for the call we hold and send the
+ * frames to our phone.
+ */
+void
+vigil_voice_relay_update(void)
+{
+	int			len;
+	int16_t			*pcm;
+	struct vigil_voice_hdr	*hdr;
+	u_int8_t		frame[VIGIL_VOICE_PAYLOAD];
+
+	if (held.peer == 0)
+		return;
+
+	while ((pcm = voice_ring_consume(&capture)) != NULL) {
+		if (!held.live) {
+			voice_ring_consumed(&capture);
+			continue;
+		}
+
+		if (vigil_atomic_read(&muted))
+			memset(pcm, 0, VIGIL_VOICE_SAMPLE_COUNT * sizeof(*pcm));
+
+		memset(frame, 0, sizeof(frame));
+		hdr = (struct vigil_voice_hdr *)frame;
+
+		len = opus_encode(held.encoder, pcm, VIGIL_VOICE_SAMPLE_COUNT,
+		    frame + sizeof(*hdr), VIGIL_VOICE_OPUS_MAX);
+
+		voice_ring_consumed(&capture);
+
+		if (len < 0) {
+			vigil_log(LOG_NOTICE, "[voice] opus_encode: %d", len);
+			continue;
+		}
+
+		held.tx_seq++;
+		if (held.tx_seq == 0)
+			held.tx_seq = 1;
+
+		hdr->length = htons(len);
+		hdr->seq = htons(held.tx_seq);
+		hdr->type = VIGIL_VOICE_TYPE_VOICE;
+
+		vigil_chat_companion_voice(frame, sizeof(frame));
+		vigil_atomic_add(&tx_frames, 1);
+	}
 }
 
 /*
@@ -396,7 +699,7 @@ vigil_voice_answer(void)
 int
 vigil_voice_busy(void)
 {
-	return (embedded_open);
+	return (embedded_open || held.peer != 0);
 }
 
 /*
@@ -427,6 +730,8 @@ vigil_voice_update(void)
 		if (!vigil_atomic_cas_simple(&active, 0, 1)) {
 			vigil_log(LOG_NOTICE, "[voice] can't start a call");
 			vigil_atomic_write(&ended_why, VIGIL_VOICE_END_ERROR);
+			vigil_atomic_write(&ended_peer,
+			    vigil_atomic_read(&request_peer));
 			vigil_atomic_add(&ended, 1);
 			return;
 		}
@@ -438,6 +743,9 @@ vigil_voice_update(void)
 			vigil_atomic_write(&active, 0);
 			return;
 		}
+
+		embedded.relay = vigil_atomic_read(&request_relay);
+		vigil_atomic_write(&relayed, embedded.relay);
 
 		sin = vigil_call_cathedral();
 		if (sin == NULL) {
@@ -463,9 +771,12 @@ vigil_voice_update(void)
 
 	embedded.now = vigil_time_ms();
 
+	/* The call is over for us now, not once our hangup got there. */
 	if (embedded.end == -1 &&
-	    vigil_atomic_read(&request_hangup) == request_handled)
+	    vigil_atomic_read(&request_hangup) == request_handled) {
 		voice_session_hangup(&embedded);
+		vigil_call_done(embedded.peer);
+	}
 
 	if (vigil_call_peer(embedded.peer) & VIGIL_CALL_PEER_SIGNALING)
 		signal = 1;
@@ -526,6 +837,7 @@ vigil_voice_cleanup(void)
 	voice_session_close(&embedded);
 
 	embedded_open = 0;
+	vigil_atomic_write(&relayed, 0);
 	vigil_atomic_write(&active, 0);
 }
 
@@ -618,7 +930,7 @@ vigil_voice_status(char *buf, size_t len)
 		    "{\"running\":false,\"calls\":%" PRIu64
 		    ",\"end\":\"%s\",\"rx_bytes\":%" PRIu64
 		    ",\"tx_bytes\":%" PRIu64 "}", vigil_atomic_read(&ended),
-		    voice_end_name(vigil_atomic_read(&ended_why)),
+		    vigil_voice_end_name(vigil_atomic_read(&ended_why)),
 		    vigil_atomic_read(&rx_bytes), vigil_atomic_read(&tx_bytes));
 		if (ret < 0 || (size_t)ret >= len)
 			return (0);
@@ -646,7 +958,7 @@ vigil_voice_status(char *buf, size_t len)
 	    "\"state\":\"%s\",\"muted\":%s,\"uptime\":%" PRIu64
 	    ",\"rx\":%" PRIu64 ",\"tx\":%" PRIu64 ",\"p2p\":%s,"
 	    "\"path\":\"%s:%u\",\"cathedral\":\"%s:%u\",\"rx_bytes\":%" PRIu64
-	    ",\"tx_bytes\":%" PRIu64 ",\"video\":%s}",
+	    ",\"tx_bytes\":%" PRIu64 ",\"relay\":%s,\"video\":%s}",
 	    vigil_atomic_read(&ended), vigil_atomic_read(&peer_id), name,
 	    vigil_atomic_read(&muted) ? "true" : "false", since,
 	    vigil_atomic_read(&rx_frames), vigil_atomic_read(&tx_frames),
@@ -654,7 +966,8 @@ vigil_voice_status(char *buf, size_t len)
 	    vigil_atomic_read(&relay_port)) ? "false" : "true",
 	    via, ntohs(vigil_atomic_read(&path_port)),
 	    cathedral, ntohs(vigil_atomic_read(&relay_port)),
-	    vigil_atomic_read(&rx_bytes), vigil_atomic_read(&tx_bytes), video);
+	    vigil_atomic_read(&rx_bytes), vigil_atomic_read(&tx_bytes),
+	    vigil_atomic_read(&relayed) ? "true" : "false", video);
 
 	if (ret < 0 || (size_t)ret >= len)
 		return (0);
@@ -715,7 +1028,7 @@ vigil_voice_playback(int16_t *pcm, size_t samples)
 	    playback_offset < VIGIL_VOICE_SAMPLE_COUNT);
 
 	if (vigil_atomic_read(&state) != VIGIL_VOICE_STATE_TALKING &&
-	    vigil_atomic_read(&tone) != VOICE_TONE_NONE) {
+	    vigil_atomic_read(&tone) != VIGIL_VOICE_TONE_NONE) {
 		voice_tone_fill(pcm, samples);
 		return;
 	}
@@ -797,13 +1110,13 @@ voice_session_open(struct voice_session *s, struct vigil_config *config,
 
 	switch (mode) {
 	case VIGIL_VOICE_MODE_CALL:
-		vigil_atomic_write(&tone, VOICE_TONE_RINGBACK);
+		vigil_atomic_write(&tone, VIGIL_VOICE_TONE_RINGBACK);
 		break;
 	case VIGIL_VOICE_MODE_ANSWER:
-		vigil_atomic_write(&tone, VOICE_TONE_PIPS);
+		vigil_atomic_write(&tone, VIGIL_VOICE_TONE_PIPS);
 		break;
 	default:
-		vigil_atomic_write(&tone, VOICE_TONE_NONE);
+		vigil_atomic_write(&tone, VIGIL_VOICE_TONE_NONE);
 		break;
 	}
 
@@ -829,7 +1142,6 @@ voice_session_open(struct voice_session *s, struct vigil_config *config,
 static int
 voice_session_setup(struct voice_session *s)
 {
-	int				err;
 	struct kyrka_cathedral_cfg	kcfg;
 	u_int8_t			local;
 
@@ -862,44 +1174,12 @@ voice_session_setup(struct voice_session *s)
 	if (s->config->flags & VIGIL_CONFIG_FLAG_COMMIXTION)
 		kcfg.hops = VIGIL_COMMIXTION_HOPS;
 
-	if (s->config->flags & VIGIL_CONFIG_FLAG_SHROUD) {
-		if (kyrka_shroud_enable(s->ctx) == -1) {
-			fatal("failed to enable shroud: %d",
-			    kyrka_last_error(s->ctx));
-		}
-	}
-
-	if (kyrka_cathedral_config(s->ctx, &kcfg) == -1) {
-		fatal("failed to configure cathedral: %d",
-		    kyrka_last_error(s->ctx));
-	}
-
-	if (kyrka_device_kek_load(s->ctx, s->config->kek,
-	    sizeof(s->config->kek)) == -1) {
-		fatal("kyrka_device_kek_load: %d", kyrka_last_error(s->ctx));
-	}
-
-	if (kyrka_cathedral_secret_load(s->ctx, s->config->cathedral_secret,
-	    sizeof(s->config->cathedral_secret)) == -1) {
-		fatal("kyrka_cathedral_secret_load: %d",
-		    kyrka_last_error(s->ctx));
-	}
-
-	if (kyrka_cathedral_cosk_load(s->ctx, s->config->cathedral_cosk,
-	    sizeof(s->config->cathedral_cosk)) == -1) {
-		fatal("kyrka_cathedral_cosk_load: %d",
-		    kyrka_last_error(s->ctx));
-	}
-
 	if (s->config->mtu < VOICE_MTU_MAX)
 		s->mtu = s->config->mtu;
 	else
 		s->mtu = VOICE_MTU_MAX;
 
-	if (kyrka_mtu_size(s->ctx, s->mtu) == -1) {
-		fatal("failed to set libkyrka mtu size: %d",
-		    kyrka_last_error(s->ctx));
-	}
+	vigil_kyrka_cathedral(s->ctx, &kcfg, s->config, 1, s->mtu);
 
 	if (kyrka_heaven_ifc(s->ctx, voice_heaven_input, s) == -1)
 		fatal("failed to set heaven interface");
@@ -907,8 +1187,8 @@ voice_session_setup(struct voice_session *s)
 	if (kyrka_purgatory_ifc(s->ctx, voice_purgatory_input, s) == -1)
 		fatal("failed to set purgatory interface");
 
-	if (s->mode == VIGIL_VOICE_MODE_CALL ||
-	    s->mode == VIGIL_VOICE_MODE_ANSWER) {
+	if (!s->relay && (s->mode == VIGIL_VOICE_MODE_CALL ||
+	    s->mode == VIGIL_VOICE_MODE_ANSWER)) {
 		if (vigil_platform_audio_start() == -1) {
 			vigil_log(LOG_ERR, "[voice] no audio");
 			return (-1);
@@ -917,30 +1197,7 @@ voice_session_setup(struct voice_session *s)
 		s->audio = 1;
 	}
 
-	s->decoder = opus_decoder_create(VIGIL_VOICE_SAMPLE_RATE, 1, &err);
-	if (err != OPUS_OK)
-		fatal("failed to create opus decoder: %d", err);
-
-	s->encoder = opus_encoder_create(VIGIL_VOICE_SAMPLE_RATE, 1,
-	    OPUS_APPLICATION_VOIP, &err);
-	if (err != OPUS_OK)
-		fatal("failed to create opus encoder: %d", err);
-
-	err = opus_encoder_ctl(s->encoder, OPUS_SET_BITRATE(OPUS_AUTO));
-	if (err != OPUS_OK)
-		fatal("failed to set bitrate: %d", err);
-
-	err = opus_encoder_ctl(s->encoder, OPUS_SET_SIGNAL(OPUS_SIGNAL_VOICE));
-	if (err != OPUS_OK)
-		fatal("failed to set signal type: %d", err);
-
-	err = opus_encoder_ctl(s->encoder, OPUS_SET_INBAND_FEC(1));
-	if (err != OPUS_OK)
-		fatal("failed to enable FEC: %d", err);
-
-	err = opus_encoder_ctl(s->encoder, OPUS_SET_PACKET_LOSS_PERC(5));
-	if (err != OPUS_OK)
-		fatal("failed to set expected packet loss: %d", err);
+	voice_codec_open(&s->encoder, &s->decoder);
 
 	memcpy(&s->addr, &s->cathedral, sizeof(s->cathedral));
 	voice_path_publish(s);
@@ -967,7 +1224,10 @@ voice_session_answer(struct voice_session *s)
 
 	s->rang = 1;
 	s->mode = VIGIL_VOICE_MODE_ANSWER;
-	vigil_atomic_write(&tone, VOICE_TONE_PIPS);
+	vigil_atomic_write(&tone, VIGIL_VOICE_TONE_PIPS);
+
+	if (s->relay)
+		return;
 
 	if (vigil_platform_audio_start() == -1) {
 		vigil_log(LOG_ERR, "[voice] no audio");
@@ -1193,9 +1453,10 @@ voice_session_close(struct voice_session *s)
 		s->end = VIGIL_VOICE_END_LOCAL;
 
 	vigil_log(LOG_INFO, "[voice] call with %02x ended (%s)",
-	    s->peer, voice_end_name(s->end));
+	    s->peer, vigil_voice_end_name(s->end));
 
 	vigil_atomic_write(&ended_why, s->end);
+	vigil_atomic_write(&ended_peer, s->peer);
 	vigil_atomic_write(&state, VIGIL_VOICE_STATE_IDLE);
 	vigil_atomic_add(&ended, 1);
 
@@ -1205,8 +1466,8 @@ voice_session_close(struct voice_session *s)
 /*
  * Returns a name for the given VIGIL_VOICE_END_* reason.
  */
-static const char *
-voice_end_name(int why)
+const char *
+vigil_voice_end_name(int why)
 {
 	switch (why) {
 	case VIGIL_VOICE_END_LOCAL:
@@ -1677,19 +1938,18 @@ voice_kyrka_event(KYRKA *ctx, union kyrka_event *evt, void *udata)
 
 /*
  * Callback from libkyrka with a decrypted frame from our peer, we
- * decode the voice in it and queue it up for playback.
+ * decode the voice in it and queue it up for playback, or hand it to
+ * our desktop if it holds the call.
  */
 static void
 voice_heaven_input(struct kyrka_packet *pkt, u_int64_t seq, void *udata)
 {
 	struct voice_session		*s;
+	u_int16_t			len;
 	struct vigil_video_ctl		ctl;
-	u_int16_t			len, gap, frame;
-	int16_t				*pcm;
 	struct vigil_video_nack		nack;
 	struct vigil_video_link		link;
 	const struct vigil_voice_hdr	*hdr;
-	int				count;
 	const u_int8_t			*data;
 
 	PRECOND(pkt != NULL);
@@ -1776,26 +2036,55 @@ voice_heaven_input(struct kyrka_packet *pkt, u_int64_t seq, void *udata)
 		vigil_atomic_write(&state, VIGIL_VOICE_STATE_TALKING);
 	}
 
+	if (s->relay) {
+		vigil_chat_companion_voice(data, VIGIL_VOICE_PAYLOAD);
+		return;
+	}
+
+	voice_audio_recv(s->decoder, &s->rx_seq, data);
+}
+
+/*
+ * Decode the voice frame in data into the playback ring, conceal what
+ * went missing since the frame we got before it.
+ */
+static void
+voice_audio_recv(OpusDecoder *decoder, u_int16_t *rx_seq,
+    const u_int8_t *data)
+{
+	u_int16_t			len;
+	int16_t				*pcm;
+	int				count;
+	u_int16_t			gap, frame;
+	const struct vigil_voice_hdr	*hdr;
+
+	PRECOND(decoder != NULL);
+	PRECOND(rx_seq != NULL);
+	PRECOND(data != NULL);
+
+	hdr = (const struct vigil_voice_hdr *)data;
+	len = ntohs(hdr->length);
+
 	gap = 0;
 	frame = ntohs(hdr->seq);
 
 	if (frame != 0) {
-		if (s->rx_seq != 0) {
-			gap = (u_int16_t)(frame - s->rx_seq);
+		if (*rx_seq != 0) {
+			gap = (u_int16_t)(frame - *rx_seq);
 
 			/* Overtaken by those after it, too late to play. */
 			if (gap == 0 || gap >= 0x8000)
 				return;
 		}
 
-		s->rx_seq = frame;
+		*rx_seq = frame;
 	}
 
 	/* More than one went missing, conceal the oldest of them. */
 	if (gap > 2) {
 		pcm = voice_ring_produce(&playback);
 		if (pcm != NULL) {
-			if (opus_decode(s->decoder, NULL, 0, pcm,
+			if (opus_decode(decoder, NULL, 0, pcm,
 			    VIGIL_VOICE_SAMPLE_COUNT, 0) > 0)
 				voice_ring_produced(&playback);
 		}
@@ -1805,7 +2094,7 @@ voice_heaven_input(struct kyrka_packet *pkt, u_int64_t seq, void *udata)
 	if (gap > 1) {
 		pcm = voice_ring_produce(&playback);
 		if (pcm != NULL) {
-			if (opus_decode(s->decoder, data + sizeof(*hdr), len,
+			if (opus_decode(decoder, data + sizeof(*hdr), len,
 			    pcm, VIGIL_VOICE_SAMPLE_COUNT, 1) > 0)
 				voice_ring_produced(&playback);
 		}
@@ -1815,7 +2104,7 @@ voice_heaven_input(struct kyrka_packet *pkt, u_int64_t seq, void *udata)
 	if (pcm == NULL)
 		return;
 
-	count = opus_decode(s->decoder, data + sizeof(*hdr), len, pcm,
+	count = opus_decode(decoder, data + sizeof(*hdr), len, pcm,
 	    VIGIL_VOICE_SAMPLE_COUNT, 0);
 
 	if (count != VIGIL_VOICE_SAMPLE_COUNT) {
@@ -1825,6 +2114,67 @@ voice_heaven_input(struct kyrka_packet *pkt, u_int64_t seq, void *udata)
 	}
 
 	voice_ring_produced(&playback);
+}
+
+/*
+ * Create an opus encoder and decoder for a call.
+ */
+static void
+voice_codec_open(OpusEncoder **encoder, OpusDecoder **decoder)
+{
+	int		err;
+
+	PRECOND(encoder != NULL);
+	PRECOND(decoder != NULL);
+
+	*decoder = opus_decoder_create(VIGIL_VOICE_SAMPLE_RATE, 1, &err);
+	if (err != OPUS_OK)
+		fatal("failed to create opus decoder: %d", err);
+
+	*encoder = opus_encoder_create(VIGIL_VOICE_SAMPLE_RATE, 1,
+	    OPUS_APPLICATION_VOIP, &err);
+	if (err != OPUS_OK)
+		fatal("failed to create opus encoder: %d", err);
+
+	err = opus_encoder_ctl(*encoder, OPUS_SET_BITRATE(OPUS_AUTO));
+	if (err != OPUS_OK)
+		fatal("failed to set bitrate: %d", err);
+
+	err = opus_encoder_ctl(*encoder, OPUS_SET_SIGNAL(OPUS_SIGNAL_VOICE));
+	if (err != OPUS_OK)
+		fatal("failed to set signal type: %d", err);
+
+	err = opus_encoder_ctl(*encoder, OPUS_SET_INBAND_FEC(1));
+	if (err != OPUS_OK)
+		fatal("failed to enable FEC: %d", err);
+
+	err = opus_encoder_ctl(*encoder, OPUS_SET_PACKET_LOSS_PERC(5));
+	if (err != OPUS_OK)
+		fatal("failed to set expected packet loss: %d", err);
+}
+
+/*
+ * As a desktop, stop holding the call of our phone.
+ */
+static void
+voice_relay_stop(void)
+{
+	if (held.peer == 0)
+		return;
+
+	vigil_log(LOG_INFO, "[voice] no longer holding the call with %02x",
+	    held.peer);
+
+	vigil_platform_audio_stop();
+
+	opus_encoder_destroy(held.encoder);
+	opus_decoder_destroy(held.decoder);
+
+	nyfe_mem_zero(&held, sizeof(held));
+
+	vigil_atomic_write(&state, VIGIL_VOICE_STATE_IDLE);
+	vigil_atomic_write(&tone, VIGIL_VOICE_TONE_NONE);
+	vigil_atomic_add(&ended, 1);
 }
 
 /*
@@ -2040,7 +2390,7 @@ voice_tone_fill(int16_t *pcm, size_t samples)
 
 	PRECOND(pcm != NULL);
 
-	if (vigil_atomic_read(&tone) == VOICE_TONE_RINGBACK) {
+	if (vigil_atomic_read(&tone) == VIGIL_VOICE_TONE_RINGBACK) {
 		on = VOICE_RINGBACK_ON;
 		period = VOICE_RINGBACK_PERIOD;
 	} else {

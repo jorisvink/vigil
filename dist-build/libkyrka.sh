@@ -44,5 +44,6 @@ make -C $SRC OBJDIR=obj "$@"
 cp $SRC/libkyrka.a $BUILD/lib/
 cp $SRC/include/libkyrka/*.h $BUILD/include/libkyrka/
 cp $SRC/nyfe/include/libnyfe.h $BUILD/include/libkyrka/
+cp $SRC/nyfe/include/queue.h $BUILD/include/libkyrka/
 cp $SRC/nyfe/include/portable_win.h $BUILD/include/libkyrka/
 cp $SRC/nyfe/include/portable_esp32.h $BUILD/include/libkyrka/

@@ -71,6 +71,24 @@ enum TunnelKeychain {
         return [UInt8](data)
     }
 
+    /// The caller must wipe the returned configuration.
+    static func load(id: String) -> [UInt8]? {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: id,
+            kSecAttrAccessGroup as String: group,
+            kSecReturnData as String: true,
+        ]
+
+        var item: CFTypeRef?
+
+        guard SecItemCopyMatching(query as CFDictionary, &item) == errSecSuccess,
+              let data = item as? Data else { return nil }
+
+        return [UInt8](data)
+    }
+
     /// memset_s() so the compiler cannot drop the writes.
     static func wipe<T>(_ bytes: inout [T]) {
         bytes.withUnsafeMutableBytes { raw in

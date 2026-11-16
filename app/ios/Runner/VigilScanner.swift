@@ -37,7 +37,7 @@ final class VigilScanner: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate
     }
 
     func state() -> [String: Any] {
-        locked { () -> [String: Any] in
+        lock.withLock { () -> [String: Any] in
             let found = value
             value = nil
             return ["value": found ?? NSNull(), "width": width, "height": height]
@@ -45,7 +45,7 @@ final class VigilScanner: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate
     }
 
     func stop() {
-        let (session, texture) = locked { () -> (AVCaptureSession?, VigilVideo.Texture?) in
+        let (session, texture) = lock.withLock { () -> (AVCaptureSession?, VigilVideo.Texture?) in
             let running = (self.session, self.texture)
 
             self.session = nil
@@ -130,7 +130,7 @@ final class VigilScanner: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate
 
         let texture = VigilVideo.Texture(registry)
 
-        locked {
+        lock.withLock {
             self.session = session
             self.texture = texture
             value = nil
@@ -148,7 +148,7 @@ final class VigilScanner: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate
                        from connection: AVCaptureConnection) {
         guard let image = CMSampleBufferGetImageBuffer(sample) else { return }
 
-        let texture = locked { () -> VigilVideo.Texture? in
+        let texture = lock.withLock { () -> VigilVideo.Texture? in
             width = CVPixelBufferGetWidth(image)
             height = CVPixelBufferGetHeight(image)
             return self.texture
@@ -162,17 +162,11 @@ final class VigilScanner: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate
         guard let code = objects.compactMap({ ($0 as? AVMetadataMachineReadableCodeObject)?.stringValue }).first
         else { return }
 
-        locked {
+        lock.withLock {
             if value == nil {
                 value = code
             }
         }
-    }
-
-    private func locked<T>(_ body: () throws -> T) rethrows -> T {
-        lock.lock()
-        defer { lock.unlock() }
-        return try body()
     }
 }
 

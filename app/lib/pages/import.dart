@@ -477,6 +477,13 @@ class _ReviewPageState extends State<ReviewPage> {
     try {
       final tunnel = await Vigil.instance.store(widget.config);
       navigatorKey.currentState!.popUntil((route) => route.isFirst);
+
+      if (tunnel.summary.mode == 'companion') {
+        currentTab.value = NavTab.gospel;
+        notify('Your desktop is linked.', warn: false);
+        return;
+      }
+
       if (tunnel.summary.voice) {
         currentTab.value = NavTab.gospel;
       } else {

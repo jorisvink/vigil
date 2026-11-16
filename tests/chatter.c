@@ -22,7 +22,7 @@
  *	    [-i peer:file] [-I file] [-f peer:file] [-F file] [-o dir]
  *	    [-t peer] [-T] [-O peer] [-e count] [-x secs] [-l count]
  *	    [-r author:hash] [-c topic:name] [-C peer:topic] [-P file]
- *	    [-R peer:hash] [-D datadir] <gospel>
+ *	    [-R peer:hash] [-M companion] [-D datadir] <gospel>
  *
  * With -m we send the text to the given peer, -m may be given more
  * than once. With -g we own the group with the given id and name, its
@@ -49,6 +49,9 @@
  * given more than once. Data we get is written to the directory given
  * with -o, avatars of our peers too.
  * With -P the image in the given file is our avatar.
+ * With -M we are the phone of the desktop in the given companion
+ * configuration, every event with a token goes to our desktop as is and a
+ * resync our desktop asks for holds no chats.
  * With -e we wait until we got that many messages and with -x we give
  * up after that many seconds. With -l we act as if we failed to store
  * the first count messages we got.
@@ -87,7 +90,8 @@ static void	usage(void) __attribute__((noreturn));
 static void	*chatter_core_run(void *);
 static void	chatter_group_send(int *);
 static void	chatter_avatar(const char *);
-static void	chatter_data_take(const char *);
+static int	chatter_data_take(const char *);
+static void	chatter_mirror(const char *, const u_int8_t *, size_t);
 static int	chatter_avatar_take(const char *);
 static void	chatter_group_event(const char *);
 static void	chatter_events_handle(int *, int *);
@@ -105,6 +109,9 @@ static char		gospel[VIGIL_CONFIG_MAX];
 
 /* The number of messages we do not store. */
 static int		lose = 0;
+
+/* If we are the phone of a desktop. */
+static int		phone = 0;
 
 /* Where the core keeps its remembrances, if anywhere. */
 static const char	*datadir = NULL;
@@ -175,7 +182,8 @@ usage(void)
 	    "[-a peer:file] [-A file] "
 	    "[-o dir] [-t peer] [-T] [-O peer] [-e count] [-x secs] "
 	    "[-l count] [-r author:hash] [-c topic:name] [-C peer:topic] "
-	    "[-P file] [-R peer:hash] [-D datadir] <gospel>\n");
+	    "[-P file] [-R peer:hash] [-M companion] [-D datadir] "
+	    "<gospel>\n");
 	exit(1);
 }
 
@@ -199,8 +207,15 @@ main(int argc, char **argv)
 	delivered = 0;
 
 	while ((ch = getopt(argc, argv,
-	    "a:A:c:C:D:e:f:F:g:G:i:I:j:K:l:Lm:n:o:O:P:r:R:t:Tx:")) != -1) {
+	    "a:A:c:C:D:e:f:F:g:G:i:I:j:K:l:Lm:M:n:o:O:P:r:R:t:Tx:")) != -1) {
 		switch (ch) {
+		case 'M':
+			gospel_len = chatter_config_read(optarg,
+			    gospel, sizeof(gospel));
+			if (vigil_chat_companion(gospel, gospel_len) == -1)
+				usage();
+			phone = 1;
+			break;
 		case 'c':
 			topic = strtoull(optarg, &ep, 16);
 			if (*ep != ':' || topic == 0)
@@ -666,6 +681,12 @@ chatter_events_handle(int *got, int *delivered)
 	if (strcmp(buf, "[]"))
 		printf("chatter: %s\n", buf);
 
+	if (phone && strstr(buf, "\"what\":\"resync\"") != NULL) {
+		if (vigil_chat_companion_resync(0) == -1 ||
+		    vigil_chat_companion_resync(1) == -1)
+			fatal("failed to resync our desktop");
+	}
+
 	for (p = buf; (p = strstr(p, "{\"peer\":")) != NULL; p++)
 		chatter_group_event(p);
 
@@ -680,7 +701,9 @@ chatter_events_handle(int *got, int *delivered)
 		}
 
 		token = strtoull(p + 8, NULL, 10);
-		chatter_data_take(p);
+
+		if (chatter_data_take(p) == 0 && phone)
+			chatter_mirror(p, NULL, 0);
 
 		if (vigil_chat_stored(token) == -1)
 			fatal("failed to ack data %" PRIu64, token);
@@ -987,9 +1010,9 @@ chatter_data_send(u_int8_t peer, u_int64_t ref, int kind, const char *path,
 
 /*
  * If the event with the token at p is data, take it and write it to our
- * output directory if we have one.
+ * output directory if we have one. Returns 1 if it was data.
  */
-static void
+static int
 chatter_data_take(const char *p)
 {
 	FILE		*fp;
@@ -1003,17 +1026,17 @@ chatter_data_take(const char *p)
 
 	end = strchr(p, '}');
 	if (end == NULL)
-		return;
+		return (0);
 
 	for (start = p; *start != '{'; start--)
 		;
 
 	type = strstr(start, "\"type\":\"data\"");
 	if (type == NULL)
-		return;
+		return (0);
 
 	if (type > end)
-		return;
+		return (0);
 
 	token = strtoull(p + 8, NULL, 10);
 
@@ -1041,7 +1064,40 @@ chatter_data_take(const char *p)
 		fclose(fp);
 	}
 
+	if (phone)
+		chatter_mirror(p, data, len);
+
 	free(data);
+
+	return (1);
+}
+
+/*
+ * Send the event around p to our desktop with the given data, if any.
+ */
+static void
+chatter_mirror(const char *p, const u_int8_t *data, size_t len)
+{
+	int		n;
+	const char	*start, *end;
+	char		json[VIGIL_COMPANION_JSON_MAX];
+
+	PRECOND(p != NULL);
+	PRECOND(data != NULL || len == 0);
+
+	if ((end = strchr(p, '}')) == NULL)
+		return;
+
+	for (start = p; *start != '{'; start--)
+		;
+
+	n = snprintf(json, sizeof(json), "{\"op\":\"event\",\"event\":%.*s}",
+	    (int)(end - start + 1), start);
+	if (n < 0 || (size_t)n >= sizeof(json))
+		fatal("event too long for our desktop");
+
+	if (vigil_chat_companion_sync(json, n, data, len) == -1)
+		fatal("failed to send an event to our desktop");
 }
 
 /*

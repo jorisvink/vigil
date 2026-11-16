@@ -62,41 +62,6 @@ vigil_platform_socket(int fd)
 }
 
 /*
- * Nothing needs to happen when we close a socket on a regular host.
- */
-void
-vigil_platform_socket_close(int fd)
-{
-	PRECOND(fd >= 0);
-}
-
-/*
- * Read a single packet from the tunnel interface.
- */
-ssize_t
-vigil_platform_tun_read(int fd, u_int8_t *buf, size_t len)
-{
-	PRECOND(fd >= 0);
-	PRECOND(buf != NULL);
-	PRECOND(len > 0);
-
-	return (read(fd, buf, len));
-}
-
-/*
- * Write a single packet to the tunnel interface.
- */
-ssize_t
-vigil_platform_tun_write(int fd, const u_int8_t *buf, size_t len)
-{
-	PRECOND(fd >= 0);
-	PRECOND(buf != NULL);
-	PRECOND(len > 0);
-
-	return (write(fd, buf, len));
-}
-
-/*
  * Give up hard.
  */
 void

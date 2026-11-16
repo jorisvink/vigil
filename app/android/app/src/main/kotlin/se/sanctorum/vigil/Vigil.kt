@@ -132,6 +132,13 @@ object Vigil {
     external fun gospel(config: ByteArray?): Boolean
 
     @JvmStatic
+    external fun chatCompanion(config: ByteArray?): Boolean
+
+    @JvmStatic
+    external fun chatCompanionSync(json: ByteArray, data: ByteArray?): Boolean
+    external fun chatCompanionResync(done: Boolean): Boolean
+
+    @JvmStatic
     external fun remoteWord(idx: Int): String?
 
     @JvmStatic

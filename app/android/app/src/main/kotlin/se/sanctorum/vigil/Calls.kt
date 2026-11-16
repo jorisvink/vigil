@@ -250,6 +250,11 @@ object Calls {
         val call = status?.optJSONObject("call")
         val callers = mutableSetOf<Int>()
 
+        if (voice?.optBoolean("relay") == true) {
+            end(DisconnectCause.ANSWERED_ELSEWHERE)
+            return
+        }
+
         call?.optJSONArray("incoming")?.let { list ->
             for (i in 0 until list.length()) {
                 callers.add(list.getString(i).toInt(16))

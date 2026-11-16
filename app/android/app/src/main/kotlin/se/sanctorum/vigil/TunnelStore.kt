@@ -20,6 +20,7 @@ import javax.crypto.spec.GCMParameterSpec
  */
 class TunnelStore(context: Context) {
     private val dir = File(context.noBackupFilesDir, "tunnels").apply { mkdirs() }
+    private val companions = File(context.noBackupFilesDir, "companion").apply { mkdirs() }
     private val prefs = context.getSharedPreferences("vigil", Context.MODE_PRIVATE)
 
     class Invalid(message: String) : Exception(message)
@@ -74,6 +75,16 @@ class TunnelStore(context: Context) {
 
         if (summary.optString("mode") == "gospel" && voice() != null) {
             throw Invalid("There is already a Gospel configuration, remove it first.")
+        }
+
+        if (summary.optString("mode") == "companion") {
+            if (summary.optString("spi") != "0102") {
+                throw Invalid("This configuration is for your desktop, open it there.")
+            }
+
+            seal(COMPANION, config, summary)
+
+            return JSONObject().put("id", COMPANION).put("summary", summary)
         }
 
         val id = UUID.randomUUID().toString()
@@ -149,6 +160,38 @@ class TunnelStore(context: Context) {
         }
     }
 
+    fun companion(): ByteArray? {
+        if (!file(COMPANION, CONFIG).exists()) {
+            return null
+        }
+
+        return load(COMPANION)
+    }
+
+    fun linked(): Boolean = file(COMPANION, CONFIG).exists()
+
+    fun companionApply() {
+        val config = try {
+            companion()
+        } catch (e: Exception) {
+            null
+        }
+
+        try {
+            Vigil.chatCompanion(config)
+        } finally {
+            config?.fill(0)
+        }
+    }
+
+    fun companionSummary(): JSONObject? {
+        if (!file(COMPANION, SUMMARY).exists()) {
+            return null
+        }
+
+        return summary(COMPANION)
+    }
+
     var last: String?
         get() = prefs.getString("last", null)
         set(value) = prefs.edit().putString("last", value).apply()
@@ -162,6 +205,10 @@ class TunnelStore(context: Context) {
         set(value) = prefs.edit().putBoolean("gospel", value).apply()
 
     private fun file(id: String, suffix: String): File {
+        if (id == COMPANION) {
+            return File(companions, id + suffix)
+        }
+
         require(id.matches(Regex("[0-9a-f-]{36}"))) { "invalid tunnel id" }
         return File(dir, id + suffix)
     }
@@ -195,5 +242,6 @@ class TunnelStore(context: Context) {
         const val IV_LENGTH = 12
         const val CONFIG = ".cfg"
         const val SUMMARY = ".json"
+        const val COMPANION = "companion"
     }
 }

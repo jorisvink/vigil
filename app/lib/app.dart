@@ -854,15 +854,7 @@ class _AvatarView extends StatelessWidget {
                   },
                 ),
               ),
-              Positioned(
-                top: 4,
-                left: Metrics.edge - 12,
-                child: GlyphBtn(
-                  GlyphKind.close,
-                  label: 'Close',
-                  onTap: () => Navigator.of(context).maybePop(),
-                ),
-              ),
+              const CornerClose(),
             ],
           ),
         ),

@@ -27,7 +27,7 @@ import UserNotifications
 
     if let caller = (info["call"] as? String).flatMap({ UInt8($0, radix: 16) }) {
       if response.actionIdentifier == "decline" {
-        VigilPlugin.send("done \(VigilCall.hex(caller))") {
+        VigilPlugin.send("done \(ChatVault.hex(caller))") {
           super.userNotificationCenter(center, didReceive: response, withCompletionHandler: completionHandler)
         }
         return

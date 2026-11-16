@@ -231,6 +231,23 @@ class Toggle extends StatelessWidget {
   }
 }
 
+class CornerClose extends StatelessWidget {
+  const CornerClose({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return Positioned(
+      top: 4,
+      left: Metrics.edge - 12,
+      child: GlyphBtn(
+        GlyphKind.close,
+        label: 'Close',
+        onTap: () => Navigator.of(context).maybePop(),
+      ),
+    );
+  }
+}
+
 class GlyphBtn extends StatelessWidget {
   const GlyphBtn(
     this.glyph, {

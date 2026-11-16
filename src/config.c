@@ -64,6 +64,7 @@ static int	config_error(struct config_parser *, const char *, ...)
 static int	config_validate_mtu(struct config_parser *);
 static int	config_validate_tier6(struct config_parser *);
 static int	config_validate_cathedral(struct config_parser *);
+static int	config_validate_companion(struct config_parser *);
 
 static int	config_parse_dns(struct config_parser *, char *);
 static int	config_parse_kek(struct config_parser *, char *);
@@ -485,6 +486,9 @@ vigil_config_mode(const struct vigil_config *cfg)
 	case VIGIL_MODE_GOSPEL:
 		mode = "gospel";
 		break;
+	case VIGIL_MODE_COMPANION:
+		mode = "companion";
+		break;
 	default:
 		mode = "unknown";
 		break;
@@ -526,7 +530,8 @@ vigil_config_summary(const struct vigil_config *cfg, char *buf, size_t len)
 		    cfg->spi & 0xff, cfg->spi & 0xff);
 		(void)inet_ntop(AF_INET, &ip, str, sizeof(str));
 		vigil_buf_appendf(&out, "\"address\":\"%s/16\",", str);
-	} else if (cfg->mode != VIGIL_MODE_GOSPEL) {
+	} else if (cfg->mode != VIGIL_MODE_GOSPEL &&
+	    cfg->mode != VIGIL_MODE_COMPANION) {
 		(void)inet_ntop(AF_INET, &cfg->ip, str, sizeof(str));
 		vigil_buf_appendf(&out, "\"address\":\"%s/%u\",",
 		    str, cfg->tun_prefix);
@@ -753,11 +758,68 @@ config_validate(struct config_parser *cp)
 			return (ret);
 		}
 		break;
+	case VIGIL_MODE_COMPANION:
+		if (config_validate_companion(cp) == -1)
+			return (-1);
+		break;
 	default:
 		return (config_error(cp, "unknown mode %d", cfg->mode));
 	}
 
 	return (config_validate_mtu(cp));
+}
+
+/*
+ * Validate a companion configuration, only a cathedral and the tunnel
+ * between the phone and its desktop.
+ */
+static int
+config_validate_companion(struct config_parser *cp)
+{
+	int			ret;
+	struct vigil_config	*cfg;
+
+	PRECOND(cp != NULL);
+
+	cfg = cp->cfg;
+
+	if (cfg->peer_host[0] != '\0') {
+		ret = config_error(cp, "peer is not used for a companion");
+		return (ret);
+	}
+
+	if (cfg->ip.s_addr != 0) {
+		ret = config_error(cp, "tunnel is not used for a companion");
+		return (ret);
+	}
+
+	if (cfg->route_count != 0)
+		return (config_error(cp, "route is not used for a companion"));
+
+	if (cfg->dns_count != 0)
+		return (config_error(cp, "dns is not used for a companion"));
+
+	if (cfg->liturgy_prefix.s_addr != 0) {
+		ret = config_error(cp,
+		    "liturgy_prefix is not used for a companion");
+		return (ret);
+	}
+
+	if (cfg->flags & VIGIL_CONFIG_FLAG_TIER6) {
+		ret = config_error(cp, "tier6 is not used for a companion");
+		return (ret);
+	}
+
+	if (config_validate_cathedral(cp) == -1)
+		return (-1);
+
+	if (cfg->spi != ((VIGIL_COMPANION_PHONE << 8) |
+	    VIGIL_COMPANION_DESKTOP) &&
+	    cfg->spi != ((VIGIL_COMPANION_DESKTOP << 8) |
+	    VIGIL_COMPANION_PHONE))
+		return (config_error(cp, "spi must be 0102 or 0201"));
+
+	return (0);
 }
 
 /*
@@ -974,9 +1036,11 @@ config_parse_mode(struct config_parser *cp, char *opt)
 		cp->cfg->mode = VIGIL_MODE_LITURGY;
 	} else if (!strcmp(opt, "gospel") || !strcmp(opt, "voice")) {
 		cp->cfg->mode = VIGIL_MODE_GOSPEL;
+	} else if (!strcmp(opt, "companion")) {
+		cp->cfg->mode = VIGIL_MODE_COMPANION;
 	} else {
-		ret = config_error(cp,
-		    "invalid mode '%s', accepted: tunnel|liturgy|gospel", opt);
+		ret = config_error(cp, "invalid mode '%s', accepted: "
+		    "tunnel|liturgy|gospel|companion", opt);
 		return (ret);
 	}
 

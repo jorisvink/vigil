@@ -16,6 +16,7 @@
 
 #include <sys/types.h>
 #include <sys/socket.h>
+#include <sys/statvfs.h>
 
 #include <arpa/inet.h>
 #include <netinet/in.h>
@@ -25,11 +26,22 @@
 #include <pthread.h>
 #include <stdio.h>
 #include <strings.h>
+#include <time.h>
 #include <unistd.h>
 
 #include "vigil.h"
 
 #include <libkyrka/libnyfe.h>
+
+/*
+ * The version of the sync between a phone and its desktop. Bump it
+ * whenever anything in the companion sync changes, a phone and its
+ * desktop only sync when they run the same version.
+ */
+#define VIGIL_COMPANION_VERSION		2
+
+/* The magic in front of the version, older builds do not have it. */
+#define VIGIL_COMPANION_MAGIC		0x5643
 
 /* The commands the platform gives us. */
 #define CHAT_COMMAND_SEND		1
@@ -37,6 +49,9 @@
 #define CHAT_COMMAND_STORED		3
 #define CHAT_COMMAND_DATA		4
 #define CHAT_COMMAND_DROP		5
+#define CHAT_COMMAND_CALL		6
+#define CHAT_COMMAND_SYNC		7
+#define CHAT_COMMAND_REQUEST		8
 
 /* The events we have for the platform. */
 #define CHAT_EVENT_MESSAGE		1
@@ -50,9 +65,18 @@
 #define CHAT_EVENT_ROSTER		9
 #define CHAT_EVENT_LEAVE		10
 #define CHAT_EVENT_RETRACT		11
+#define CHAT_EVENT_ECHO			12
+#define CHAT_EVENT_MIRROR		13
+#define CHAT_EVENT_DESKTOP		14
+
+/* The kinds of desktop event, unsent and queued are for a desktop. */
+#define CHAT_DESKTOP_RESYNC		1
+#define CHAT_DESKTOP_ASK		2
+#define CHAT_DESKTOP_UNSENT		3
+#define CHAT_DESKTOP_QUEUED		4
 
 /* Time between heartbeats we send to our peers. */
-#define CHAT_HEARTBEAT			(12 * 1000)
+#define CHAT_HEARTBEAT			(15 * 1000)
 
 /* Time before we re-send an un-acked message. */
 #define CHAT_RESEND			(5 * 1000)
@@ -71,7 +95,7 @@
 #define CHAT_RETRY_MAX			(60 * 60 * 1000)
 
 /* Time until we consider a peer offline. */
-#define CHAT_RX_TIMEOUT			(30 * 1000)
+#define CHAT_RX_TIMEOUT			(40 * 1000)
 
 /* Time between key management and cathedral updates. */
 #define CHAT_MANAGE_INTERVAL		(1 * 1000)
@@ -110,10 +134,10 @@
 #define CHAT_DATA_GROUP			\
     (sizeof(u_int8_t) + sizeof(u_int64_t) + sizeof(u_int32_t))
 
-/* Max size of a packet we put on the wire. */
+/* Max size of a parcel we put on the wire, a mirror with data is largest. */
 #define CHAT_WIRE_MAX			\
     (VIGIL_CHAT_DATA_MAX + sizeof(struct vigil_chat_data_head) + \
-    CHAT_DATA_GROUP + sizeof(u_int64_t))
+    CHAT_PARCEL_HEAD + CHAT_COMPANION_BATCH)
 
 /* Max size for a single chunk of data. */
 #define CHAT_CHUNKS_MAX			\
@@ -152,12 +176,53 @@
 /* Time the platform gets to pull data that arrived. */
 #define CHAT_DATA_WAIT			(60 * 1000)
 
-/* If we talk to gospel, don't send images. */
-#define CHAT_DATA_GOSPEL		\
-    "I sent you %s, but you are on gospel so you cannot open it, too bad."
-
 /* The name our avatar goes under. */
 #define CHAT_AVATAR_NAME		"avatar"
+
+/* The name of the data we send over our companion tunnel. */
+#define CHAT_COMPANION_NAME		"companion"
+
+/* The bit in the ref of a parcel to our phone that holds a request. */
+#define CHAT_REQUEST_REF		(1ULL << 63)
+
+/* The most parcels and bytes we hold in memory for our companion. */
+#define CHAT_COMPANION_ITEMS		4096
+#define CHAT_COMPANION_BYTES		(32 * 1024 * 1024)
+
+/* The most bytes our journal holds, and its part of the free space. */
+#define CHAT_JOURNAL_MAX		(1024ULL * 1024 * 1024)
+#define CHAT_JOURNAL_SHARE		10
+
+/* Time between checks of the free space on our disk. */
+#define CHAT_JOURNAL_MEASURE		(60 * 60 * 1000)
+
+/* The bytes an entry needs in our journal on top of its JSON and data. */
+#define CHAT_JOURNAL_EXTRA		64
+
+/* What our platform hands us for our desktop, an entry or a mark. */
+#define CHAT_SYNC_ENTRY			0
+#define CHAT_SYNC_RESET			1
+#define CHAT_SYNC_DONE			2
+
+/* The marks our platform puts around a full copy of our chats. */
+#define CHAT_SYNC_RESET_JSON		"{\"op\":\"reset\"}"
+#define CHAT_SYNC_DONE_JSON		"{\"op\":\"synced\"}"
+
+/* The most bytes of events we send our desktop in one go. */
+#define CHAT_COMPANION_BATCH		(32 * 1024)
+
+/* The count, data size and last seq in front of a journal parcel. */
+#define CHAT_PARCEL_HEAD		\
+    (2 * sizeof(u_int32_t) + sizeof(u_int64_t))
+
+/* The seq and JSON length in front of each entry in a journal parcel. */
+#define CHAT_ENTRY_HEAD			(sizeof(u_int64_t) + sizeof(u_int32_t))
+
+/* Time before we try to resolve the cathedral of our companion again. */
+#define CHAT_COMPANION_RESOLVE		(30 * 1000)
+
+/* Time between heartbeats to our companion while a call rings or runs. */
+#define CHAT_COMPANION_CALL_HEARTBEAT	(1 * 1000)
 
 /*
  * A data block we could be sending.
@@ -240,7 +305,9 @@ struct chat_msg {
 TAILQ_HEAD(chat_msg_list, chat_msg);
 
 /*
- * A message we received and handed to the platform.
+ * A message we received and handed to the platform. For a journal parcel
+ * from our phone, the seq it runs up to and if we are synced once it is
+ * stored.
  */
 struct chat_seen {
 	u_int64_t		id;
@@ -248,6 +315,8 @@ struct chat_seen {
 	u_int64_t		hash;
 	u_int64_t		token;
 	u_int64_t		avatar;
+	u_int64_t		journal;
+	u_int8_t		synced;
 	size_t			size;
 };
 
@@ -320,6 +389,7 @@ struct chat_tunnel {
 
 	KYRKA			*ctx;
 	struct chat_peer	*peer;
+	struct vigil_config	*cfg;
 
 	struct sockaddr_in	addr;
 	struct sockaddr_in	from;
@@ -436,7 +506,11 @@ struct chat_event {
 	u_int8_t			kind;
 	u_int8_t			peer;
 	u_int64_t			value;
+	u_int64_t			token;
 	int				mention;
+
+	u_int8_t			*json;
+	size_t				json_len;
 
 	struct chat_quote		quote;
 	struct chat_topic		topic;
@@ -501,6 +575,8 @@ static void	chat_avatar_check(struct chat_peer *, u_int8_t);
 
 static u_int64_t	chat_avatar_hash(const u_int8_t *, size_t);
 
+static u_int8_t		chat_local(void);
+
 static void	chat_token_ack(u_int64_t);
 static int	chat_nick_valid(const char *);
 static void	chat_name_report(struct chat_peer *);
@@ -550,6 +626,8 @@ static void	chat_commands_free(void);
 static void	chat_command_free(struct chat_command *);
 static void	chat_command_next(struct chat_command **);
 static int	chat_command_insert(struct chat_command *);
+static int	chat_command_blob(int, u_int64_t, const char *, size_t,
+		    const void *, size_t);
 static int	chat_command_queue(int, u_int8_t, u_int64_t,
 		    const struct chat_quote *, const struct chat_topic *,
 		    const struct chat_group *, const void *, size_t);
@@ -572,18 +650,20 @@ static int	chat_blob_room(u_int8_t, u_int64_t, size_t);
 static void	chat_parcels_free(void);
 static void	chat_parcels_expire(void);
 static void	chat_parcel_free(struct chat_parcel *);
+static void	chat_parcel_hold(struct chat_parcel *);
 
 static int	chat_data_kind_valid(int);
 static int	chat_data_name_valid(const u_int8_t *, size_t);
-static void	chat_data_gospel(struct chat_tunnel *, struct chat_msg *);
 static int	chat_data_arrived(struct chat_tunnel *, struct chat_rxfer *);
 static void	chat_data_discard(struct chat_tunnel *, struct chat_rxfer *);
+static void	chat_data_hold(struct chat_tunnel *, struct chat_rxfer *,
+		    u_int64_t);
 static int	chat_data_report(struct chat_tunnel *, struct chat_parcel *);
 static void	chat_data_ack(struct chat_tunnel *, u_int64_t,
 		    struct chat_rxfer *, u_int32_t);
 static int	chat_data_queue(u_int8_t, u_int64_t, const struct chat_group *,
 		    u_int64_t, int, const char *, const void *, size_t);
-static int	chat_data_tags(struct chat_rxfer *, u_int8_t, size_t *,
+static int	chat_data_tags(const u_int8_t *, size_t, size_t *,
 		    struct chat_group *, u_int64_t *);
 
 static const char	*chat_data_kind_name(int);
@@ -615,11 +695,86 @@ static int	chat_mention_char(char);
 static void	chat_mention_check(struct chat_event *);
 static int	chat_mention_name(const char *, const char *);
 
+static int	chat_events_room(void);
 static void	chat_events_free(void);
+static void	chat_event_free(struct chat_event *);
 static int	chat_event_insert(struct chat_event *);
+static size_t	chat_event_need(const struct chat_event *);
 static void	chat_events_take(struct chat_event_list *, size_t);
+static void	chat_event_echo(struct vigil_buf *, struct chat_event *);
+static void	chat_event_desktop(struct vigil_buf *, struct chat_event *);
+static void	chat_event_members(struct vigil_buf *, const u_int8_t *);
 static void	chat_event_render(struct vigil_buf *, struct chat_event *, int);
 static int	chat_event_queue(int, struct chat_peer *, u_int64_t,
+		    const u_int8_t *, size_t);
+
+static void	chat_companion_load(void);
+static void	chat_companion_free(void);
+static int	chat_companion_journal(void);
+static void	chat_companion_check(void);
+static int	chat_companion_room(size_t);
+static void	chat_companion_push(struct chat_blob *);
+static void	chat_companion_status(struct vigil_buf *);
+static int	chat_companion_mismatch(void);
+static void	chat_companion_version(const u_int8_t *);
+static void	chat_companion_peers(struct vigil_buf *,
+		    const struct vigil_companion_phone *);
+static void	chat_companion_hb_recv(struct chat_tunnel *,
+		    const struct vigil_chat_frame *);
+static void	chat_companion_heartbeat(struct chat_tunnel *,
+		    struct vigil_chat_frame *);
+
+static struct chat_blob	*chat_companion_blob(size_t);
+
+static void	chat_phone_pump(void);
+static void	chat_phone_self(void);
+static void	chat_phone_limit(void);
+static void	chat_phone_resync(void);
+static int	chat_phone_reserve(size_t);
+static void	chat_phone_release(size_t);
+static void	chat_phone_acked(u_int64_t);
+static size_t	chat_phone_need(size_t, size_t);
+static void	chat_phone_sync(struct chat_command *);
+static void	chat_phone_state(struct vigil_companion_phone *);
+static void	chat_phone_call(const struct vigil_chat_request *);
+static int	chat_phone_entry(const u_int8_t *, size_t, u_int32_t *);
+static void	chat_phone_desktop(const struct vigil_companion_desktop *);
+static int	chat_phone_valid(const struct vigil_chat_request *, size_t);
+static int	chat_phone_request(struct chat_tunnel *, struct chat_rxfer *);
+static int	chat_phone_tell(struct chat_event *, const u_int8_t *, size_t);
+static int	chat_phone_ask(const struct vigil_chat_request *,
+		    const u_int8_t *, size_t, u_int64_t);
+static int	chat_phone_send(const struct vigil_chat_request *,
+		    const u_int8_t *, size_t, u_int64_t);
+static void	chat_phone_entry_add(u_int8_t *, size_t *, u_int64_t,
+		    const u_int8_t *, u_int32_t);
+static int	chat_phone_write(const char *, size_t, const u_int8_t *,
+		    size_t);
+static int	chat_phone_queue(const char *, size_t, const u_int8_t *,
+		    size_t);
+
+static void	chat_desktop_told(void);
+static void	chat_desktop_pump(void);
+static void	chat_desktop_head(void);
+static void	chat_desktop_recall(void);
+static void	chat_desktop_unsync(void);
+static void	chat_desktop_acked(u_int64_t);
+static int	chat_desktop_done(const u_int8_t *, size_t);
+static void	chat_desktop_stored(u_int64_t, u_int8_t);
+static int	chat_desktop_is(const u_int8_t *, size_t, const char *);
+static u_int8_t	chat_desktop_mark(u_int8_t, const u_int8_t *, size_t);
+static void	chat_desktop_forward(struct chat_command *);
+static void	chat_desktop_state(struct vigil_companion_desktop *);
+static void	chat_desktop_unsent(const struct vigil_chat_request *);
+static void	chat_desktop_phone(const struct vigil_companion_phone *);
+static int	chat_desktop_mirror(struct chat_tunnel *, struct chat_rxfer *);
+static void	chat_desktop_request(const struct vigil_chat_request *,
+		    const u_int8_t *, size_t);
+static int	chat_desktop_queue(const struct vigil_chat_request *,
+		    const void *, size_t);
+static int	chat_desktop_hold(const struct vigil_chat_request *,
+		    const u_int8_t *, size_t);
+static void	chat_desktop_queued(const struct vigil_chat_request *,
 		    const u_int8_t *, size_t);
 
 /* Are we alive? */
@@ -696,7 +851,98 @@ static u_int32_t			transfers = 0;
 static u_int32_t			receiving = 0;
 
 /*
- * Setup the chat part of gospel.
+ * The other side of our companion tunnel, its configuration and if we are
+ * the phone or its desktop, 0 without a companion.
+ */
+static struct chat_peer			companion;
+static u_int8_t				companion_role = 0;
+static struct vigil_config		*companion_cfg = NULL;
+
+/* The companion configuration the platform gave us, and its serial. */
+static size_t				companion_len = 0;
+static u_int32_t			companion_serial = 0;
+static u_int32_t			companion_loaded = 0;
+static char				companion_text[VIGIL_CONFIG_MAX];
+
+/* The cathedral of our companion and when we may resolve it again. */
+static int				companion_resolved = 0;
+static u_int64_t			companion_resolve = 0;
+static struct sockaddr_in		companion_addr;
+
+/* The ref of our last parcel for our companion. */
+static u_int64_t			companion_refs = 0;
+
+/* Set once we sent our desktop who we are, with the nickname we sent. */
+static int				companion_told = 0;
+static char				companion_nick[VIGIL_CHAT_NICK_MAX + 1];
+
+/* The serial of the avatar we last sent our desktop. */
+static u_int32_t			companion_avatar = 0;
+
+/* The ref of the last blob our platform handed us for our companion. */
+static volatile u_int64_t		companion_blobs = 0;
+
+/*
+ * The journal of what we hold for our desktop as a phone, or the seq up to
+ * which we stored what our phone sent us as a desktop. As a phone we sent
+ * up to journal_sent and send nothing until we heard from our desktop
+ * since our tunnel to it came up.
+ */
+static struct vigil_journal		journal;
+static u_int64_t			journal_sent = 0;
+static int				journal_heard = 0;
+
+/*
+ * As a desktop, the sends and asks we hold for our phone until it acks
+ * them. We sent up to requests_sent, and tell our platform about the sends
+ * we held when we started, up to requests_held.
+ */
+static struct vigil_journal		requests;
+static u_int64_t			requests_sent = 0;
+static u_int64_t			requests_told = 0;
+static u_int64_t			requests_held = 0;
+
+/*
+ * As a desktop, the seq and ref of the request we sent our phone last, and
+ * that seq once our phone sent us the record of what it did with it.
+ */
+static u_int64_t			requests_head = 0;
+static u_int64_t			requests_ref = 0;
+static u_int64_t			requests_done = 0;
+
+/*
+ * As a phone, the seqs of the last reset and synced marks we wrote, if we
+ * lost an entry for our desktop and if we asked our platform for a resync.
+ */
+static int				companion_dirty = 0;
+static int				companion_asked = 0;
+static u_int64_t			companion_reset = 0;
+static u_int64_t			companion_synced = 0;
+
+/* As a desktop, the seq of the last entry in the journal of our phone. */
+static u_int64_t			companion_last = 0;
+
+/* The sync version of our companion and if we heard it yet. */
+static u_int16_t			companion_other = 0;
+static int				companion_known = 0;
+
+/*
+ * As a phone, the bytes in our journal, the bytes our platform handed us
+ * that are not in our journal yet, the most bytes our journal may hold and
+ * when we check the free space on our disk again.
+ */
+static volatile u_int64_t		companion_journal = 0;
+static volatile u_int64_t		companion_queued = 0;
+static volatile u_int64_t		companion_limit = 0;
+static u_int64_t			companion_measure = 0;
+
+/* The last state of our phone and of our desktop, sent or received. */
+static struct vigil_companion_phone	companion_phone;
+static struct vigil_companion_desktop	companion_desktop;
+
+/*
+ * Setup the chat part of gospel, or only our companion tunnel on a
+ * desktop that runs without gospel.
  */
 void
 vigil_chat_init(void)
@@ -704,8 +950,8 @@ vigil_chat_init(void)
 	int		idx;
 
 	PRECOND(running == 0);
-	PRECOND(vigil->gospel != NULL);
-	PRECOND(vigil->gospel->mode == VIGIL_MODE_GOSPEL);
+	PRECOND(vigil->gospel != NULL ||
+	    vigil->config->mode == VIGIL_MODE_COMPANION);
 
 	memset(sent, 0, sizeof(sent));
 	memset(&signaling, 0, sizeof(signaling));
@@ -716,9 +962,17 @@ vigil_chat_init(void)
 		peers[idx].id = idx;
 	}
 
+	memset(&companion, 0, sizeof(companion));
+	TAILQ_INIT(&companion.outbox);
+
+	companion_role = 0;
+	companion_cfg = NULL;
+	companion_loaded = 0;
+
 	named = 0;
 
-	if (vigil->gospel->keys & VIGIL_CONFIG_KEY_NAME_SIGNATURE) {
+	if (vigil->gospel != NULL &&
+	    (vigil->gospel->keys & VIGIL_CONFIG_KEY_NAME_SIGNATURE)) {
 		if (vigil_config_name_verify(vigil->gospel,
 		    vigil->gospel->spi & 0xff, vigil->gospel->instance,
 		    vigil->gospel->name_signature,
@@ -748,7 +1002,8 @@ vigil_chat_init(void)
 
 	vigil_unlock(&lock);
 
-	if (chat_liturgy_init(&signaling, VIGIL_CHAT_SIGNAL_GROUP) == -1) {
+	if (vigil->gospel != NULL &&
+	    chat_liturgy_init(&signaling, VIGIL_CHAT_SIGNAL_GROUP) == -1) {
 		vigil_log(LOG_NOTICE, "chats are not available");
 		return;
 	}
@@ -785,7 +1040,11 @@ vigil_chat_cleanup(void)
 		portrait_hash = 0;
 	}
 
-	chat_liturgy_cleanup(&signaling);
+	chat_companion_free();
+
+	if (vigil->gospel != NULL)
+		chat_liturgy_cleanup(&signaling);
+
 	chat_commands_free();
 	chat_parcels_free();
 	chat_events_free();
@@ -805,9 +1064,14 @@ vigil_chat_update(void)
 	if (!running)
 		return;
 
+	chat_companion_load();
 	chat_commands_run();
 	chat_avatar_update();
 	chat_parcels_expire();
+	chat_companion_check();
+
+	if (vigil->gospel == NULL)
+		return;
 
 	local = vigil->gospel->spi & 0xff;
 
@@ -841,12 +1105,16 @@ vigil_chat_rebind(void)
 	if (!running)
 		return;
 
-	chat_liturgy_rebind(&signaling);
+	if (vigil->gospel != NULL)
+		chat_liturgy_rebind(&signaling);
 
 	for (idx = 0; idx < KYRKA_PEERS_PER_FLOCK; idx++) {
 		if (peers[idx].tunnel != NULL)
 			chat_tunnel_rebind(peers[idx].tunnel);
 	}
+
+	if (companion.tunnel != NULL)
+		chat_tunnel_rebind(companion.tunnel);
 }
 
 /*
@@ -866,6 +1134,9 @@ vigil_chat_poke(void)
 		if (peers[idx].tunnel != NULL)
 			chat_tunnel_poke(peers[idx].tunnel);
 	}
+
+	if (companion.tunnel != NULL)
+		chat_tunnel_poke(companion.tunnel);
 }
 
 /*
@@ -901,6 +1172,8 @@ vigil_chat_reply(u_int8_t peer, u_int64_t ref, u_int8_t author,
 	PRECOND(hash != 0);
 	PRECOND(text != NULL);
 	PRECOND(len > 0 && len <= VIGIL_CHAT_REPLY_MAX);
+
+	memset(&quote, 0, sizeof(quote));
 
 	quote.hash = hash;
 	quote.author = author;
@@ -993,7 +1266,7 @@ vigil_chat_group_roster(u_int8_t peer, u_int64_t ref, u_int64_t id,
 	group.id = id;
 	group.state = state;
 	group.serial = serial;
-	group.owner = vigil->gospel->spi & 0xff;
+	group.owner = chat_local();
 	group.type = VIGIL_CHAT_TYPE_ROSTER;
 	memcpy(group.members, members, sizeof(group.members));
 
@@ -1101,8 +1374,8 @@ vigil_chat_group_topic(u_int8_t peer, u_int64_t ref, u_int64_t id,
 
 	group.id = id;
 	group.serial = serial;
+	group.owner = chat_local();
 	group.type = VIGIL_CHAT_TYPE_TEXT;
-	group.owner = vigil->gospel->spi & 0xff;
 
 	topic.id = tid;
 	topic.set = 1;
@@ -1481,6 +1754,160 @@ vigil_chat_avatar(const void *data, size_t len)
 }
 
 /*
+ * As the desktop of a phone, have our phone dial, answer, decline or hang
+ * up a call with the given peer.
+ */
+int
+vigil_chat_call(int op, u_int8_t peer)
+{
+	int		ret;
+
+	PRECOND(op == VIGIL_COMPANION_DIAL ||
+	    op == VIGIL_COMPANION_ANSWER ||
+	    op == VIGIL_COMPANION_DECLINE ||
+	    op == VIGIL_COMPANION_HANGUP);
+	PRECOND(peer > 0 && peer < KYRKA_PEERS_PER_FLOCK);
+
+	ret = chat_command_queue(CHAT_COMMAND_CALL,
+	    peer, op, NULL, NULL, NULL, NULL, 0);
+
+	return (ret);
+}
+
+/*
+ * As a phone, send the given JSON from our platform to our desktop with
+ * the given data, if any. Returns -1 if we are not a phone or our journal
+ * has no room for it.
+ */
+int
+vigil_chat_companion_sync(const char *json, size_t len, const void *data,
+    size_t size)
+{
+	int		ret;
+	size_t		need;
+
+	PRECOND(json != NULL);
+	PRECOND(len > 0 && len <= VIGIL_COMPANION_JSON_MAX);
+	PRECOND(data != NULL || size == 0);
+	PRECOND(size <= VIGIL_CHAT_DATA_MAX);
+
+	if (companion_role != VIGIL_COMPANION_PHONE)
+		return (-1);
+
+	need = chat_phone_need(len, size);
+
+	if (chat_phone_reserve(need) == -1)
+		return (-1);
+
+	ret = chat_command_blob(CHAT_COMMAND_SYNC,
+	    CHAT_SYNC_ENTRY, json, len, data, size);
+
+	return (ret);
+}
+
+/*
+ * As a phone, mark the start of a full copy of our chats for our desktop,
+ * or its end when done is 1. Returns -1 if we are not a phone.
+ */
+int
+vigil_chat_companion_resync(int done)
+{
+	int		ret;
+
+	PRECOND(done == 0 || done == 1);
+
+	if (companion_role != VIGIL_COMPANION_PHONE)
+		return (-1);
+
+	ret = chat_command_queue(CHAT_COMMAND_SYNC, 0,
+	    done ? CHAT_SYNC_DONE : CHAT_SYNC_RESET, NULL, NULL, NULL, NULL, 0);
+
+	return (ret);
+}
+
+/*
+ * As a desktop, forget that we are synced so our phone sends us a full
+ * resync. Returns -1 if we are not a desktop.
+ */
+int
+vigil_chat_companion_unsync(void)
+{
+	int		ret;
+
+	if (companion_role != VIGIL_COMPANION_DESKTOP)
+		return (-1);
+
+	ret = chat_command_queue(CHAT_COMMAND_SYNC, 0, CHAT_SYNC_RESET,
+	    NULL, NULL, NULL, NULL, 0);
+
+	return (ret);
+}
+
+/*
+ * As the desktop of a phone, ask the platform of our phone to do what the
+ * given JSON says with the given data, if any. The ref is the id of the
+ * ask, our phone runs an ask with a ref only once.
+ */
+int
+vigil_chat_companion_ask(u_int64_t ref, const char *json, size_t len,
+    const void *data, size_t size)
+{
+	int				ret;
+	struct vigil_chat_request	req;
+	u_int8_t			*body;
+
+	PRECOND(ref & VIGIL_CHAT_COMPANION_REF);
+	PRECOND(json != NULL);
+	PRECOND(len > 0 && len <= VIGIL_CHAT_MESSAGE_MAX);
+	PRECOND(data != NULL || size == 0);
+	PRECOND(size <= VIGIL_CHAT_DATA_MAX);
+
+	memset(&req, 0, sizeof(req));
+
+	req.ref = ref;
+	req.ask = len;
+	req.op = VIGIL_COMPANION_ASK;
+
+	if ((body = malloc(len + size)) == NULL)
+		fatal("malloc: failed to allocate ask");
+
+	memcpy(body, json, len);
+
+	if (size > 0)
+		memcpy(body + len, data, size);
+
+	ret = chat_desktop_queue(&req, body, len + size);
+
+	nyfe_mem_zero(body, len + size);
+	free(body);
+
+	return (ret);
+}
+
+/*
+ * As the desktop of a phone, have our phone send the text or data as the
+ * given request in host byte order says, to a peer or to every member the
+ * request names in one go.
+ */
+int
+vigil_chat_companion_send(const struct vigil_chat_request *req,
+    const void *data, size_t len)
+{
+	int		ret;
+
+	PRECOND(req != NULL);
+	PRECOND(req->op == VIGIL_COMPANION_SEND);
+	PRECOND(req->ref & VIGIL_CHAT_COMPANION_REF);
+	PRECOND(req->len <= sizeof(req->name));
+	PRECOND(data != NULL);
+	PRECOND(len > 0 && len <= VIGIL_CHAT_DATA_MAX);
+
+	ret = chat_desktop_queue(req, data, len);
+
+	return (ret);
+}
+
+/*
  * Grab all events currently pending and return them as JSON.
  */
 size_t
@@ -1500,7 +1927,7 @@ vigil_chat_events(char *buf, size_t len)
 	vigil_buf_init(&out, buf, len);
 
 	TAILQ_INIT(&taken);
-	chat_events_take(&taken, (len - 2) / CHAT_EVENT_JSON_MAX);
+	chat_events_take(&taken, len - 2);
 
 	vigil_buf_appendf(&out, "[");
 
@@ -1510,8 +1937,7 @@ vigil_chat_events(char *buf, size_t len)
 		chat_event_render(&out, evt, first);
 		first = 0;
 
-		nyfe_mem_zero(evt, sizeof(*evt));
-		free(evt);
+		chat_event_free(evt);
 	}
 
 	vigil_buf_appendf(&out, "]");
@@ -1542,6 +1968,14 @@ vigil_chat_status(struct vigil_buf *buf)
 
 	if (!running)
 		return;
+
+	if (vigil->gospel == NULL) {
+		vigil_buf_appendf(buf, ",\"chat\":{\"session\":%" PRIu64,
+		    session);
+		chat_companion_status(buf);
+		vigil_buf_appendf(buf, "}");
+		return;
+	}
 
 	vigil_buf_appendf(buf,
 	    ",\"chat\":{\"session\":%" PRIu64 ",\"alive\":%s,\"id\":\"%02x\"",
@@ -1608,7 +2042,9 @@ vigil_chat_status(struct vigil_buf *buf)
 		first = 0;
 	}
 
-	vigil_buf_appendf(buf, "]}");
+	vigil_buf_appendf(buf, "]");
+	chat_companion_status(buf);
+	vigil_buf_appendf(buf, "}");
 }
 
 /*
@@ -1651,34 +2087,7 @@ chat_liturgy_init(struct chat_liturgy *lit, u_int16_t id)
 	if (id == VIGIL_CHAT_SIGNAL_GROUP)
 		cfg.remembrance = 1;
 
-	if (kyrka_cathedral_config(lit->ctx, &cfg) == -1) {
-		fatal("failed to configure cathedral: %d",
-		    kyrka_last_error(lit->ctx));
-	}
-
-	if (kyrka_cathedral_secret_load(lit->ctx, gospel->cathedral_secret,
-	    sizeof(gospel->cathedral_secret)) == -1) {
-		fatal("kyrka_cathedral_secret_load: %d",
-		    kyrka_last_error(lit->ctx));
-	}
-
-	if (kyrka_cathedral_cosk_load(lit->ctx, gospel->cathedral_cosk,
-	    sizeof(gospel->cathedral_cosk)) == -1) {
-		fatal("kyrka_cathedral_cosk_load: %d",
-		    kyrka_last_error(lit->ctx));
-	}
-
-	if (gospel->flags & VIGIL_CONFIG_FLAG_SHROUD) {
-		if (kyrka_shroud_enable(lit->ctx) == -1) {
-			fatal("failed to enable shroud: %d",
-			    kyrka_last_error(lit->ctx));
-		}
-	}
-
-	if (kyrka_mtu_size(lit->ctx, gospel->mtu) == -1) {
-		fatal("failed to set libkyrka mtu size: %d",
-		    kyrka_last_error(lit->ctx));
-	}
+	vigil_kyrka_cathedral(lit->ctx, &cfg, gospel, 0, gospel->mtu);
 
 	return (0);
 }
@@ -2014,15 +2423,16 @@ chat_tunnel_new(struct chat_peer *peer, struct vigil_cathedral *cathedral)
 	struct kyrka_cathedral_cfg	cfg;
 	struct chat_msg			*msg;
 	struct chat_tunnel		*tun;
-	u_int8_t			local;
 	struct vigil_config		*gospel;
 
 	PRECOND(peer != NULL);
 	PRECOND(cathedral != NULL);
 	PRECOND(peer->tunnel == NULL);
 
-	gospel = vigil->gospel;
-	local = gospel->spi & 0xff;
+	if (peer == &companion)
+		gospel = companion_cfg;
+	else
+		gospel = vigil->gospel;
 
 	tun = calloc(1, sizeof(*tun));
 	if (tun == NULL)
@@ -2038,9 +2448,8 @@ chat_tunnel_new(struct chat_peer *peer, struct vigil_cathedral *cathedral)
 
 	tun->msgid = 1;
 	tun->peer = peer;
+	tun->cfg = gospel;
 	tun->io.handle = chat_tunnel_read;
-
-	nyfe_random_bytes(&tun->local_uid, sizeof(tun->local_uid));
 
 	memcpy(&tun->cathedral, cathedral, sizeof(*cathedral));
 	memcpy(&tun->addr, &cathedral->addr, sizeof(cathedral->addr));
@@ -2049,51 +2458,29 @@ chat_tunnel_new(struct chat_peer *peer, struct vigil_cathedral *cathedral)
 	if (tun->ctx == NULL)
 		fatal("failed to create chat context");
 
+	nyfe_random_bytes(&tun->local_uid, sizeof(tun->local_uid));
+
 	memset(&cfg, 0, sizeof(cfg));
 
 	cfg.udata = tun;
 	cfg.send = chat_cathedral_send;
-	cfg.tunnel = (local << 8) | peer->id;
 	cfg.identity = gospel->cathedral_id;
-	cfg.flock_src = gospel->cathedral_flock | VIGIL_CHAT_FLOCK_DOMAIN;
+
+	if (peer == &companion) {
+		cfg.tunnel = gospel->spi;
+		cfg.flock_src = gospel->cathedral_flock;
+	} else {
+		cfg.tunnel = ((gospel->spi & 0xff) << 8) | peer->id;
+		cfg.flock_src = gospel->cathedral_flock |
+		    VIGIL_CHAT_FLOCK_DOMAIN;
+	}
+
 	cfg.flock_dst = cfg.flock_src;
 
 	if (gospel->flags & VIGIL_CONFIG_FLAG_COMMIXTION)
 		cfg.hops = VIGIL_COMMIXTION_HOPS;
 
-	if (gospel->flags & VIGIL_CONFIG_FLAG_SHROUD) {
-		if (kyrka_shroud_enable(tun->ctx) == -1) {
-			fatal("failed to enable shroud: %d",
-			    kyrka_last_error(tun->ctx));
-		}
-	}
-
-	if (kyrka_cathedral_config(tun->ctx, &cfg) == -1) {
-		fatal("failed to configure cathedral: %d",
-		    kyrka_last_error(tun->ctx));
-	}
-
-	if (kyrka_device_kek_load(tun->ctx, gospel->kek,
-	    sizeof(gospel->kek)) == -1) {
-		fatal("kyrka_device_kek_load: %d", kyrka_last_error(tun->ctx));
-	}
-
-	if (kyrka_cathedral_secret_load(tun->ctx, gospel->cathedral_secret,
-	    sizeof(gospel->cathedral_secret)) == -1) {
-		fatal("kyrka_cathedral_secret_load: %d",
-		    kyrka_last_error(tun->ctx));
-	}
-
-	if (kyrka_cathedral_cosk_load(tun->ctx, gospel->cathedral_cosk,
-	    sizeof(gospel->cathedral_cosk)) == -1) {
-		fatal("kyrka_cathedral_cosk_load: %d",
-		    kyrka_last_error(tun->ctx));
-	}
-
-	if (kyrka_mtu_size(tun->ctx, gospel->mtu) == -1) {
-		fatal("failed to set libkyrka mtu size: %d",
-		    kyrka_last_error(tun->ctx));
-	}
+	vigil_kyrka_cathedral(tun->ctx, &cfg, gospel, 1, gospel->mtu);
 
 	if (kyrka_heaven_ifc(tun->ctx, chat_heaven_input, tun) == -1)
 		fatal("failed to set heaven interface");
@@ -2154,6 +2541,13 @@ chat_cathedral_check(struct chat_tunnel *tun)
 
 	tun->cathedral.alive = 0;
 	relayed = vigil_inet_match(&tun->addr, &tun->cathedral.addr);
+
+	if (tun->peer == &companion) {
+		tun->cathedral.last = vigil->now;
+		tun->cathedral.timeout = VIGIL_CATHEDRAL_TIMEOUT_INIT;
+		tun->next_notify = 0;
+		return;
+	}
 
 	if (vigil_call_cathedral_pick(&tun->cathedral) == -1) {
 		tun->cathedral.last = vigil->now;
@@ -2295,7 +2689,7 @@ chat_tunnel_manage(struct chat_tunnel *tun)
 			    kyrka_last_error(tun->ctx));
 		}
 
-		if ((vigil->gospel->flags & VIGIL_CONFIG_FLAG_P2P) &&
+		if ((tun->cfg->flags & VIGIL_CONFIG_FLAG_P2P) &&
 		    kyrka_cathedral_nat_detection(tun->ctx) == -1) {
 			vigil_log(LOG_NOTICE, "[chat] nat detection: %d",
 			    kyrka_last_error(tun->ctx));
@@ -2486,7 +2880,7 @@ chat_tunnel_event(KYRKA *ctx, union kyrka_event *evt, void *udata)
 	case KYRKA_EVENT_PEER_DISCOVERY:
 		chat_cathedral_alive(tun);
 
-		if (!(vigil->gospel->flags & VIGIL_CONFIG_FLAG_P2P))
+		if (!(tun->cfg->flags & VIGIL_CONFIG_FLAG_P2P))
 			break;
 
 		memset(&sin, 0, sizeof(sin));
@@ -2565,6 +2959,17 @@ chat_heaven_input(struct kyrka_packet *pkt, u_int64_t seq, void *udata)
 	if (pkt->type != KYRKA_PACKET_TYPE_IP)
 		return;
 
+	if (tun->peer == &companion && pkt->length == VIGIL_VOICE_PAYLOAD) {
+		if (companion_role == VIGIL_COMPANION_PHONE) {
+			vigil_voice_relay_input(kyrka_packet_data(pkt),
+			    pkt->length);
+		} else {
+			vigil_voice_relay_play(kyrka_packet_data(pkt),
+			    pkt->length);
+		}
+		return;
+	}
+
 	if (pkt->length == sizeof(struct vigil_chat_chunk)) {
 		chat_chunk_recv(tun, kyrka_packet_data(pkt));
 		return;
@@ -2582,6 +2987,12 @@ chat_heaven_input(struct kyrka_packet *pkt, u_int64_t seq, void *udata)
 		return;
 
 	if (len > sizeof(frame->data))
+		return;
+
+	if (tun->peer == &companion &&
+	    frame->type != VIGIL_CHAT_TYPE_ACK &&
+	    frame->type != VIGIL_CHAT_TYPE_HEARTBEAT &&
+	    frame->type != VIGIL_CHAT_TYPE_DATA_ACK)
 		return;
 
 	switch (frame->type) {
@@ -2668,7 +3079,7 @@ chat_cathedral_send(struct kyrka_packet *pkt, u_int64_t magic, void *udata)
 	memcpy(&sin, &tun->cathedral.addr, sizeof(sin));
 
 	if (magic == KYRKA_CATHEDRAL_NAT_MAGIC)
-		sin.sin_port = htons(vigil->gospel->cathedral_nat_port);
+		sin.sin_port = htons(tun->cfg->cathedral_nat_port);
 
 	ptr = kyrka_packet_sendbuf(tun->ctx, pkt, &len);
 	if (ptr == NULL)
@@ -2708,7 +3119,7 @@ chat_p2p_follow(struct chat_tunnel *tun)
 		return;
 	}
 
-	if (!(vigil->gospel->flags & VIGIL_CONFIG_FLAG_P2P))
+	if (!(tun->cfg->flags & VIGIL_CONFIG_FLAG_P2P))
 		return;
 
 	if (!vigil_inet_match(&tun->addr, &tun->cathedral.addr))
@@ -2838,7 +3249,7 @@ chat_avatar_update(void)
 
 /*
  * Send our avatar to the peer of the given tunnel once we heard from it,
- * and again when ours changes. Peers on gospel cannot take it.
+ * and again when ours changes.
  */
 static void
 chat_avatar_push(struct chat_tunnel *tun)
@@ -2846,6 +3257,9 @@ chat_avatar_push(struct chat_tunnel *tun)
 	struct chat_msg		*msg;
 
 	PRECOND(tun != NULL);
+
+	if (tun->peer == &companion)
+		return;
 
 	if (!tun->heard)
 		return;
@@ -3027,12 +3441,18 @@ chat_frame_send(struct chat_tunnel *tun, struct chat_msg *msg)
 		memcpy(hb->name, nick, sizeof(hb->name));
 		vigil_unlock(&lock);
 
+		if (tun->peer == &companion)
+			chat_companion_heartbeat(tun, frame);
+
 		tun->greeted = 1;
 		tun->typed = hb->typing;
 
 		if (vigil->now < tun->holepunch) {
 			tun->next_heartbeat = vigil->now +
 			    CHAT_HOLEPUNCH_INTERVAL;
+		} else if (tun->peer == &companion &&
+		    companion_role == VIGIL_COMPANION_DESKTOP) {
+			tun->next_heartbeat = UINT64_MAX;
 		} else {
 			tun->next_heartbeat = vigil->now + CHAT_HEARTBEAT;
 		}
@@ -3113,6 +3533,14 @@ chat_ack_recv(struct chat_tunnel *tun, u_int64_t id)
 	if (tun->xfer != NULL && tun->xfer->msg == msg)
 		chat_xfer_free(tun);
 
+	if (tun->peer == &companion && companion_role == VIGIL_COMPANION_PHONE)
+		chat_phone_acked(msg->ref);
+
+	if (tun->peer == &companion &&
+	    companion_role == VIGIL_COMPANION_DESKTOP &&
+	    (msg->ref & CHAT_REQUEST_REF))
+		chat_desktop_acked(msg->ref & ~CHAT_REQUEST_REF);
+
 	TAILQ_REMOVE(&tun->peer->outbox, msg, wlist);
 	chat_msg_free(msg);
 }
@@ -3141,16 +3569,18 @@ chat_hb_recv(struct chat_tunnel *tun, struct vigil_chat_frame *frame)
 	if (chat_nick_valid(name) == -1)
 		name[0] = '\0';
 
-	if (strcmp(name, peer->nick)) {
-		vigil_log(LOG_INFO, "[chat] %02x is now known as '%s'",
-		    peer->id, name);
-		memcpy(peer->nick, name, sizeof(name));
-		peer->reported = 0;
-	}
+	if (peer != &companion) {
+		if (strcmp(name, peer->nick)) {
+			vigil_log(LOG_INFO, "[chat] %02x is now known as '%s'",
+			    peer->id, name);
+			memcpy(peer->nick, name, sizeof(name));
+			peer->reported = 0;
+		}
 
-	chat_hb_name(peer, hb);
-	chat_name_report(peer);
-	chat_avatar_check(peer, hb->features);
+		chat_hb_name(peer, hb);
+		chat_name_report(peer);
+		chat_avatar_check(peer, hb->features);
+	}
 
 	tun->heard = 1;
 	tun->features = hb->features;
@@ -3167,8 +3597,17 @@ chat_hb_recv(struct chat_tunnel *tun, struct vigil_chat_frame *frame)
 		tun->avatar_serial = 0;
 	}
 
+	if (peer == &companion)
+		chat_companion_hb_recv(tun, frame);
+
 	if (tun->remote_uid == hb->uid)
 		return;
+
+	if (peer == &companion && companion_role == VIGIL_COMPANION_PHONE)
+		memset(&companion_phone, 0, sizeof(companion_phone));
+
+	if (peer == &companion && companion_role == VIGIL_COMPANION_DESKTOP)
+		memset(&companion_desktop, 0, sizeof(companion_desktop));
 
 	if (tun->remote_uid != 0) {
 		tun->seen_next = 0;
@@ -3301,6 +3740,7 @@ chat_text_recv(struct chat_tunnel *tun, u_int64_t id,
 	seen->size = 0;
 	seen->hash = hash;
 	seen->avatar = 0;
+	seen->journal = 0;
 	seen->token = tokens;
 	seen->age = vigil->now;
 
@@ -3350,6 +3790,8 @@ chat_reply_recv(struct chat_tunnel *tun, u_int64_t id,
 
 	if (len < head)
 		return;
+
+	memset(&quote, 0, sizeof(quote));
 
 	quote.author = reply->author;
 	quote.hash = be64toh(reply->hash);
@@ -4167,6 +4609,8 @@ chat_token_ack(u_int64_t token)
 		if (chat_tunnel_ack(peers[idx].tunnel, token) != -1)
 			return;
 	}
+
+	(void)chat_tunnel_ack(companion.tunnel, token);
 }
 
 /*
@@ -4187,6 +4631,11 @@ chat_tunnel_ack(struct chat_tunnel *tun, u_int64_t token)
 
 		tun->seen[slot].token = 0;
 		chat_ack_queue(tun, tun->seen[slot].id);
+
+		if (tun->peer == &companion && tun->seen[slot].journal != 0) {
+			chat_desktop_stored(tun->seen[slot].journal,
+			    tun->seen[slot].synced);
+		}
 
 		if (tun->seen[slot].avatar != 0)
 			tun->peer->avatar_held = tun->seen[slot].avatar;
@@ -4211,7 +4660,9 @@ chat_command_queue(int type, u_int8_t peer, u_int64_t value,
 	PRECOND(type == CHAT_COMMAND_SEND ||
 	    type == CHAT_COMMAND_FORGET ||
 	    type == CHAT_COMMAND_DROP ||
-	    type == CHAT_COMMAND_STORED);
+	    type == CHAT_COMMAND_STORED ||
+	    type == CHAT_COMMAND_CALL ||
+	    type == CHAT_COMMAND_SYNC);
 	PRECOND(data != NULL || len == 0);
 	PRECOND(len <= VIGIL_CHAT_MESSAGE_MAX);
 
@@ -4235,6 +4686,48 @@ chat_command_queue(int type, u_int8_t peer, u_int64_t value,
 
 	if (len > 0)
 		memcpy(cmd->data, data, len);
+
+	return (chat_command_insert(cmd));
+}
+
+/*
+ * Queue a command for the event loop that carries the given JSON with the
+ * given data after it in a blob, returns -1 if we are not taking any or
+ * have no room for it.
+ */
+static int
+chat_command_blob(int type, u_int64_t value, const char *json, size_t len,
+    const void *data, size_t size)
+{
+	struct chat_command	*cmd;
+	struct chat_blob	*blob;
+
+	PRECOND(type == CHAT_COMMAND_SYNC || type == CHAT_COMMAND_REQUEST);
+	PRECOND(json != NULL);
+	PRECOND(data != NULL || size == 0);
+
+	if ((blob = calloc(1, sizeof(*blob))) == NULL)
+		fatal("calloc: failed to allocate command blob");
+
+	blob->refs = 1;
+	blob->size = len + size;
+	blob->ref = vigil_atomic_add(&companion_blobs, 1) + 1;
+
+	if ((blob->data = malloc(blob->size)) == NULL)
+		fatal("malloc: failed to allocate command blob data");
+
+	memcpy(blob->data, json, len);
+
+	if (size > 0)
+		memcpy(blob->data + len, data, size);
+
+	if ((cmd = calloc(1, sizeof(*cmd))) == NULL)
+		fatal("calloc: failed to allocate chat command");
+
+	cmd->len = len;
+	cmd->blob = blob;
+	cmd->type = type;
+	cmd->value = value;
 
 	return (chat_command_insert(cmd));
 }
@@ -4404,7 +4897,14 @@ chat_command_insert(struct chat_command *cmd)
 static void
 chat_command_free(struct chat_command *cmd)
 {
+	size_t		need;
+
 	PRECOND(cmd != NULL);
+
+	if (cmd->type == CHAT_COMMAND_SYNC && cmd->value == CHAT_SYNC_ENTRY) {
+		need = chat_phone_need(cmd->len, cmd->blob->size - cmd->len);
+		chat_phone_release(need);
+	}
 
 	if (cmd->blob != NULL)
 		chat_blob_release(cmd->blob);
@@ -4423,7 +4923,7 @@ chat_commands_run(void)
 	u_int8_t		local;
 	struct chat_peer	*peer;
 
-	local = vigil->gospel->spi & 0xff;
+	local = chat_local();
 
 	for (;;) {
 		chat_command_next(&cmd);
@@ -4431,6 +4931,19 @@ chat_commands_run(void)
 			break;
 
 		peer = &peers[cmd->peer];
+
+		/* Without gospel we are a desktop, all goes via our phone. */
+		if (vigil->gospel == NULL) {
+			if (cmd->type == CHAT_COMMAND_STORED)
+				chat_token_ack(cmd->value);
+			else if (cmd->type == CHAT_COMMAND_SYNC)
+				chat_desktop_unsync();
+			else if (companion_role == VIGIL_COMPANION_DESKTOP)
+				chat_desktop_forward(cmd);
+
+			chat_command_free(cmd);
+			continue;
+		}
 
 		switch (cmd->type) {
 		case CHAT_COMMAND_SEND:
@@ -4456,6 +4969,13 @@ chat_commands_run(void)
 			if (cmd->peer != local)
 				chat_outbox_data(peer, cmd->value, cmd->blob);
 			break;
+		case CHAT_COMMAND_SYNC:
+			if (companion_role == VIGIL_COMPANION_PHONE)
+				chat_phone_sync(cmd);
+			break;
+		case CHAT_COMMAND_REQUEST:
+		case CHAT_COMMAND_CALL:
+			fatal("chat command %d is only for a desktop", cmd->type);
 		}
 
 		chat_command_free(cmd);
@@ -4497,6 +5017,9 @@ chat_event_queue(int type, struct chat_peer *peer, u_int64_t value,
 	PRECOND(data != NULL || len == 0);
 	PRECOND(len <= VIGIL_CHAT_MESSAGE_MAX);
 
+	if (peer == &companion)
+		return (0);
+
 	evt = calloc(1, sizeof(*evt));
 	if (evt == NULL)
 		fatal("calloc: failed to allocate chat event");
@@ -4510,6 +5033,9 @@ chat_event_queue(int type, struct chat_peer *peer, u_int64_t value,
 
 	if (len > 0)
 		memcpy(evt->text, data, len);
+
+	if (type == CHAT_EVENT_AMBRY)
+		return (chat_event_insert(evt));
 
 	return (chat_event_insert(evt));
 }
@@ -4577,8 +5103,7 @@ chat_event_insert(struct chat_event *evt)
 	if (event_count >= CHAT_EVENTS_MAX) {
 		vigil_unlock(&lock);
 		vigil_log(LOG_NOTICE, "[chat] too many events queued");
-		nyfe_mem_zero(evt, sizeof(*evt));
-		free(evt);
+		chat_event_free(evt);
 		return (-1);
 	}
 
@@ -4591,26 +5116,68 @@ chat_event_insert(struct chat_event *evt)
 }
 
 /*
- * Move at most max events for the platform onto the given list.
+ * Returns -1 if the platform has no room for another event.
+ */
+static int
+chat_events_room(void)
+{
+	int		ret;
+
+	ret = 0;
+
+	vigil_lock(&lock);
+
+	if (event_count >= CHAT_EVENTS_MAX)
+		ret = -1;
+
+	vigil_unlock(&lock);
+
+	return (ret);
+}
+
+/*
+ * Returns how many bytes the given event takes at most as JSON, quoting
+ * can turn every byte of a string into six.
+ */
+static size_t
+chat_event_need(const struct chat_event *evt)
+{
+	size_t		need;
+
+	PRECOND(evt != NULL);
+
+	need = CHAT_EVENT_JSON_MAX + evt->json_len;
+	need += 5 * strlen(evt->text);
+	need += 5 * strlen(evt->nick);
+	need += 5 * strlen(evt->name);
+
+	return (need);
+}
+
+/*
+ * Move the events for the platform onto the given list for as long as
+ * they fit in room bytes of JSON.
  */
 static void
-chat_events_take(struct chat_event_list *list, size_t max)
+chat_events_take(struct chat_event_list *list, size_t room)
 {
 	struct chat_event	*evt;
+	size_t			need;
 
 	PRECOND(list != NULL);
 
 	vigil_lock(&lock);
 
 	while ((evt = TAILQ_FIRST(&events)) != NULL) {
-		if (max == 0)
+		need = chat_event_need(evt);
+		if (need > room)
 			break;
 
 		TAILQ_REMOVE(&events, evt, list);
 		TAILQ_INSERT_TAIL(list, evt, list);
 
 		event_count--;
-		max--;
+		room -= need;
 	}
 
 	vigil_unlock(&lock);
@@ -4622,8 +5189,6 @@ chat_events_take(struct chat_event_list *list, size_t max)
 static void
 chat_event_render(struct vigil_buf *buf, struct chat_event *evt, int first)
 {
-	int		idx, more;
-
 	PRECOND(buf != NULL);
 	PRECOND(evt != NULL);
 
@@ -4680,22 +5245,13 @@ chat_event_render(struct vigil_buf *buf, struct chat_event *evt, int first)
 	case CHAT_EVENT_ROSTER:
 		vigil_buf_appendf(buf,
 		    ",\"type\":\"roster\",\"token\":%" PRIu64
-		    ",\"ended\":%s,\"members\":[", evt->value,
+		    ",\"ended\":%s", evt->value,
 		    evt->group.state == VIGIL_CHAT_GROUP_ENDED ?
 		    "true" : "false");
 
-		more = 0;
+		chat_event_members(buf, evt->group.members);
 
-		for (idx = 1; idx < KYRKA_PEERS_PER_FLOCK; idx++) {
-			if (!(evt->group.members[idx / 8] & (1 << (idx % 8))))
-				continue;
-
-			vigil_buf_appendf(buf, "%s\"%02x\"",
-			    more ? "," : "", idx);
-			more = 1;
-		}
-
-		vigil_buf_appendf(buf, "],\"name\":");
+		vigil_buf_appendf(buf, ",\"name\":");
 		vigil_buf_quote(buf, evt->text);
 		break;
 	case CHAT_EVENT_LEAVE:
@@ -4742,9 +5298,175 @@ chat_event_render(struct vigil_buf *buf, struct chat_event *evt, int first)
 		vigil_buf_appendf(buf, ",\"type\":\"ambry\""
 		    ",\"generation\":\"%08" PRIx64 "\"", evt->value);
 		break;
+	case CHAT_EVENT_ECHO:
+		chat_event_echo(buf, evt);
+		break;
+	case CHAT_EVENT_MIRROR:
+		vigil_buf_appendf(buf, ",\"type\":\"mirror\",\"token\":%" PRIu64
+		    ",\"size\":%zu,\"events\":[%.*s]", evt->value, evt->size,
+		    (int)evt->json_len, (const char *)evt->json);
+		break;
+	case CHAT_EVENT_DESKTOP:
+		chat_event_desktop(buf, evt);
+		break;
 	}
 
 	vigil_buf_appendf(buf, "}");
+}
+
+/*
+ * Append the fields of the given echo event.
+ */
+static void
+chat_event_echo(struct vigil_buf *buf, struct chat_event *evt)
+{
+	PRECOND(buf != NULL);
+	PRECOND(evt != NULL);
+	PRECOND(evt->type == CHAT_EVENT_ECHO);
+
+	vigil_buf_appendf(buf, ",\"type\":\"echo\",\"ref\":%" PRIu64,
+	    evt->value);
+
+	if (evt->token != 0)
+		vigil_buf_appendf(buf, ",\"token\":%" PRIu64, evt->token);
+
+	if (evt->kind != 0) {
+		vigil_buf_appendf(buf, ",\"what\":\"data\",\"kind\":\"%s\""
+		    ",\"size\":%zu,\"name\":", chat_data_kind_name(evt->kind),
+		    evt->size);
+		vigil_buf_quote(buf, evt->text);
+	} else if (evt->topic.set) {
+		vigil_buf_appendf(buf, ",\"what\":\"topic\",\"color\":\"%06x\""
+		    ",\"name\":", evt->topic.color);
+		vigil_buf_quote(buf, evt->text);
+	} else if (evt->group.type == VIGIL_CHAT_TYPE_ROSTER) {
+		vigil_buf_appendf(buf, ",\"what\":\"roster\",\"ended\":%s"
+		    ",\"name\":", evt->group.state == VIGIL_CHAT_GROUP_ENDED ?
+		    "true" : "false");
+		vigil_buf_quote(buf, evt->text);
+	} else if (evt->group.type == VIGIL_CHAT_TYPE_LEAVE) {
+		vigil_buf_appendf(buf, ",\"what\":\"leave\"");
+	} else if (evt->quote.retract) {
+		vigil_buf_appendf(buf, ",\"what\":\"retract\""
+		    ",\"hash\":\"%016" PRIx64 "\"", evt->quote.hash);
+	} else {
+		vigil_buf_appendf(buf, ",\"what\":\"text\",\"text\":");
+		vigil_buf_quote(buf, evt->text);
+
+		if (evt->quote.hash != 0) {
+			vigil_buf_appendf(buf,
+			    ",\"author\":\"%02x\",\"hash\":\"%016" PRIx64 "\"",
+			    evt->quote.author, evt->quote.hash);
+		}
+	}
+
+	if (evt->topic.id != 0) {
+		vigil_buf_appendf(buf, ",\"topic\":\"%016" PRIx64 "\"",
+		    evt->topic.id);
+	}
+
+	if (evt->group.id != 0 && evt->group.type != VIGIL_CHAT_TYPE_LEAVE)
+		chat_event_members(buf, evt->group.members);
+}
+
+/*
+ * Append the fields of the given desktop event.
+ */
+static void
+chat_event_desktop(struct vigil_buf *buf, struct chat_event *evt)
+{
+	PRECOND(buf != NULL);
+	PRECOND(evt != NULL);
+	PRECOND(evt->type == CHAT_EVENT_DESKTOP);
+
+	vigil_buf_appendf(buf, ",\"type\":\"desktop\"");
+
+	switch (evt->kind) {
+	case CHAT_DESKTOP_RESYNC:
+		vigil_buf_appendf(buf, ",\"what\":\"resync\"");
+		break;
+	case CHAT_DESKTOP_ASK:
+		vigil_buf_appendf(buf, ",\"what\":\"ask\",\"ask\":");
+		vigil_buf_quote(buf, evt->text);
+
+		if (evt->token != 0) {
+			vigil_buf_appendf(buf, ",\"token\":%" PRIu64
+			    ",\"size\":%zu", evt->token, evt->size);
+		}
+		break;
+	case CHAT_DESKTOP_UNSENT:
+		vigil_buf_appendf(buf, ",\"what\":\"unsent\",\"ref\":%" PRIu64,
+		    evt->value);
+		break;
+	case CHAT_DESKTOP_QUEUED:
+		vigil_buf_appendf(buf, ",\"what\":\"queued\",\"ref\":%" PRIu64,
+		    evt->value);
+
+		if (evt->size > 0) {
+			vigil_buf_appendf(buf, ",\"kind\":\"%s\",\"size\":%zu"
+			    ",\"name\":", evt->name, evt->size);
+		} else {
+			vigil_buf_appendf(buf, ",\"text\":");
+		}
+
+		vigil_buf_quote(buf, evt->text);
+
+		if (evt->topic.id != 0) {
+			vigil_buf_appendf(buf, ",\"topic\":\"%016" PRIx64 "\"",
+			    evt->topic.id);
+		}
+
+		if (evt->quote.hash != 0) {
+			vigil_buf_appendf(buf,
+			    ",\"author\":\"%02x\",\"hash\":\"%016" PRIx64 "\"",
+			    evt->quote.author, evt->quote.hash);
+		}
+		break;
+	default:
+		fatal("unknown desktop event %u", evt->kind);
+	}
+}
+
+/*
+ * Append the members set in the given bits as a JSON array.
+ */
+static void
+chat_event_members(struct vigil_buf *buf, const u_int8_t *members)
+{
+	int		idx, more;
+
+	PRECOND(buf != NULL);
+	PRECOND(members != NULL);
+
+	more = 0;
+	vigil_buf_appendf(buf, ",\"members\":[");
+
+	for (idx = 1; idx < KYRKA_PEERS_PER_FLOCK; idx++) {
+		if (!(members[idx / 8] & (1 << (idx % 8))))
+			continue;
+
+		vigil_buf_appendf(buf, "%s\"%02x\"", more ? "," : "", idx);
+		more = 1;
+	}
+
+	vigil_buf_appendf(buf, "]");
+}
+
+/*
+ * Free the given event.
+ */
+static void
+chat_event_free(struct chat_event *evt)
+{
+	PRECOND(evt != NULL);
+
+	if (evt->json != NULL) {
+		nyfe_mem_zero(evt->json, evt->json_len);
+		free(evt->json);
+	}
+
+	nyfe_mem_zero(evt, sizeof(*evt));
+	free(evt);
 }
 
 /*
@@ -4759,8 +5481,7 @@ chat_events_free(void)
 
 	while ((evt = TAILQ_FIRST(&events)) != NULL) {
 		TAILQ_REMOVE(&events, evt, list);
-		nyfe_mem_zero(evt, sizeof(*evt));
-		free(evt);
+		chat_event_free(evt);
 	}
 
 	event_count = 0;
@@ -5083,50 +5804,24 @@ chat_blob_room(u_int8_t peer, u_int64_t ref, size_t size)
 }
 
 /*
- * Create a message for the given data, its frame is the text a peer on
- * gospel gets instead.
+ * Create a message for the given data.
  */
 static struct chat_msg *
 chat_data_msg(u_int64_t ref, struct chat_blob *blob)
 {
-	int				len;
-	u_int8_t			kind;
-	struct chat_msg			*msg;
-	struct vigil_chat_data_head	*head;
-	char				what[VIGIL_CHAT_DATA_NAME_MAX + 16];
+	struct chat_msg		*msg;
 
 	PRECOND(blob != NULL);
-	PRECOND(blob->size > sizeof(*head));
+	PRECOND(blob->size > sizeof(struct vigil_chat_data_head));
 
 	msg = calloc(1, sizeof(*msg));
 	if (msg == NULL)
 		fatal("calloc: failed to allocate chat message");
 
-	head = (struct vigil_chat_data_head *)blob->data;
-	kind = head->kind & ~CHAT_DATA_FLAGS;
-
-	if (kind == VIGIL_CHAT_DATA_IMAGE) {
-		(void)snprintf(what, sizeof(what), "an image");
-	} else if (kind == VIGIL_CHAT_DATA_VOICE) {
-		(void)snprintf(what, sizeof(what), "a voice message");
-	} else {
-		(void)snprintf(what, sizeof(what), "the file %.*s",
-		    head->len, head->name);
-	}
-
-	len = snprintf((char *)msg->frame.data, sizeof(msg->frame.data),
-	    CHAT_DATA_GOSPEL, what);
-	if (len < 0)
-		fatal("failed to write the gospel notice for data");
-
-	if ((size_t)len >= sizeof(msg->frame.data))
-		fatal("gospel notice for data does not fit");
-
 	blob->refs++;
 
 	msg->ref = ref;
 	msg->blob = blob;
-	msg->frame.len = htobe16(len);
 	msg->frame.type = VIGIL_CHAT_TYPE_TEXT;
 
 	return (msg);
@@ -5176,14 +5871,12 @@ chat_xfer_run(struct chat_tunnel *tun)
 		if (!tun->heard)
 			return;
 
+		if (!(tun->features & VIGIL_CHAT_FEATURE_DATA))
+			return;
+
 		TAILQ_FOREACH(msg, &tun->peer->outbox, wlist) {
-			if (msg->blob == NULL || msg->id == 0)
-				continue;
-
-			if (tun->features & VIGIL_CHAT_FEATURE_DATA)
+			if (msg->blob != NULL && msg->id != 0)
 				break;
-
-			chat_data_gospel(tun, msg);
 		}
 
 		if (msg == NULL)
@@ -5574,6 +6267,9 @@ chat_chunk_recv(struct chat_tunnel *tun, const void *data)
 	if (count == 0 || count > CHAT_CHUNKS_MAX)
 		return;
 
+	if (index >= count)
+		return;
+
 	if (size <= sizeof(struct vigil_chat_data_head))
 		return;
 
@@ -5584,9 +6280,6 @@ chat_chunk_recv(struct chat_tunnel *tun, const void *data)
 		return;
 
 	if (size <= ((count - 1) * VIGIL_CHAT_CHUNK_DATA))
-		return;
-
-	if (index >= count)
 		return;
 
 	for (idx = 0; idx < CHAT_SEEN_MAX; idx++) {
@@ -5814,27 +6507,6 @@ chat_data_ack(struct chat_tunnel *tun, u_int64_t id, struct chat_rxfer *xfer,
 }
 
 /*
- * The peer of the given tunnel cannot take data, it gets a message telling
- * it so instead.
- */
-static void
-chat_data_gospel(struct chat_tunnel *tun, struct chat_msg *msg)
-{
-	PRECOND(tun != NULL);
-	PRECOND(msg != NULL);
-	PRECOND(msg->blob != NULL);
-	PRECOND(msg->pending == 0);
-
-	vigil_log(LOG_INFO, "[chat] %02x cannot take parcels", tun->peer->id);
-
-	chat_blob_release(msg->blob);
-	msg->blob = NULL;
-
-	msg->pending = 1;
-	TAILQ_INSERT_TAIL(&tun->sendq, msg, slist);
-}
-
-/*
  * We have all of the data on the given xfer, hand it to the platform and
  * remember it so we ack it once the platform stored it. Data we cannot use
  * is acked right away so our peer stops sending it.
@@ -5862,7 +6534,20 @@ chat_data_arrived(struct chat_tunnel *tun, struct chat_rxfer *xfer)
 	head = (struct vigil_chat_data_head *)xfer->data;
 	kind = head->kind & ~CHAT_DATA_FLAGS;
 
-	if (chat_data_tags(xfer, kind, &off, &group, &topic) == -1) {
+	if (tun->peer == &companion) {
+		if (head->kind != VIGIL_CHAT_DATA_COMPANION) {
+			chat_data_discard(tun, xfer);
+			return (0);
+		}
+
+		if (companion_role == VIGIL_COMPANION_PHONE)
+			return (chat_phone_request(tun, xfer));
+
+		return (chat_desktop_mirror(tun, xfer));
+	}
+
+	if (chat_data_tags(xfer->data, xfer->size, &off,
+	    &group, &topic) == -1) {
 		vigil_log(LOG_NOTICE,
 		    "[chat] %02x sent data in a bad topic or group",
 		    tun->peer->id);
@@ -5940,14 +6625,12 @@ chat_data_arrived(struct chat_tunnel *tun, struct chat_rxfer *xfer)
 		return (-1);
 	}
 
-	vigil_lock(&lock);
-	parcel_bytes += parcel->size;
-	TAILQ_INSERT_TAIL(&parcels, parcel, list);
-	vigil_unlock(&lock);
+	chat_parcel_hold(parcel);
 
 	seen = &tun->seen[tun->seen_next++ % CHAT_SEEN_MAX];
 
 	seen->hash = 0;
+	seen->journal = 0;
 	seen->avatar = held;
 	seen->id = xfer->id;
 	seen->size = xfer->size;
@@ -5964,20 +6647,21 @@ chat_data_arrived(struct chat_tunnel *tun, struct chat_rxfer *xfer)
 }
 
 /*
- * Take the group and topic the data on the given xfer is in and where the
- * data starts, returns -1 if they are not ones we can use.
+ * Take the group and topic the given data is in and where the data starts,
+ * returns -1 if they are not ones we can use.
  */
 static int
-chat_data_tags(struct chat_rxfer *xfer, u_int8_t kind, size_t *off,
+chat_data_tags(const u_int8_t *data, size_t size, size_t *off,
     struct chat_group *group, u_int64_t *topic)
 {
-	u_int64_t			id;
-	u_int8_t			flags;
-	struct vigil_chat_data_head	*head;
-	u_int32_t			serial;
+	u_int64_t				id;
+	u_int8_t				kind;
+	u_int8_t				flags;
+	u_int32_t				serial;
+	const struct vigil_chat_data_head	*head;
 
-	PRECOND(xfer != NULL);
-	PRECOND(xfer->data != NULL);
+	PRECOND(data != NULL);
+	PRECOND(size > sizeof(*head));
 	PRECOND(off != NULL);
 	PRECOND(group != NULL);
 	PRECOND(topic != NULL);
@@ -5987,7 +6671,8 @@ chat_data_tags(struct chat_rxfer *xfer, u_int8_t kind, size_t *off,
 	*topic = 0;
 	*off = sizeof(*head);
 
-	head = (struct vigil_chat_data_head *)xfer->data;
+	head = (const struct vigil_chat_data_head *)data;
+	kind = head->kind & ~CHAT_DATA_FLAGS;
 	flags = head->kind & CHAT_DATA_FLAGS;
 
 	if (flags == 0)
@@ -5997,16 +6682,15 @@ chat_data_tags(struct chat_rxfer *xfer, u_int8_t kind, size_t *off,
 		return (-1);
 
 	if (flags & VIGIL_CHAT_DATA_GROUP) {
-		if (xfer->size <= *off + CHAT_DATA_GROUP)
+		if (size <= *off + CHAT_DATA_GROUP)
 			return (-1);
 
-		memcpy(&id, xfer->data + *off + 1, sizeof(id));
-		memcpy(&serial, xfer->data + *off + 1 + sizeof(id),
-		    sizeof(serial));
+		memcpy(&id, data + *off + 1, sizeof(id));
+		memcpy(&serial, data + *off + 1 + sizeof(id), sizeof(serial));
 
 		group->id = be64toh(id);
 		group->serial = be32toh(serial);
-		group->owner = xfer->data[*off];
+		group->owner = data[*off];
 		group->type = VIGIL_CHAT_TYPE_TEXT;
 
 		*off += CHAT_DATA_GROUP;
@@ -6022,10 +6706,10 @@ chat_data_tags(struct chat_rxfer *xfer, u_int8_t kind, size_t *off,
 	}
 
 	if (flags & VIGIL_CHAT_DATA_TOPIC) {
-		if (xfer->size <= *off + sizeof(*topic))
+		if (size <= *off + sizeof(*topic))
 			return (-1);
 
-		memcpy(topic, xfer->data + *off, sizeof(*topic));
+		memcpy(topic, data + *off, sizeof(*topic));
 		*topic = be64toh(*topic);
 		*off += sizeof(*topic);
 
@@ -6037,11 +6721,25 @@ chat_data_tags(struct chat_rxfer *xfer, u_int8_t kind, size_t *off,
 }
 
 /*
- * Remember the data on the given xfer as done and ack it without handing it
- * to the platform.
+ * We are done with the data on the given xfer, ack it right away.
  */
 static void
 chat_data_discard(struct chat_tunnel *tun, struct chat_rxfer *xfer)
+{
+	PRECOND(tun != NULL);
+	PRECOND(xfer != NULL);
+
+	chat_data_hold(tun, xfer, 0);
+}
+
+/*
+ * Remember the data on the given xfer so we know it when it comes again,
+ * and ack it once the platform stored what it got under the given token,
+ * or right away without a token.
+ */
+static void
+chat_data_hold(struct chat_tunnel *tun, struct chat_rxfer *xfer,
+    u_int64_t token)
 {
 	struct chat_seen	*seen;
 
@@ -6051,13 +6749,15 @@ chat_data_discard(struct chat_tunnel *tun, struct chat_rxfer *xfer)
 	seen = &tun->seen[tun->seen_next++ % CHAT_SEEN_MAX];
 
 	seen->hash = 0;
-	seen->token = 0;
 	seen->avatar = 0;
+	seen->journal = 0;
 	seen->id = xfer->id;
+	seen->token = token;
 	seen->size = xfer->size;
 	seen->age = vigil->now;
 
-	chat_ack_queue(tun, xfer->id);
+	if (token == 0)
+		chat_ack_queue(tun, xfer->id);
 }
 
 /*
@@ -6089,12 +6789,12 @@ chat_data_report(struct chat_tunnel *tun, struct chat_parcel *parcel)
 
 	memcpy(&evt->group, &parcel->group, sizeof(parcel->group));
 
-	if (evt->kind == VIGIL_CHAT_DATA_AVATAR)
-		evt->type = CHAT_EVENT_AVATAR;
-
 	memcpy(evt->text, head->name, head->len);
 	memcpy(evt->name, tun->peer->name, sizeof(evt->name));
 	memcpy(evt->nick, tun->peer->nick, sizeof(evt->nick));
+
+	if (evt->kind == VIGIL_CHAT_DATA_AVATAR)
+		evt->type = CHAT_EVENT_AVATAR;
 
 	return (chat_event_insert(evt));
 }
@@ -6167,6 +6867,20 @@ chat_data_name_valid(const u_int8_t *name, size_t len)
 	}
 
 	return (0);
+}
+
+/*
+ * Hold the given parcel until the platform takes its data.
+ */
+static void
+chat_parcel_hold(struct chat_parcel *parcel)
+{
+	PRECOND(parcel != NULL);
+
+	vigil_lock(&lock);
+	parcel_bytes += parcel->size;
+	TAILQ_INSERT_TAIL(&parcels, parcel, list);
+	vigil_unlock(&lock);
 }
 
 /*
@@ -6247,4 +6961,2649 @@ chat_bits_set(u_int8_t *bits, u_int32_t idx)
 	PRECOND(bits != NULL);
 
 	bits[idx / 8] |= 1 << (idx % 8);
+}
+
+/*
+ * Set the configuration of the cathedral tunnel to our phone or to our
+ * desktop, an empty one drops it. May be called from any thread, returns
+ * -1 if the configuration is too large.
+ */
+int
+vigil_chat_companion(const char *cfg, size_t len)
+{
+	PRECOND(cfg != NULL || len == 0);
+
+	if (len > sizeof(companion_text))
+		return (-1);
+
+	vigil_lock(&lock);
+
+	nyfe_mem_zero(companion_text, sizeof(companion_text));
+
+	if (len > 0)
+		memcpy(companion_text, cfg, len);
+
+	companion_len = len;
+	companion_serial++;
+
+	vigil_unlock(&lock);
+
+	vigil_wake_signal();
+
+	return (0);
+}
+
+/*
+ * Pick up the companion configuration the platform gave us if it changed.
+ * Next to gospel we are the phone, on our own we are the desktop.
+ */
+static void
+chat_companion_load(void)
+{
+	size_t			len;
+	u_int8_t		role;
+	struct vigil_config	*cfg;
+	u_int32_t		serial;
+	char			err[128];
+	char			text[VIGIL_CONFIG_MAX];
+
+	vigil_lock(&lock);
+
+	if (companion_serial == companion_loaded) {
+		vigil_unlock(&lock);
+		return;
+	}
+
+	len = companion_len;
+	serial = companion_serial;
+	memcpy(text, companion_text, len);
+
+	vigil_unlock(&lock);
+
+	companion_loaded = serial;
+	chat_companion_free();
+
+	if (len == 0)
+		return;
+
+	cfg = vigil_config_parse(text, len, err, sizeof(err));
+	nyfe_mem_zero(text, sizeof(text));
+
+	if (cfg == NULL) {
+		vigil_log(LOG_ERR, "[companion] invalid configuration: %s",
+		    err);
+		return;
+	}
+
+	if (cfg->mode != VIGIL_MODE_COMPANION) {
+		vigil_log(LOG_ERR, "[companion] not a companion configuration");
+		vigil_config_free(cfg);
+		return;
+	}
+
+	role = cfg->spi >> 8;
+
+	if (vigil->gospel != NULL && role != VIGIL_COMPANION_PHONE) {
+		vigil_log(LOG_ERR, "[companion] only a phone runs gospel");
+		vigil_config_free(cfg);
+		return;
+	}
+
+	if (vigil->gospel == NULL && role != VIGIL_COMPANION_DESKTOP) {
+		vigil_log(LOG_ERR, "[companion] only a desktop runs alone");
+		vigil_config_free(cfg);
+		return;
+	}
+
+	companion_cfg = cfg;
+	companion_role = role;
+	companion.id = cfg->spi & 0xff;
+
+	if (chat_companion_journal() == -1) {
+		vigil_config_free(cfg);
+		companion_cfg = NULL;
+		companion_role = 0;
+		return;
+	}
+
+	companion_told = 0;
+	companion_avatar = 0;
+	companion_resolve = 0;
+	companion_resolved = 0;
+
+	memset(companion_nick, 0, sizeof(companion_nick));
+	memset(&companion_phone, 0, sizeof(companion_phone));
+	memset(&companion_desktop, 0, sizeof(companion_desktop));
+
+	vigil_log(LOG_INFO, "[companion] we are %s '%s'",
+	    role == VIGIL_COMPANION_PHONE ? "the phone" : "the desktop",
+	    cfg->instance);
+}
+
+/*
+ * Open our journal in our data directory. A phone needs one, a desktop
+ * without one only remembers what it stored while it runs.
+ */
+static int
+chat_companion_journal(void)
+{
+	PRECOND(companion_cfg != NULL);
+
+	journal_sent = 0;
+	journal_heard = 0;
+	memset(&journal, 0, sizeof(journal));
+
+	requests_sent = 0;
+	requests_told = 0;
+	requests_held = 0;
+	requests_head = 0;
+	requests_ref = 0;
+	requests_done = 0;
+	memset(&requests, 0, sizeof(requests));
+
+	if (companion_role == VIGIL_COMPANION_PHONE) {
+		if (vigil->datadir == NULL) {
+			vigil_log(LOG_ERR, "[companion] no data directory");
+			return (-1);
+		}
+
+		if (vigil_journal_open(&journal, vigil->datadir, "journal",
+		    companion_cfg->kek, sizeof(companion_cfg->kek)) == -1)
+			return (-1);
+
+		journal_sent = journal.acked;
+		vigil_atomic_write(&companion_journal, journal.bytes);
+
+		companion_measure = 0;
+		chat_phone_limit();
+
+		vigil_log(LOG_INFO, "[companion] journal holds %zu entries "
+		    "up to %" PRIu64, journal.items, journal.last);
+
+		return (0);
+	}
+
+	if (vigil->datadir == NULL)
+		return (0);
+
+	if (vigil_journal_open(&journal, vigil->datadir, "journal",
+	    NULL, 0) == -1)
+		memset(&journal, 0, sizeof(journal));
+
+	if (vigil_journal_open(&requests, vigil->datadir, "requests",
+	    companion_cfg->kek, sizeof(companion_cfg->kek)) == -1)
+		memset(&requests, 0, sizeof(requests));
+
+	requests_sent = requests.acked;
+	requests_told = requests.acked;
+	requests_held = requests.last;
+
+	chat_desktop_head();
+
+	vigil_log(LOG_INFO, "[companion] we have up to %" PRIu64 ", we hold "
+	    "%zu requests for our phone", journal.acked, requests.items);
+
+	return (0);
+}
+
+/*
+ * Drop our companion tunnel, all we held for it and its configuration.
+ */
+static void
+chat_companion_free(void)
+{
+	struct vigil_companion_phone	phone;
+	struct vigil_companion_desktop	desktop;
+
+	memset(&phone, 0, sizeof(phone));
+	memset(&desktop, 0, sizeof(desktop));
+
+	if (companion_role == VIGIL_COMPANION_PHONE)
+		chat_phone_desktop(&desktop);
+
+	if (companion_role == VIGIL_COMPANION_DESKTOP)
+		chat_desktop_phone(&phone);
+
+	if (companion.tunnel != NULL)
+		chat_tunnel_free(companion.tunnel);
+
+	chat_outbox_free(&companion);
+
+	if (companion_cfg != NULL) {
+		vigil_config_free(companion_cfg);
+		companion_cfg = NULL;
+	}
+
+	companion_role = 0;
+	companion_reset = 0;
+	companion_synced = 0;
+	companion_dirty = 0;
+	companion_asked = 0;
+	companion_last = 0;
+	companion_other = 0;
+	companion_known = 0;
+
+	journal_sent = 0;
+	journal_heard = 0;
+	vigil_journal_close(&journal);
+
+	requests_sent = 0;
+	requests_told = 0;
+	requests_held = 0;
+	requests_head = 0;
+	requests_ref = 0;
+	requests_done = 0;
+	vigil_journal_close(&requests);
+
+	vigil_atomic_write(&companion_limit, 0);
+	vigil_atomic_write(&companion_journal, 0);
+}
+
+/*
+ * Keep the tunnel to our companion up while we have a companion
+ * configuration, and send our state when that state changes.
+ */
+static void
+chat_companion_check(void)
+{
+	int				idx;
+	struct vigil_cathedral		cat;
+	struct chat_tunnel		*tun;
+	u_int64_t			next;
+	struct vigil_companion_phone	phone;
+	u_int64_t			last;
+	int				ringing;
+	struct vigil_companion_desktop	desktop;
+
+	if (companion_cfg == NULL)
+		return;
+
+	if (!companion_resolved) {
+		if (vigil->now < companion_resolve)
+			return;
+
+		companion_resolve = vigil->now + CHAT_COMPANION_RESOLVE;
+
+		if (vigil_resolve(companion_cfg->cathedral_host,
+		    companion_cfg->cathedral_port, &companion_addr) == -1)
+			return;
+
+		companion_resolved = 1;
+	}
+
+	tun = companion.tunnel;
+
+	if (tun == NULL) {
+		memset(&cat, 0, sizeof(cat));
+
+		cat.last = vigil->now;
+		cat.timeout = VIGIL_CATHEDRAL_TIMEOUT_INIT;
+		memcpy(&cat.addr, &companion_addr, sizeof(companion_addr));
+
+		tun = chat_tunnel_new(&companion, &cat);
+		if (tun == NULL)
+			return;
+	}
+
+	memset(&phone, 0, sizeof(phone));
+	memset(&desktop, 0, sizeof(desktop));
+
+	chat_tunnel_manage(tun);
+
+	if (companion_role == VIGIL_COMPANION_PHONE) {
+		chat_phone_limit();
+		chat_phone_self();
+		chat_phone_pump();
+		chat_phone_resync();
+		chat_phone_state(&phone);
+
+		if (!chat_tunnel_online(tun)) {
+			journal_heard = 0;
+			chat_phone_desktop(&desktop);
+		}
+
+		/* A new entry in our journal alone needs no heartbeat now. */
+		last = phone.last;
+		phone.last = companion_phone.last;
+
+		if (memcmp(&phone, &companion_phone, sizeof(phone)))
+			tun->next_heartbeat = vigil->now;
+
+		phone.last = last;
+
+		ringing = phone.call_peer != 0;
+		for (idx = 0; idx < VIGIL_CHAT_GROUP_ROSTER; idx++)
+			ringing |= phone.incoming[idx];
+
+		next = vigil->now + CHAT_COMPANION_CALL_HEARTBEAT;
+
+		if (ringing && tun->next_heartbeat > next)
+			tun->next_heartbeat = next;
+	} else {
+		chat_desktop_told();
+		chat_desktop_pump();
+		chat_desktop_state(&desktop);
+
+		/* We can hear our phone before our tunnel counts as online. */
+		if ((vigil->now - tun->last_rx) >= CHAT_RX_TIMEOUT)
+			chat_desktop_phone(&phone);
+
+		if (memcmp(&desktop, &companion_desktop, sizeof(desktop)))
+			tun->next_heartbeat = vigil->now;
+
+		vigil_voice_relay_update();
+	}
+}
+
+/*
+ * Append the state of our companion tunnel to the status.
+ */
+static void
+chat_companion_status(struct vigil_buf *buf)
+{
+	struct chat_msg		*msg;
+	const char		*link;
+	const char		*sync;
+	size_t			queued;
+	int			online, p2p;
+	u_int64_t		room, held, limit, behind;
+
+	PRECOND(buf != NULL);
+
+	if (companion_cfg == NULL)
+		return;
+
+	queued = 0;
+	TAILQ_FOREACH(msg, &companion.outbox, wlist)
+		queued++;
+
+	if (companion_role == VIGIL_COMPANION_PHONE)
+		queued = journal.last - journal.acked;
+
+	if (companion_role == VIGIL_COMPANION_DESKTOP)
+		queued += requests.last - requests.acked;
+
+	chat_tunnel_state(companion.tunnel, &link, &online, &p2p);
+
+	vigil_buf_appendf(buf, ",\"companion\":{\"role\":\"%s\""
+	    ",\"id\":\"%02x\",\"online\":%s,\"link\":\"%s\",\"queued\":%zu",
+	    companion_role == VIGIL_COMPANION_PHONE ? "phone" : "desktop",
+	    companion.id, online ? "true" : "false", link, queued);
+
+	vigil_buf_appendf(buf, ",\"version\":%u", VIGIL_COMPANION_VERSION);
+
+	if (companion_known)
+		vigil_buf_appendf(buf, ",\"other\":%u", companion_other);
+
+	if (companion_role == VIGIL_COMPANION_PHONE) {
+		room = 0;
+		limit = vigil_atomic_read(&companion_limit);
+		held = vigil_atomic_read(&companion_journal) +
+		    vigil_atomic_read(&companion_queued);
+
+		if (held < limit)
+			room = limit - held;
+
+		vigil_buf_appendf(buf, ",\"room\":%" PRIu64, room);
+	}
+
+	if (companion_role == VIGIL_COMPANION_DESKTOP) {
+		sync = "unsynced";
+		if (journal.synced == VIGIL_JOURNAL_SYNCED)
+			sync = "synced";
+		else if (journal.synced == VIGIL_JOURNAL_SYNCING)
+			sync = "syncing";
+
+		behind = 0;
+		if (companion_last > journal.acked)
+			behind = companion_last - journal.acked;
+
+		vigil_buf_appendf(buf, ",\"sync\":\"%s\",\"behind\":%" PRIu64,
+		    sync, behind);
+		chat_companion_peers(buf, &companion_phone);
+	}
+
+	vigil_buf_appendf(buf, "}");
+}
+
+/*
+ * Returns -1 if we cannot hold size more bytes for our companion.
+ */
+static int
+chat_companion_room(size_t size)
+{
+	struct chat_msg		*msg;
+	size_t			items, bytes;
+
+	items = 0;
+	bytes = size;
+
+	TAILQ_FOREACH(msg, &companion.outbox, wlist) {
+		items++;
+
+		if (msg->blob != NULL)
+			bytes += msg->blob->size;
+	}
+
+	if (items >= CHAT_COMPANION_ITEMS || bytes > CHAT_COMPANION_BYTES) {
+		vigil_log(LOG_NOTICE,
+		    "[companion] our outbox is full, dropped a parcel");
+		return (-1);
+	}
+
+	return (0);
+}
+
+/*
+ * Make a new blob for our companion with room for size bytes after its
+ * head, the caller fills those in.
+ */
+static struct chat_blob *
+chat_companion_blob(size_t size)
+{
+	struct vigil_chat_data_head	head;
+	struct chat_blob		*blob;
+
+	PRECOND(size > 0);
+
+	memset(&head, 0, sizeof(head));
+	head.kind = VIGIL_CHAT_DATA_COMPANION;
+	head.len = strlen(CHAT_COMPANION_NAME);
+	memcpy(head.name, CHAT_COMPANION_NAME, head.len);
+
+	blob = calloc(1, sizeof(*blob));
+	if (blob == NULL)
+		fatal("calloc: failed to allocate companion blob");
+
+	blob->refs = 1;
+	blob->peer = companion.id;
+	blob->ref = ++companion_refs;
+	blob->size = sizeof(head) + size;
+	blob->count = (blob->size + VIGIL_CHAT_CHUNK_DATA - 1) /
+	    VIGIL_CHAT_CHUNK_DATA;
+
+	blob->data = calloc(1, blob->size);
+	if (blob->data == NULL)
+		fatal("calloc: failed to allocate companion blob data");
+
+	memcpy(blob->data, &head, sizeof(head));
+
+	return (blob);
+}
+
+/*
+ * Put the given blob on the outbox for our companion and start sending it
+ * right away when nothing else goes out, instead of on our next pass.
+ */
+static void
+chat_companion_push(struct chat_blob *blob)
+{
+	struct chat_tunnel	*tun;
+	struct chat_msg		*msg;
+
+	PRECOND(blob != NULL);
+
+	msg = chat_data_msg(blob->ref, blob);
+	chat_blob_release(blob);
+
+	TAILQ_INSERT_TAIL(&companion.outbox, msg, wlist);
+
+	if ((tun = companion.tunnel) == NULL)
+		return;
+
+	chat_msg_queue(tun, msg);
+
+	if (tun->xfer == NULL && chat_tunnel_online(tun))
+		chat_xfer_run(tun);
+}
+
+/*
+ * Send our desktop who we are once we heard from our desktop, and again
+ * when our nickname or avatar changes.
+ */
+static void
+chat_phone_self(void)
+{
+	int			ret;
+	struct vigil_buf	out;
+	size_t			len;
+	u_int8_t		*face;
+	u_int32_t		serial;
+	char			json[CHAT_EVENT_JSON_MAX];
+	char			name[VIGIL_CHAT_NICK_MAX + 1];
+
+	PRECOND(companion_role == VIGIL_COMPANION_PHONE);
+
+	if (companion.tunnel == NULL || !companion.tunnel->heard)
+		return;
+
+	vigil_lock(&lock);
+	serial = avatar_serial;
+	memcpy(name, nick, sizeof(name));
+	vigil_unlock(&lock);
+
+	if (companion_told && !strcmp(name, companion_nick) &&
+	    serial == companion_avatar)
+		return;
+
+	len = 0;
+	face = NULL;
+
+	if (serial != companion_avatar) {
+		if ((face = calloc(1, VIGIL_CHAT_AVATAR_MAX)) == NULL)
+			fatal("calloc: failed to allocate our avatar");
+
+		vigil_lock(&lock);
+		serial = avatar_serial;
+		len = avatar_len;
+		memcpy(face, avatar, len);
+		vigil_unlock(&lock);
+	}
+
+	vigil_buf_init(&out, json, sizeof(json));
+	vigil_buf_appendf(&out, "{\"op\":\"self\",\"id\":\"%02x\",\"nick\":",
+	    vigil->gospel->spi & 0xff);
+	vigil_buf_quote(&out, name);
+	vigil_buf_appendf(&out, ",\"signed\":");
+	vigil_buf_quote(&out, named ? vigil->gospel->instance : "");
+
+	if (face != NULL)
+		vigil_buf_appendf(&out, ",\"avatar\":%zu", len);
+
+	vigil_buf_appendf(&out, "}");
+
+	ret = 0;
+
+	if (!(out.flags & VIGIL_BUF_FULL))
+		ret = chat_phone_write(json, out.offset, face, len);
+
+	if (face != NULL) {
+		nyfe_mem_zero(face, VIGIL_CHAT_AVATAR_MAX);
+		free(face);
+	}
+
+	if (ret == -1)
+		return;
+
+	companion_told = 1;
+	companion_avatar = serial;
+	memcpy(companion_nick, name, sizeof(companion_nick));
+}
+
+/*
+ * Run what our platform handed us for our desktop, an entry or one of the
+ * marks around a full copy of our chats.
+ */
+static void
+chat_phone_sync(struct chat_command *cmd)
+{
+	const u_int8_t		*data;
+
+	PRECOND(cmd != NULL);
+	PRECOND(cmd->type == CHAT_COMMAND_SYNC);
+	PRECOND(companion_role == VIGIL_COMPANION_PHONE);
+
+	switch (cmd->value) {
+	case CHAT_SYNC_ENTRY:
+		data = NULL;
+		if (cmd->blob->size > cmd->len)
+			data = cmd->blob->data + cmd->len;
+
+		(void)chat_phone_queue((const char *)cmd->blob->data, cmd->len,
+		    data, cmd->blob->size - cmd->len);
+		break;
+	case CHAT_SYNC_RESET:
+		if (chat_phone_write(CHAT_SYNC_RESET_JSON,
+		    sizeof(CHAT_SYNC_RESET_JSON) - 1, NULL, 0) == -1)
+			break;
+
+		companion_told = 0;
+		companion_dirty = 0;
+		companion_asked = 0;
+		companion_avatar = 0;
+		companion_reset = journal.last;
+
+		vigil_log(LOG_INFO, "[companion] a full resync for our desktop "
+		    "starts at entry %" PRIu64, journal.last);
+		break;
+	case CHAT_SYNC_DONE:
+		if (chat_phone_write(CHAT_SYNC_DONE_JSON,
+		    sizeof(CHAT_SYNC_DONE_JSON) - 1, NULL, 0) == -1)
+			break;
+
+		companion_synced = journal.last;
+
+		vigil_log(LOG_INFO, "[companion] a resync for our desktop "
+		    "ends at entry %" PRIu64, journal.last);
+		break;
+	default:
+		fatal("unknown sync %" PRIu64, cmd->value);
+	}
+}
+
+/*
+ * Ask our platform for a full copy of our chats when we lost an entry for
+ * our desktop, or when our desktop says it lacks one and no copy is on its
+ * way.
+ */
+static void
+chat_phone_resync(void)
+{
+	struct chat_event	*evt;
+
+	PRECOND(companion_role == VIGIL_COMPANION_PHONE);
+
+	if (companion_asked)
+		return;
+
+	if (chat_companion_mismatch())
+		return;
+
+	if (!companion_dirty) {
+		if (!journal_heard)
+			return;
+
+		if (companion_desktop.synced == VIGIL_JOURNAL_SYNCED)
+			return;
+
+		if (companion_reset > companion_synced)
+			return;
+
+		if (companion_synced > be64toh(companion_desktop.have))
+			return;
+	}
+
+	evt = calloc(1, sizeof(*evt));
+	if (evt == NULL)
+		fatal("calloc: failed to allocate desktop event");
+
+	evt->peer = companion.id;
+	evt->type = CHAT_EVENT_DESKTOP;
+	evt->kind = CHAT_DESKTOP_RESYNC;
+
+	if (chat_event_insert(evt) == -1)
+		return;
+
+	vigil_log(LOG_INFO,
+	    "[companion] starting a full resync for our desktop");
+	companion_asked = 1;
+}
+
+/*
+ * Set how many bytes our journal may hold from the free space on our disk,
+ * once an hour.
+ */
+static void
+chat_phone_limit(void)
+{
+	struct statvfs		st;
+	u_int64_t		limit;
+
+	PRECOND(companion_role == VIGIL_COMPANION_PHONE);
+	PRECOND(vigil->datadir != NULL);
+
+	if (vigil->now < companion_measure)
+		return;
+
+	companion_measure = vigil->now + CHAT_JOURNAL_MEASURE;
+
+	if (statvfs(vigil->datadir, &st) == -1) {
+		vigil_log(LOG_NOTICE, "[companion] statvfs(%s): %s",
+		    vigil->datadir, errno_s);
+		return;
+	}
+
+	limit = (u_int64_t)st.f_bavail * st.f_frsize / CHAT_JOURNAL_SHARE;
+
+	if (limit > CHAT_JOURNAL_MAX)
+		limit = CHAT_JOURNAL_MAX;
+
+	vigil_atomic_write(&companion_limit, limit);
+}
+
+/*
+ * Returns the most bytes an entry with len bytes of JSON and size bytes of
+ * data takes in our journal.
+ */
+static size_t
+chat_phone_need(size_t len, size_t size)
+{
+	return (len + size + CHAT_JOURNAL_EXTRA);
+}
+
+/*
+ * Hold need bytes in our journal for an entry we did not write yet.
+ * Returns -1 if our journal has no room for it.
+ */
+static int
+chat_phone_reserve(size_t need)
+{
+	u_int64_t	held, limit;
+
+	held = vigil_atomic_add(&companion_queued, need) + need;
+	held += vigil_atomic_read(&companion_journal);
+	limit = vigil_atomic_read(&companion_limit);
+
+	if (held > limit) {
+		chat_phone_release(need);
+		return (-1);
+	}
+
+	return (0);
+}
+
+/*
+ * Give back the need bytes we held for an entry in our journal.
+ */
+static void
+chat_phone_release(size_t need)
+{
+	vigil_atomic_sub(&companion_queued, need);
+}
+
+/*
+ * Write an entry of our own to our journal for our desktop if it has room
+ * for it. Returns -1 if it has no room or we lost the entry.
+ */
+static int
+chat_phone_write(const char *json, size_t len, const u_int8_t *data,
+    size_t size)
+{
+	int		ret;
+	size_t		need;
+
+	PRECOND(json != NULL);
+	PRECOND(data != NULL || size == 0);
+
+	need = chat_phone_need(len, size);
+
+	if (chat_phone_reserve(need) == -1) {
+		vigil_log(LOG_NOTICE,
+		    "[companion] no room in our journal, dropped an entry");
+		return (-1);
+	}
+
+	ret = chat_phone_queue(json, len, data, size);
+	chat_phone_release(need);
+
+	return (ret);
+}
+
+/*
+ * Write the given JSON event with the given data, if any, to our journal
+ * for our desktop. An entry is the length of the JSON, the JSON with the
+ * time we got the event in at, and the data. Returns -1 if we lost it.
+ */
+static int
+chat_phone_queue(const char *json, size_t len, const u_int8_t *data,
+    size_t size)
+{
+	int		n;
+	u_int64_t	ms;
+	struct timespec	ts;
+	int		ret;
+	u_int32_t	have;
+	size_t		total;
+	char		at[32];
+	u_int8_t	*entry;
+
+	PRECOND(json != NULL);
+	PRECOND(len > 1 && len <= VIGIL_COMPANION_JSON_MAX);
+	PRECOND(json[len - 1] == '}');
+	PRECOND(data != NULL || size == 0);
+	PRECOND(companion_role == VIGIL_COMPANION_PHONE);
+
+	(void)clock_gettime(CLOCK_REALTIME, &ts);
+	ms = (u_int64_t)ts.tv_sec * 1000 + (ts.tv_nsec / 1000000);
+
+	n = snprintf(at, sizeof(at), ",\"at\":%" PRIu64 "}", ms);
+	if (n < 0 || (size_t)n >= sizeof(at))
+		fatal("snprintf: the time of an event");
+
+	len--;
+	total = sizeof(have) + len + n + size;
+
+	if ((entry = malloc(total)) == NULL)
+		fatal("malloc: failed to allocate journal entry");
+
+	have = htobe32(len + n);
+	memcpy(entry, &have, sizeof(have));
+	memcpy(entry + sizeof(have), json, len);
+	memcpy(entry + sizeof(have) + len, at, n);
+
+	if (size > 0)
+		memcpy(entry + sizeof(have) + len + n, data, size);
+
+	ret = 0;
+
+	if (vigil_journal_append(&journal, entry, total) == 0) {
+		vigil_log(LOG_NOTICE, "[companion] could not write to "
+		    "our journal, our desktop needs a full resync");
+		companion_dirty = 1;
+		ret = -1;
+	}
+
+	vigil_atomic_write(&companion_journal, journal.bytes);
+
+	nyfe_mem_zero(entry, total);
+	free(entry);
+
+	return (ret);
+}
+
+/*
+ * Send our desktop the next entries of our journal once the parcel before
+ * them was acked. Entries without data go together in one parcel for as
+ * long as they fit, an entry with data goes on its own.
+ */
+static void
+chat_phone_pump(void)
+{
+	u_int64_t		seq;
+	u_int32_t		jlen;
+	struct chat_blob	*blob;
+	u_int64_t		first;
+	u_int8_t		*entry, *body, *data;
+	size_t			len, off, dlen, doff, count;
+
+	PRECOND(companion_role == VIGIL_COMPANION_PHONE);
+
+	if (companion.tunnel == NULL || !chat_tunnel_online(companion.tunnel))
+		return;
+
+	if (!journal_heard || !TAILQ_EMPTY(&companion.outbox))
+		return;
+
+	if (chat_companion_mismatch())
+		return;
+
+	if (journal_sent < journal.acked)
+		journal_sent = journal.acked;
+
+	if (journal_sent >= journal.last)
+		return;
+
+	if ((body = malloc(CHAT_COMPANION_BATCH)) == NULL)
+		fatal("malloc: failed to allocate companion parcel");
+
+	off = 0;
+	dlen = 0;
+	doff = 0;
+	first = 0;
+	count = 0;
+	data = NULL;
+
+	for (seq = journal_sent + 1; seq <= journal.last; seq++) {
+		if ((entry = vigil_journal_read(&journal, seq, &len)) == NULL) {
+			vigil_log(LOG_NOTICE,
+			    "[companion] could not read journal entry %" PRIu64
+			    ", our desktop needs a full resync", seq);
+			journal_sent = seq;
+			continue;
+		}
+
+		if (chat_phone_entry(entry, len, &jlen) == -1) {
+			nyfe_mem_zero(entry, len);
+			free(entry);
+			journal_sent = seq;
+			continue;
+		}
+
+		if (count > 0 && len > sizeof(jlen) + jlen) {
+			nyfe_mem_zero(entry, len);
+			free(entry);
+			break;
+		}
+
+		if (count > 0 && off + CHAT_ENTRY_HEAD + jlen >
+		    CHAT_COMPANION_BATCH) {
+			nyfe_mem_zero(entry, len);
+			free(entry);
+			break;
+		}
+
+		if (count == 0)
+			first = seq;
+
+		chat_phone_entry_add(body, &off, seq, entry + sizeof(jlen),
+		    jlen);
+
+		count++;
+		journal_sent = seq;
+
+		if (len > sizeof(jlen) + jlen) {
+			data = entry;
+			dlen = len;
+			doff = sizeof(jlen) + jlen;
+			break;
+		}
+
+		nyfe_mem_zero(entry, len);
+		free(entry);
+	}
+
+	if (count > 0) {
+		blob = chat_companion_blob(CHAT_PARCEL_HEAD +
+		    off + dlen - doff);
+		blob->ref = journal_sent;
+
+		len = sizeof(struct vigil_chat_data_head);
+
+		jlen = htobe32(count);
+		memcpy(blob->data + len, &jlen, sizeof(jlen));
+		len += sizeof(jlen);
+
+		jlen = htobe32(dlen - doff);
+		memcpy(blob->data + len, &jlen, sizeof(jlen));
+		len += sizeof(jlen);
+
+		seq = htobe64(journal.last);
+		memcpy(blob->data + len, &seq, sizeof(seq));
+		len += sizeof(seq);
+
+		memcpy(blob->data + len, body, off);
+		len += off;
+
+		if (data != NULL)
+			memcpy(blob->data + len, data + doff, dlen - doff);
+
+		chat_companion_push(blob);
+
+		vigil_log(LOG_INFO, "[companion] sending entries %" PRIu64
+		    " to %" PRIu64 " of %" PRIu64 " to our desktop, %zu bytes "
+		    "of data", first, journal_sent, journal.last, dlen - doff);
+	}
+
+	if (data != NULL) {
+		nyfe_mem_zero(data, dlen);
+		free(data);
+	}
+
+	nyfe_mem_zero(body, CHAT_COMPANION_BATCH);
+	free(body);
+}
+
+/*
+ * Our desktop has the entries of our journal up to the given seq.
+ */
+static void
+chat_phone_acked(u_int64_t seq)
+{
+	PRECOND(companion_role == VIGIL_COMPANION_PHONE);
+
+	if (seq > journal.last) {
+		vigil_log(LOG_NOTICE, "[companion] our journal is missing "
+		    "entries, our desktop needs a full resync");
+		companion_dirty = 1;
+	}
+
+	if (seq > journal.acked) {
+		vigil_log(LOG_INFO, "[companion] our desktop has entries up "
+		    "to %" PRIu64 " of %" PRIu64, seq, journal.last);
+	}
+
+	if (vigil_journal_ack(&journal, seq) == -1) {
+		vigil_log(LOG_NOTICE, "[companion] could not save that "
+		    "our desktop has up to %" PRIu64, seq);
+	}
+
+	vigil_atomic_write(&companion_journal, journal.bytes);
+}
+
+/*
+ * Check the given journal entry and put the length of its JSON in jlen.
+ */
+static int
+chat_phone_entry(const u_int8_t *entry, size_t len, u_int32_t *jlen)
+{
+	PRECOND(entry != NULL);
+	PRECOND(jlen != NULL);
+
+	if (len < sizeof(*jlen))
+		return (-1);
+
+	memcpy(jlen, entry, sizeof(*jlen));
+	*jlen = be32toh(*jlen);
+
+	if (*jlen == 0 || *jlen > len - sizeof(*jlen))
+		return (-1);
+
+	if (*jlen > CHAT_COMPANION_BATCH - CHAT_ENTRY_HEAD)
+		return (-1);
+
+	return (0);
+}
+
+/*
+ * Append the given JSON as the entry with the given seq to body at off.
+ */
+static void
+chat_phone_entry_add(u_int8_t *body, size_t *off, u_int64_t seq,
+    const u_int8_t *json, u_int32_t len)
+{
+	u_int64_t	be64;
+	u_int32_t	be32;
+
+	PRECOND(body != NULL);
+	PRECOND(off != NULL);
+	PRECOND(json != NULL);
+	PRECOND(*off + CHAT_ENTRY_HEAD + len <= CHAT_COMPANION_BATCH);
+
+	be64 = htobe64(seq);
+	memcpy(body + *off, &be64, sizeof(be64));
+	*off += sizeof(be64);
+
+	be32 = htobe32(len);
+	memcpy(body + *off, &be32, sizeof(be32));
+	*off += sizeof(be32);
+
+	memcpy(body + *off, json, len);
+	*off += len;
+}
+
+/*
+ * Run the request our desktop sent. We ack a send or ask once our platform
+ * stored what it did with it, so an ack means our journal holds the result.
+ * Returns -1 if we cannot queue a send right now, our desktop then sends
+ * the request again.
+ */
+static int
+chat_phone_request(struct chat_tunnel *tun, struct chat_rxfer *xfer)
+{
+	struct vigil_chat_request	req;
+	size_t				len;
+	u_int64_t			token;
+	int				ret;
+	const u_int8_t			*data;
+
+	PRECOND(tun != NULL);
+	PRECOND(xfer != NULL);
+	PRECOND(companion_role == VIGIL_COMPANION_PHONE);
+
+	if (chat_companion_mismatch())
+		return (-1);
+
+	if (xfer->size < sizeof(struct vigil_chat_data_head) + sizeof(req)) {
+		vigil_log(LOG_NOTICE, "[companion] request too short");
+		chat_data_discard(tun, xfer);
+		return (0);
+	}
+
+	memcpy(&req, xfer->data + sizeof(struct vigil_chat_data_head),
+	    sizeof(req));
+
+	data = xfer->data + sizeof(struct vigil_chat_data_head) + sizeof(req);
+	len = xfer->size - sizeof(struct vigil_chat_data_head) - sizeof(req);
+
+	req.ref = be64toh(req.ref);
+	req.ask = be16toh(req.ask);
+	req.hash = be64toh(req.hash);
+	req.topic = be64toh(req.topic);
+	req.group = be64toh(req.group);
+	req.serial = be32toh(req.serial);
+
+	ret = 0;
+	token = ++tokens;
+
+	switch (req.op) {
+	case VIGIL_COMPANION_SEND:
+		ret = chat_phone_send(&req, data, len, token);
+		break;
+	case VIGIL_COMPANION_CALL:
+		chat_phone_call(&req);
+		break;
+	case VIGIL_COMPANION_ASK:
+		ret = chat_phone_ask(&req, data, len, token);
+		break;
+	default:
+		vigil_log(LOG_NOTICE, "[companion] unknown request %u", req.op);
+		break;
+	}
+
+	if (ret == -1)
+		return (-1);
+
+	if (ret == 1)
+		chat_data_hold(tun, xfer, token);
+	else
+		chat_data_discard(tun, xfer);
+
+	return (0);
+}
+
+/*
+ * Returns -1 if the given send request of our desktop is bad, len is the
+ * length of its text or data.
+ */
+static int
+chat_phone_valid(const struct vigil_chat_request *req, size_t len)
+{
+	size_t		max;
+
+	PRECOND(req != NULL);
+
+	if (!(req->ref & VIGIL_CHAT_COMPANION_REF))
+		return (-1);
+
+	if (req->group != 0) {
+		if (req->owner == 0 || req->owner >= KYRKA_PEERS_PER_FLOCK)
+			return (-1);
+	} else if (req->peer == 0 || req->peer >= KYRKA_PEERS_PER_FLOCK) {
+		return (-1);
+	}
+
+	if (req->kind != 0) {
+		if (req->kind == VIGIL_CHAT_DATA_AVATAR)
+			return (-1);
+
+		if (chat_data_kind_valid(req->kind) == -1)
+			return (-1);
+
+		if (req->len > sizeof(req->name))
+			return (-1);
+
+		if (chat_data_name_valid(req->name, req->len) == -1)
+			return (-1);
+
+		if (len == 0 || len > VIGIL_CHAT_DATA_MAX)
+			return (-1);
+
+		return (0);
+	}
+
+	if (req->group != 0 && req->topic != 0)
+		max = VIGIL_CHAT_GROUP_TOPIC_MAX;
+	else if (req->group != 0 && req->hash != 0)
+		max = VIGIL_CHAT_GROUP_REPLY_MAX;
+	else if (req->group != 0)
+		max = VIGIL_CHAT_GROUP_MAX;
+	else if (req->topic != 0)
+		max = VIGIL_CHAT_TOPIC_MAX;
+	else if (req->hash != 0)
+		max = VIGIL_CHAT_REPLY_MAX;
+	else
+		max = VIGIL_CHAT_MESSAGE_MAX;
+
+	if (len == 0 || len > max)
+		return (-1);
+
+	return (0);
+}
+
+/*
+ * Queue the text or data of the given request for every peer the request
+ * names, and hand our platform an echo event for the send under the given
+ * token. Returns 1 if our platform got the echo, 0 if the request is bad
+ * and -1 if we cannot take it right now.
+ */
+static int
+chat_phone_send(const struct vigil_chat_request *req, const u_int8_t *data,
+    size_t len, u_int64_t token)
+{
+	int			idx;
+	int			ret;
+	struct chat_event	*evt;
+	u_int8_t		local;
+	struct chat_quote	quote;
+	struct chat_group	group;
+	struct chat_topic	topic;
+	u_int8_t		targets[VIGIL_CHAT_GROUP_ROSTER];
+	char			name[VIGIL_CHAT_DATA_NAME_MAX + 1];
+
+	PRECOND(req != NULL);
+	PRECOND(data != NULL);
+	PRECOND(req->op == VIGIL_COMPANION_SEND);
+
+	if (chat_phone_valid(req, len) == -1) {
+		vigil_log(LOG_NOTICE, "[companion] bad request %" PRIu64,
+		    req->ref);
+		return (0);
+	}
+
+	local = vigil->gospel->spi & 0xff;
+
+	memset(&quote, 0, sizeof(quote));
+	memset(&group, 0, sizeof(group));
+	memset(&topic, 0, sizeof(topic));
+	memset(name, 0, sizeof(name));
+
+	topic.id = req->topic;
+	quote.hash = req->hash;
+	quote.author = req->author;
+
+	if (req->group != 0) {
+		group.id = req->group;
+		group.owner = req->owner;
+		group.serial = req->serial;
+		group.type = VIGIL_CHAT_TYPE_TEXT;
+	}
+
+	if (req->group != 0) {
+		memcpy(targets, req->members, sizeof(targets));
+	} else {
+		memset(targets, 0, sizeof(targets));
+		targets[req->peer / 8] |= 1 << (req->peer % 8);
+	}
+
+	targets[0] &= ~1;
+	targets[local / 8] &= ~(1 << (local % 8));
+
+	memcpy(name, req->name, req->len);
+
+	if (chat_events_room() == -1) {
+		vigil_log(LOG_NOTICE, "[companion] no room to tell our "
+		    "platform about request %" PRIu64 ", our desktop sends "
+		    "it again", req->ref);
+		return (-1);
+	}
+
+	for (idx = 1; idx < KYRKA_PEERS_PER_FLOCK; idx++) {
+		if (!(targets[idx / 8] & (1 << (idx % 8))))
+			continue;
+
+		if (req->kind != 0) {
+			ret = chat_data_queue(idx, req->ref,
+			    req->group != 0 ? &group : NULL, req->topic,
+			    req->kind, name, data, len);
+		} else {
+			ret = chat_command_queue(CHAT_COMMAND_SEND, idx,
+			    req->ref, &quote, &topic,
+			    req->group != 0 ? &group : NULL, data, len);
+		}
+
+		if (ret == -1) {
+			vigil_log(LOG_NOTICE, "[companion] no room for request "
+			    "%" PRIu64 ", our desktop sends it again", req->ref);
+			return (-1);
+		}
+	}
+
+	evt = calloc(1, sizeof(*evt));
+	if (evt == NULL)
+		fatal("calloc: failed to allocate echo event");
+
+	evt->token = token;
+	evt->peer = req->peer;
+	evt->value = req->ref;
+	evt->type = CHAT_EVENT_ECHO;
+
+	memcpy(&evt->quote, &quote, sizeof(quote));
+	memcpy(&evt->topic, &topic, sizeof(topic));
+	memcpy(&evt->group, &group, sizeof(group));
+
+	if (req->group != 0) {
+		evt->peer = group.owner;
+		memcpy(evt->group.members, targets, sizeof(targets));
+	}
+
+	if (req->kind == 0) {
+		memcpy(evt->text, data, len);
+	} else {
+		evt->size = len;
+		evt->kind = req->kind;
+		memcpy(evt->text, name, req->len);
+	}
+
+	if (req->kind == 0)
+		ret = chat_phone_tell(evt, NULL, 0);
+	else
+		ret = chat_phone_tell(evt, data, len);
+
+	if (ret == -1)
+		return (-1);
+
+	return (1);
+}
+
+/*
+ * Dial, answer, decline or hang up a call as our desktop asks. A call our
+ * desktop dials or answers is held by our desktop, we relay its audio.
+ */
+static void
+chat_phone_call(const struct vigil_chat_request *req)
+{
+	int			state;
+	u_int8_t		peer, ringing, st, flags;
+
+	PRECOND(req != NULL);
+	PRECOND(req->op == VIGIL_COMPANION_CALL);
+
+	peer = req->peer;
+
+	if (peer == 0 || peer >= KYRKA_PEERS_PER_FLOCK ||
+	    peer == (vigil->gospel->spi & 0xff)) {
+		vigil_log(LOG_NOTICE, "[companion] bad call request");
+		return;
+	}
+
+	switch (req->kind) {
+	case VIGIL_COMPANION_DIAL:
+		vigil_log(LOG_INFO, "[companion] calling %02x", peer);
+		vigil_call_dial(peer);
+		vigil_voice_relay_call(peer, VIGIL_VOICE_MODE_CALL);
+		break;
+	case VIGIL_COMPANION_ANSWER:
+		vigil_log(LOG_INFO, "[companion] answering %02x", peer);
+		if (vigil_voice_relay_answer(peer) == 0)
+			break;
+		state = vigil_call_peer(peer) & VIGIL_CALL_PEER_SIGNALING;
+		if (state == VIGIL_CALL_PEER_PRESENT)
+			vigil_voice_relay_call(peer, VIGIL_VOICE_MODE_ANSWER);
+		break;
+	case VIGIL_COMPANION_DECLINE:
+		vigil_voice_relay_state(&ringing, &st, &flags);
+		if (ringing == peer && (flags & VIGIL_COMPANION_CALL_RINGING))
+			vigil_voice_hangup();
+		break;
+	case VIGIL_COMPANION_HANGUP:
+		vigil_log(LOG_INFO, "[companion] hanging up on %02x", peer);
+		vigil_voice_hangup();
+		vigil_call_hangup();
+		break;
+	default:
+		vigil_log(LOG_NOTICE, "[companion] unknown call request");
+		break;
+	}
+}
+
+/*
+ * Hand our platform the ask in the given request under the given token.
+ * Returns 1 if our platform got the ask, 0 if it is bad and -1 if there is
+ * no room for it right now.
+ */
+static int
+chat_phone_ask(const struct vigil_chat_request *req, const u_int8_t *data,
+    size_t len, u_int64_t token)
+{
+	struct chat_event	*evt;
+
+	PRECOND(req != NULL);
+	PRECOND(data != NULL);
+	PRECOND(req->op == VIGIL_COMPANION_ASK);
+
+	if (req->ask == 0 || req->ask > VIGIL_CHAT_MESSAGE_MAX ||
+	    req->ask > len) {
+		vigil_log(LOG_NOTICE, "[companion] bad ask");
+		return (0);
+	}
+
+	if (memchr(data, '\0', req->ask) != NULL) {
+		vigil_log(LOG_NOTICE, "[companion] bad ask");
+		return (0);
+	}
+
+	if (len - req->ask > VIGIL_CHAT_DATA_MAX) {
+		vigil_log(LOG_NOTICE, "[companion] ask with too much data");
+		return (0);
+	}
+
+	evt = calloc(1, sizeof(*evt));
+	if (evt == NULL)
+		fatal("calloc: failed to allocate desktop event");
+
+	evt->token = token;
+	evt->peer = companion.id;
+	evt->size = len - req->ask;
+	evt->type = CHAT_EVENT_DESKTOP;
+	evt->kind = CHAT_DESKTOP_ASK;
+	memcpy(evt->text, data, req->ask);
+
+	if (chat_phone_tell(evt, data + req->ask, len - req->ask) == -1)
+		return (-1);
+
+	return (1);
+}
+
+/*
+ * Queue the given event for our platform, with the given data for
+ * vigil_chat_data_take() under the token of the event, if any. Returns -1
+ * if there is no room.
+ */
+static int
+chat_phone_tell(struct chat_event *evt, const u_int8_t *data, size_t len)
+{
+	struct chat_parcel	*parcel;
+
+	PRECOND(evt != NULL);
+	PRECOND(evt->token != 0);
+	PRECOND(data != NULL || len == 0);
+
+	parcel = NULL;
+
+	if (len > 0) {
+		parcel = calloc(1, sizeof(*parcel));
+		if (parcel == NULL)
+			fatal("calloc: failed to allocate echo parcel");
+
+		parcel->data = malloc(len);
+		if (parcel->data == NULL)
+			fatal("malloc: failed to allocate echo parcel data");
+
+		memcpy(parcel->data, data, len);
+
+		parcel->size = len;
+		parcel->age = vigil->now;
+		parcel->token = evt->token;
+	}
+
+	if (chat_event_insert(evt) == -1) {
+		if (parcel != NULL)
+			chat_parcel_free(parcel);
+		return (-1);
+	}
+
+	if (parcel != NULL)
+		chat_parcel_hold(parcel);
+
+	return (0);
+}
+
+/*
+ * Apply the state our desktop sent, the peers our desktop types to and the
+ * chats our desktop has open, as if our own platform set that state.
+ */
+static void
+chat_phone_desktop(const struct vigil_companion_desktop *st)
+{
+	int		idx;
+	u_int8_t	local;
+	int		on, was;
+
+	PRECOND(st != NULL);
+	PRECOND(companion_role == VIGIL_COMPANION_PHONE);
+
+	if (!memcmp(st, &companion_desktop, sizeof(*st)))
+		return;
+
+	local = vigil->gospel->spi & 0xff;
+
+	for (idx = 1; idx < KYRKA_PEERS_PER_FLOCK; idx++) {
+		if (idx == local)
+			continue;
+
+		on = (st->typing[idx / 8] >> (idx % 8)) & 1;
+		was = (companion_desktop.typing[idx / 8] >> (idx % 8)) & 1;
+
+		if (on != was || (on && st->topic != companion_desktop.topic))
+			vigil_chat_typing(idx, be64toh(st->topic), on);
+
+		on = (st->opened[idx / 8] >> (idx % 8)) & 1;
+		was = (companion_desktop.opened[idx / 8] >> (idx % 8)) & 1;
+
+		if (on != was)
+			vigil_chat_open(idx, on);
+	}
+
+	if (st->group != companion_desktop.group ||
+	    st->owner != companion_desktop.owner ||
+	    st->topic != companion_desktop.topic ||
+	    memcmp(st->members, companion_desktop.members,
+	    sizeof(st->members))) {
+		if (st->group == 0 || st->owner == 0 ||
+		    st->owner >= KYRKA_PEERS_PER_FLOCK) {
+			vigil_chat_group_typing(0, 0, 0, NULL);
+		} else {
+			vigil_chat_group_typing(st->owner, be64toh(st->group),
+			    be64toh(st->topic), st->members);
+		}
+	}
+
+	memcpy(&companion_desktop, st, sizeof(*st));
+}
+
+/*
+ * Fill in the state we send our desktop with each heartbeat, who is around
+ * and the call we run.
+ */
+static void
+chat_phone_state(struct vigil_companion_phone *st)
+{
+	int				idx;
+	struct chat_tunnel		*tun;
+	int				state;
+	u_int64_t			count;
+	struct vigil_companion_typed	*typed;
+
+	PRECOND(st != NULL);
+	PRECOND(companion_role == VIGIL_COMPANION_PHONE);
+
+	memset(st, 0, sizeof(*st));
+	st->magic = htobe16(VIGIL_COMPANION_MAGIC);
+	st->version = htobe16(VIGIL_COMPANION_VERSION);
+	st->last = htobe64(journal.last);
+
+	for (idx = 1; idx < KYRKA_PEERS_PER_FLOCK; idx++) {
+		tun = peers[idx].tunnel;
+
+		state = vigil_call_peer(idx);
+		if (peers[idx].present || (state & VIGIL_CALL_PEER_ONLINE))
+			st->present[idx / 8] |= 1 << (idx % 8);
+
+		if ((state & VIGIL_CALL_PEER_SIGNALING) ==
+		    VIGIL_CALL_PEER_PRESENT)
+			st->incoming[idx / 8] |= 1 << (idx % 8);
+
+		if (tun == NULL || !chat_tunnel_online(tun))
+			continue;
+
+		st->online[idx / 8] |= 1 << (idx % 8);
+
+		if (tun->typing)
+			st->typing[idx / 8] |= 1 << (idx % 8);
+
+		if (tun->typing_group == 0 && tun->typing_topic == 0)
+			continue;
+
+		if (st->typed_count == VIGIL_COMPANION_TYPED)
+			continue;
+
+		typed = &st->typed[st->typed_count++];
+		typed->peer = idx;
+		typed->owner = tun->typing_owner;
+		typed->group = htobe64(tun->typing_group);
+		typed->topic = htobe64(tun->typing_topic);
+	}
+
+	vigil_voice_relay_state(&st->call_peer, &st->call_state,
+	    &st->call_flags);
+	vigil_voice_ended(&st->ended_peer, &st->ended_why, &count);
+
+	st->ended = htobe64(count);
+}
+
+/*
+ * Turn a command of our platform into a request for our phone.
+ */
+static void
+chat_desktop_forward(struct chat_command *cmd)
+{
+	struct vigil_chat_request	req;
+
+	PRECOND(cmd != NULL);
+	PRECOND(companion_role == VIGIL_COMPANION_DESKTOP);
+
+	memset(&req, 0, sizeof(req));
+
+	switch (cmd->type) {
+	case CHAT_COMMAND_CALL:
+		req.peer = cmd->peer;
+		req.kind = cmd->value;
+		req.op = VIGIL_COMPANION_CALL;
+		chat_desktop_request(&req, NULL, 0);
+		break;
+	case CHAT_COMMAND_REQUEST:
+		memcpy(&req, cmd->blob->data, sizeof(req));
+		chat_desktop_request(&req, cmd->blob->data + cmd->len,
+		    cmd->blob->size - cmd->len);
+		break;
+	default:
+		fatal("chat command %d does not go via our phone", cmd->type);
+	}
+}
+
+/*
+ * Hand the event loop the given request in host byte order with the given
+ * text, data or ask. Returns -1 if it cannot take it right now.
+ */
+static int
+chat_desktop_queue(const struct vigil_chat_request *req, const void *data,
+    size_t len)
+{
+	int				ret;
+	struct vigil_chat_request	wire;
+
+	PRECOND(req != NULL);
+	PRECOND(data != NULL);
+	PRECOND(len > 0);
+
+	memcpy(&wire, req, sizeof(wire));
+
+	wire.ref = htobe64(req->ref);
+	wire.ask = htobe16(req->ask);
+	wire.hash = htobe64(req->hash);
+	wire.topic = htobe64(req->topic);
+	wire.group = htobe64(req->group);
+	wire.serial = htobe32(req->serial);
+
+	ret = chat_command_blob(CHAT_COMMAND_REQUEST, 0,
+	    (const char *)&wire, sizeof(wire), data, len);
+
+	return (ret);
+}
+
+/*
+ * Put the given call on the outbox for our phone, or hold the given send
+ * or ask with its text or data for our phone until it has it. We tell our
+ * platform when we can do neither.
+ */
+static void
+chat_desktop_request(const struct vigil_chat_request *req,
+    const u_int8_t *data, size_t len)
+{
+	size_t			off;
+	struct chat_blob	*blob;
+
+	PRECOND(req != NULL);
+	PRECOND(data != NULL || len == 0);
+	PRECOND(companion_role == VIGIL_COMPANION_DESKTOP);
+
+	if (req->op != VIGIL_COMPANION_CALL) {
+		if (chat_desktop_hold(req, data, len) == -1)
+			chat_desktop_unsent(req);
+		return;
+	}
+
+	if (chat_companion_room(sizeof(*req) + len) == -1) {
+		chat_desktop_unsent(req);
+		return;
+	}
+
+	blob = chat_companion_blob(sizeof(*req) + len);
+
+	off = sizeof(struct vigil_chat_data_head);
+	memcpy(blob->data + off, req, sizeof(*req));
+
+	if (len > 0)
+		memcpy(blob->data + off + sizeof(*req), data, len);
+
+	chat_companion_push(blob);
+}
+
+/*
+ * Write the given request with its text or data to our requests on disk.
+ * Returns -1 if we have no room for it or could not write it.
+ */
+static int
+chat_desktop_hold(const struct vigil_chat_request *req,
+    const u_int8_t *data, size_t len)
+{
+	u_int64_t	seq;
+	size_t		total;
+	u_int8_t	*entry;
+
+	PRECOND(req != NULL);
+	PRECOND(data != NULL || len == 0);
+
+	if (!requests.sealed) {
+		vigil_log(LOG_NOTICE, "[companion] we keep no requests for "
+		    "our phone, a request did not go out");
+		return (-1);
+	}
+
+	total = sizeof(*req) + len;
+
+	if (requests.bytes + total > CHAT_JOURNAL_MAX) {
+		vigil_log(LOG_NOTICE, "[companion] no room for another "
+		    "request for our phone, it did not go out");
+		return (-1);
+	}
+
+	if ((entry = malloc(total)) == NULL)
+		fatal("malloc: failed to allocate request");
+
+	memcpy(entry, req, sizeof(*req));
+
+	if (len > 0)
+		memcpy(entry + sizeof(*req), data, len);
+
+	seq = vigil_journal_append(&requests, entry, total);
+
+	nyfe_mem_zero(entry, total);
+	free(entry);
+
+	if (seq == 0)
+		return (-1);
+
+	return (0);
+}
+
+/*
+ * Send our phone the next request we hold once it acked the one before.
+ * After we lost our phone we first take all it wrote to its journal, so
+ * we know if it already did what our last request asked.
+ */
+static void
+chat_desktop_pump(void)
+{
+	size_t				len;
+	u_int64_t			seq;
+	u_int64_t			last;
+	struct chat_msg			*msg;
+	struct chat_blob		*blob;
+	u_int8_t			*entry;
+	struct vigil_chat_request	req;
+
+	PRECOND(companion_role == VIGIL_COMPANION_DESKTOP);
+
+	if (!requests.sealed)
+		return;
+
+	if (companion.tunnel == NULL ||
+	    !chat_tunnel_online(companion.tunnel)) {
+		chat_desktop_recall();
+		return;
+	}
+
+	if (chat_companion_mismatch())
+		return;
+
+	TAILQ_FOREACH(msg, &companion.outbox, wlist) {
+		if (msg->ref & CHAT_REQUEST_REF)
+			return;
+	}
+
+	if (companion_phone.magic == 0)
+		return;
+
+	last = be64toh(companion_phone.last);
+	if (companion_last > last)
+		last = companion_last;
+
+	if (journal.acked < last)
+		return;
+
+	if (requests_sent < requests.acked)
+		requests_sent = requests.acked;
+
+	for (seq = requests_sent + 1; seq <= requests.last; seq++) {
+		requests_sent = seq;
+
+		entry = vigil_journal_read(&requests, seq, &len);
+		if (entry == NULL) {
+			vigil_log(LOG_NOTICE, "[companion] could not read "
+			    "request %" PRIu64 ", it does not go out", seq);
+			chat_desktop_acked(seq);
+			continue;
+		}
+
+		if (len < sizeof(req)) {
+			nyfe_mem_zero(entry, len);
+			free(entry);
+			chat_desktop_acked(seq);
+			continue;
+		}
+
+		memcpy(&req, entry, sizeof(req));
+
+		requests_head = seq;
+		requests_ref = be64toh(req.ref);
+
+		blob = chat_companion_blob(len);
+		blob->ref = seq | CHAT_REQUEST_REF;
+		memcpy(blob->data + sizeof(struct vigil_chat_data_head),
+		    entry, len);
+
+		nyfe_mem_zero(entry, len);
+		free(entry);
+
+		chat_companion_push(blob);
+		break;
+	}
+}
+
+/*
+ * Remember the seq and ref of the first request our phone did not ack, it
+ * is the one our phone may have done without us knowing.
+ */
+static void
+chat_desktop_head(void)
+{
+	size_t				len;
+	u_int8_t			*entry;
+	struct vigil_chat_request	req;
+
+	PRECOND(companion_role == VIGIL_COMPANION_DESKTOP);
+
+	requests_head = 0;
+	requests_ref = 0;
+
+	if (!requests.sealed || requests.acked >= requests.last)
+		return;
+
+	entry = vigil_journal_read(&requests, requests.acked + 1, &len);
+	if (entry == NULL)
+		return;
+
+	if (len >= sizeof(req)) {
+		memcpy(&req, entry, sizeof(req));
+		requests_head = requests.acked + 1;
+		requests_ref = be64toh(req.ref);
+	}
+
+	nyfe_mem_zero(entry, len);
+	free(entry);
+}
+
+/*
+ * Take the request we sent our phone off our outbox, we send it again
+ * once we know our phone did not do it yet.
+ */
+static void
+chat_desktop_recall(void)
+{
+	struct chat_tunnel	*tun;
+	struct chat_msg		*msg, *next;
+
+	PRECOND(companion_role == VIGIL_COMPANION_DESKTOP);
+
+	tun = companion.tunnel;
+
+	for (msg = TAILQ_FIRST(&companion.outbox); msg != NULL; msg = next) {
+		next = TAILQ_NEXT(msg, wlist);
+
+		if (!(msg->ref & CHAT_REQUEST_REF))
+			continue;
+
+		if (tun != NULL && msg->pending)
+			TAILQ_REMOVE(&tun->sendq, msg, slist);
+
+		if (tun != NULL && tun->xfer != NULL && tun->xfer->msg == msg)
+			chat_xfer_free(tun);
+
+		TAILQ_REMOVE(&companion.outbox, msg, wlist);
+		chat_msg_free(msg);
+	}
+
+	requests_sent = requests.acked;
+}
+
+/*
+ * Returns 1 if the given JSON entry of our phone is the record of what it
+ * did with the request we sent it last: a record under the ref of a send,
+ * or the answer to an ask under its id.
+ */
+static int
+chat_desktop_done(const u_int8_t *json, size_t len)
+{
+	int		ret;
+	const u_int8_t	*at;
+	char		ref[48], id[48];
+
+	PRECOND(json != NULL);
+
+	if (requests_head == 0)
+		return (0);
+
+	ret = snprintf(ref, sizeof(ref), "\"ref\":%" PRIu64, requests_ref);
+	if (ret < 0 || (size_t)ret >= sizeof(ref))
+		fatal("snprintf: the ref of a request");
+
+	if ((at = memmem(json, len, ref, ret)) != NULL &&
+	    (at + ret == json + len || !isdigit(at[ret])))
+		return (1);
+
+	ret = snprintf(id, sizeof(id), "\"id\":%" PRIu64, requests_ref);
+	if (ret < 0 || (size_t)ret >= sizeof(id))
+		fatal("snprintf: the id of an ask");
+
+	if ((at = memmem(json, len, id, ret)) != NULL &&
+	    (at + ret == json + len || !isdigit(at[ret])))
+		return (1);
+
+	return (0);
+}
+
+/*
+ * Our phone has our requests up to the given seq.
+ */
+static void
+chat_desktop_acked(u_int64_t seq)
+{
+	PRECOND(companion_role == VIGIL_COMPANION_DESKTOP);
+
+	if (seq >= requests_head) {
+		requests_head = 0;
+		requests_ref = 0;
+	}
+
+	if (vigil_journal_ack(&requests, seq) == -1) {
+		vigil_log(LOG_NOTICE, "[companion] could not save that our "
+		    "phone has our requests up to %" PRIu64, seq);
+	}
+}
+
+/*
+ * Tell our platform about the sends we held for our phone when we started,
+ * as room for events allows, so it shows them as waiting.
+ */
+static void
+chat_desktop_told(void)
+{
+	size_t				len;
+	u_int64_t			seq;
+	struct vigil_chat_request	req;
+	u_int8_t			*entry;
+
+	PRECOND(companion_role == VIGIL_COMPANION_DESKTOP);
+
+	while (requests_told < requests_held) {
+		if (chat_events_room() == -1)
+			return;
+
+		seq = ++requests_told;
+
+		if (seq <= requests.acked)
+			continue;
+
+		if ((entry = vigil_journal_read(&requests, seq, &len)) == NULL)
+			continue;
+
+		if (len > sizeof(req)) {
+			memcpy(&req, entry, sizeof(req));
+
+			if (req.op == VIGIL_COMPANION_SEND) {
+				chat_desktop_queued(&req, entry + sizeof(req),
+				    len - sizeof(req));
+			}
+		}
+
+		nyfe_mem_zero(entry, len);
+		free(entry);
+	}
+}
+
+/*
+ * Tell our platform about the given send we hold for our phone.
+ */
+static void
+chat_desktop_queued(const struct vigil_chat_request *req,
+    const u_int8_t *data, size_t len)
+{
+	struct chat_event	*evt;
+
+	PRECOND(req != NULL);
+	PRECOND(data != NULL);
+	PRECOND(req->op == VIGIL_COMPANION_SEND);
+
+	evt = calloc(1, sizeof(*evt));
+	if (evt == NULL)
+		fatal("calloc: failed to allocate desktop event");
+
+	evt->type = CHAT_EVENT_DESKTOP;
+	evt->kind = CHAT_DESKTOP_QUEUED;
+
+	evt->peer = req->peer;
+	evt->value = be64toh(req->ref);
+	evt->topic.id = be64toh(req->topic);
+	evt->quote.author = req->author;
+	evt->quote.hash = be64toh(req->hash);
+
+	if (req->group != 0) {
+		evt->peer = req->owner;
+		evt->group.owner = req->owner;
+		evt->group.id = be64toh(req->group);
+		evt->group.serial = be32toh(req->serial);
+	}
+
+	if (req->kind != 0) {
+		evt->size = len;
+		memcpy(evt->text, req->name, req->len);
+		(void)snprintf(evt->name, sizeof(evt->name), "%s",
+		    chat_data_kind_name(req->kind));
+	} else if (len < sizeof(evt->text)) {
+		memcpy(evt->text, data, len);
+	}
+
+	(void)chat_event_insert(evt);
+}
+
+/*
+ * Tell our platform the given request never went to our phone, a send
+ * names its chat and ref.
+ */
+static void
+chat_desktop_unsent(const struct vigil_chat_request *req)
+{
+	struct chat_event	*evt;
+
+	PRECOND(req != NULL);
+	PRECOND(companion_role == VIGIL_COMPANION_DESKTOP);
+
+	evt = calloc(1, sizeof(*evt));
+	if (evt == NULL)
+		fatal("calloc: failed to allocate desktop event");
+
+	evt->type = CHAT_EVENT_DESKTOP;
+	evt->kind = CHAT_DESKTOP_UNSENT;
+
+	if (req->op == VIGIL_COMPANION_SEND) {
+		evt->peer = req->peer;
+		evt->value = be64toh(req->ref);
+
+		if (req->group != 0) {
+			evt->peer = req->owner;
+			evt->group.owner = req->owner;
+			evt->group.id = be64toh(req->group);
+			evt->group.serial = be32toh(req->serial);
+		}
+	}
+
+	(void)chat_event_insert(evt);
+}
+
+/*
+ * Fill in the state we send our phone with each heartbeat, who we type to
+ * and the chats we have open.
+ */
+static void
+chat_desktop_state(struct vigil_companion_desktop *st)
+{
+	int		idx;
+
+	PRECOND(st != NULL);
+	PRECOND(companion_role == VIGIL_COMPANION_DESKTOP);
+
+	memset(st, 0, sizeof(*st));
+	st->magic = htobe16(VIGIL_COMPANION_MAGIC);
+	st->version = htobe16(VIGIL_COMPANION_VERSION);
+
+	for (idx = 1; idx < KYRKA_PEERS_PER_FLOCK; idx++) {
+		if (vigil_atomic_read(&typing[idx]))
+			st->typing[idx / 8] |= 1 << (idx % 8);
+
+		if (vigil_atomic_read(&opened[idx]))
+			st->opened[idx / 8] |= 1 << (idx % 8);
+	}
+
+	vigil_lock(&lock);
+
+	st->owner = typing_owner;
+	st->group = htobe64(typing_group);
+	st->topic = htobe64(typing_topic);
+	memcpy(st->members, typing_members, sizeof(st->members));
+
+	vigil_unlock(&lock);
+
+	st->have = htobe64(journal.acked);
+	st->synced = journal.synced;
+}
+
+/*
+ * Apply the state our phone sent: hold the call our phone runs for us, or
+ * ring for a call our phone rings for.
+ */
+static void
+chat_desktop_phone(const struct vigil_companion_phone *st)
+{
+	int		idx;
+	u_int8_t	ring;
+	int		sound;
+
+	PRECOND(st != NULL);
+	PRECOND(companion_role == VIGIL_COMPANION_DESKTOP);
+
+	memcpy(&companion_phone, st, sizeof(*st));
+
+	if (st->call_peer != 0 &&
+	    (st->call_flags & VIGIL_COMPANION_CALL_RELAY)) {
+		if (st->call_state == VIGIL_VOICE_STATE_TALKING)
+			sound = VIGIL_VOICE_TONE_NONE;
+		else if (st->call_flags & VIGIL_COMPANION_CALL_OUTGOING)
+			sound = VIGIL_VOICE_TONE_RINGBACK;
+		else
+			sound = VIGIL_VOICE_TONE_PIPS;
+
+		vigil_voice_relay(st->call_peer, sound, 1);
+		return;
+	}
+
+	ring = 0;
+
+	if (st->call_peer != 0) {
+		if (st->call_flags & VIGIL_COMPANION_CALL_RINGING)
+			ring = st->call_peer;
+	} else {
+		for (idx = 1; idx < KYRKA_PEERS_PER_FLOCK; idx++) {
+			if (st->incoming[idx / 8] & (1 << (idx % 8))) {
+				ring = idx;
+				break;
+			}
+		}
+	}
+
+	vigil_voice_relay(ring, VIGIL_VOICE_TONE_RINGBACK, 0);
+}
+
+/*
+ * Append our state to the heartbeat for our companion in the given frame.
+ */
+static void
+chat_companion_heartbeat(struct chat_tunnel *tun,
+    struct vigil_chat_frame *frame)
+{
+	u_int8_t	*ptr;
+
+	PRECOND(tun != NULL);
+	PRECOND(tun->peer == &companion);
+	PRECOND(frame != NULL);
+
+	VERIFY(sizeof(struct vigil_chat_hb) +
+	    sizeof(struct vigil_companion_phone) <= sizeof(frame->data));
+	VERIFY(sizeof(struct vigil_chat_hb) +
+	    sizeof(struct vigil_companion_desktop) <= sizeof(frame->data));
+
+	ptr = frame->data + sizeof(struct vigil_chat_hb);
+
+	if (companion_role == VIGIL_COMPANION_PHONE) {
+		chat_phone_state(&companion_phone);
+		memcpy(ptr, &companion_phone, sizeof(companion_phone));
+	} else {
+		chat_desktop_state(&companion_desktop);
+		memcpy(ptr, &companion_desktop, sizeof(companion_desktop));
+	}
+}
+
+/*
+ * Apply the state our companion appended to the heartbeat in the given
+ * frame.
+ */
+static void
+chat_companion_hb_recv(struct chat_tunnel *tun,
+    const struct vigil_chat_frame *frame)
+{
+	const u_int8_t			*ptr;
+	struct vigil_companion_phone	phone;
+	struct vigil_companion_desktop	desktop;
+
+	PRECOND(tun != NULL);
+	PRECOND(tun->peer == &companion);
+	PRECOND(frame != NULL);
+
+	ptr = frame->data + sizeof(struct vigil_chat_hb);
+
+	chat_companion_version(ptr);
+
+	/* Our phone paces the heartbeats, we answer each one. */
+	if (companion_role == VIGIL_COMPANION_DESKTOP)
+		tun->next_heartbeat = vigil->now;
+
+	if (chat_companion_mismatch())
+		return;
+
+	if (companion_role == VIGIL_COMPANION_PHONE) {
+		memcpy(&desktop, ptr, sizeof(desktop));
+		chat_phone_desktop(&desktop);
+		chat_phone_acked(be64toh(desktop.have));
+
+		if (!journal_heard)
+			tun->next_heartbeat = vigil->now;
+
+		journal_heard = 1;
+	} else {
+		memcpy(&phone, ptr, sizeof(phone));
+		if (phone.typed_count > VIGIL_COMPANION_TYPED)
+			phone.typed_count = VIGIL_COMPANION_TYPED;
+		chat_desktop_phone(&phone);
+	}
+}
+
+/*
+ * Take the sync version of our companion from the start of its state.
+ * A companion without our magic runs a build from before we had one.
+ */
+static void
+chat_companion_version(const u_int8_t *ptr)
+{
+	u_int16_t	magic, version;
+
+	PRECOND(ptr != NULL);
+
+	memcpy(&magic, ptr, sizeof(magic));
+	memcpy(&version, ptr + sizeof(magic), sizeof(version));
+
+	version = be16toh(version);
+
+	if (be16toh(magic) != VIGIL_COMPANION_MAGIC)
+		version = 0;
+
+	if (companion_known && version == companion_other)
+		return;
+
+	companion_known = 1;
+	companion_other = version;
+
+	if (version == VIGIL_COMPANION_VERSION)
+		return;
+
+	vigil_log(LOG_NOTICE, "[companion] our %s runs sync version %u and "
+	    "we run %u, we do not sync with it",
+	    companion_role == VIGIL_COMPANION_PHONE ? "desktop" : "phone",
+	    version, VIGIL_COMPANION_VERSION);
+}
+
+/*
+ * Returns 1 if our companion does not run our sync version, or we did not
+ * hear its version yet.
+ */
+static int
+chat_companion_mismatch(void)
+{
+	return (companion_other != VIGIL_COMPANION_VERSION);
+}
+
+/*
+ * Append the peers and the call our phone told us about to the status.
+ */
+static void
+chat_companion_peers(struct vigil_buf *buf,
+    const struct vigil_companion_phone *st)
+{
+	u_int8_t				bit;
+	u_int8_t				flags;
+	const struct vigil_companion_typed	*typed;
+	int					idx, first;
+	int					present, online, writing;
+
+	PRECOND(buf != NULL);
+	PRECOND(st != NULL);
+
+	first = 1;
+	vigil_buf_appendf(buf, ",\"peers\":[");
+
+	for (idx = 1; idx < KYRKA_PEERS_PER_FLOCK; idx++) {
+		bit = 1 << (idx % 8);
+		online = st->online[idx / 8] & bit;
+		writing = st->typing[idx / 8] & bit;
+		present = st->present[idx / 8] & bit;
+
+		if (!present && !online)
+			continue;
+
+		vigil_buf_appendf(buf, "%s{\"id\":\"%02x\",\"present\":%s"
+		    ",\"online\":%s,\"typing\":%s}", first ? "" : ",", idx,
+		    present ? "true" : "false", online ? "true" : "false",
+		    writing ? "true" : "false");
+
+		first = 0;
+	}
+
+	vigil_buf_appendf(buf, "],\"typed\":[");
+
+	for (idx = 0; idx < st->typed_count; idx++) {
+		typed = &st->typed[idx];
+
+		vigil_buf_appendf(buf, "%s{\"id\":\"%02x\"", idx ? "," : "",
+		    typed->peer);
+
+		if (typed->group != 0) {
+			vigil_buf_appendf(buf, ",\"owner\":\"%02x\""
+			    ",\"group\":\"%016" PRIx64 "\"", typed->owner,
+			    be64toh(typed->group));
+		}
+
+		if (typed->topic != 0) {
+			vigil_buf_appendf(buf, ",\"topic\":\"%016" PRIx64 "\"",
+			    be64toh(typed->topic));
+		}
+
+		vigil_buf_appendf(buf, "}");
+	}
+
+	first = 1;
+	vigil_buf_appendf(buf, "],\"incoming\":[");
+
+	for (idx = 1; idx < KYRKA_PEERS_PER_FLOCK; idx++) {
+		if (!(st->incoming[idx / 8] & (1 << (idx % 8))))
+			continue;
+
+		vigil_buf_appendf(buf, "%s\"%02x\"", first ? "" : ",", idx);
+		first = 0;
+	}
+
+	vigil_buf_appendf(buf, "],\"ended\":{\"count\":%" PRIu64
+	    ",\"peer\":\"%02x\",\"why\":\"%s\"}", be64toh(st->ended),
+	    st->ended_peer, vigil_voice_end_name(st->ended_why));
+
+	if (st->call_peer == 0)
+		return;
+
+	flags = st->call_flags;
+
+	vigil_buf_appendf(buf, ",\"call\":{\"peer\":\"%02x\",\"state\":%u"
+	    ",\"relay\":%s,\"ringing\":%s,\"outgoing\":%s}", st->call_peer,
+	    st->call_state,
+	    (flags & VIGIL_COMPANION_CALL_RELAY) ? "true" : "false",
+	    (flags & VIGIL_COMPANION_CALL_RINGING) ? "true" : "false",
+	    (flags & VIGIL_COMPANION_CALL_OUTGOING) ? "true" : "false");
+}
+
+/*
+ * Send the given voice frame to our companion, for the call our desktop
+ * holds.
+ */
+void
+vigil_chat_companion_voice(const u_int8_t *data, size_t len)
+{
+	size_t			max;
+	struct kyrka_packet	pkt;
+	struct chat_tunnel	*tun;
+	u_int8_t		*ptr;
+
+	PRECOND(data != NULL);
+	PRECOND(len == VIGIL_VOICE_PAYLOAD);
+
+	tun = companion.tunnel;
+
+	if (tun == NULL || !chat_tunnel_online(tun))
+		return;
+
+	ptr = kyrka_packet_databuf(tun->ctx, &pkt, &max);
+	if (ptr == NULL)
+		fatal("failed to get chat data buffer");
+
+	if (len > max)
+		fatal("voice frame does not fit");
+
+	memcpy(ptr, data, len);
+	pkt.length = len;
+
+	if (vigil_inet_match(&tun->addr, &tun->cathedral.addr))
+		pkt.shroud = KYRKA_PACKET_SHROUD_CATHEDRAL;
+	else
+		pkt.shroud = KYRKA_PACKET_SHROUD_PEER;
+
+	if (kyrka_heaven_input(tun->ctx, &pkt) == -1 &&
+	    kyrka_last_error(tun->ctx) != KYRKA_ERROR_NO_TX_KEY) {
+		vigil_log(LOG_NOTICE, "[companion] kyrka_heaven_input: %d",
+		    kyrka_last_error(tun->ctx));
+	}
+}
+
+/*
+ * Returns our id in the flock, 0 as the desktop of a phone.
+ */
+static u_int8_t
+chat_local(void)
+{
+	if (vigil->gospel == NULL)
+		return (0);
+
+	return (vigil->gospel->spi & 0xff);
+}
+
+/*
+ * Hand our platform the entries of a journal parcel from our phone that we
+ * did not store yet, with the data of the parcel, if any. A gap before the
+ * entries means we lost some and are no longer synced, the marks around a
+ * full copy of the chats of our phone make us synced again.
+ */
+static int
+chat_desktop_mirror(struct chat_tunnel *tun, struct chat_rxfer *xfer)
+{
+	u_int64_t		seq;
+	struct chat_event	*evt;
+	struct chat_seen	*seen;
+	u_int64_t		last;
+	u_int64_t		token;
+	u_int64_t		first;
+	u_int8_t		*json;
+	u_int64_t		newest;
+	u_int8_t		synced;
+	struct chat_parcel	*parcel;
+	size_t			off, len;
+	u_int32_t		count, size, idx, jlen;
+
+	PRECOND(tun != NULL);
+	PRECOND(xfer != NULL);
+	PRECOND(companion_role == VIGIL_COMPANION_DESKTOP);
+
+	if (chat_companion_mismatch())
+		return (-1);
+
+	off = sizeof(struct vigil_chat_data_head);
+
+	if (xfer->size < off + CHAT_PARCEL_HEAD) {
+		chat_data_discard(tun, xfer);
+		return (0);
+	}
+
+	memcpy(&count, xfer->data + off, sizeof(count));
+	count = be32toh(count);
+	off += sizeof(count);
+
+	memcpy(&size, xfer->data + off, sizeof(size));
+	size = be32toh(size);
+	off += sizeof(size);
+
+	memcpy(&last, xfer->data + off, sizeof(last));
+	last = be64toh(last);
+	off += sizeof(last);
+
+	if (count == 0 || size > xfer->size - off) {
+		vigil_log(LOG_NOTICE, "[companion] bad parcel from our phone");
+		chat_data_discard(tun, xfer);
+		return (0);
+	}
+
+	vigil_lock(&lock);
+
+	if ((parcel_bytes + xfer->size) > CHAT_PARCELS_MAX) {
+		vigil_unlock(&lock);
+		vigil_log(LOG_NOTICE, "[companion] no room for a parcel from "
+		    "our phone, it sends it again");
+		return (-1);
+	}
+
+	vigil_unlock(&lock);
+
+	if ((json = malloc(CHAT_COMPANION_BATCH)) == NULL)
+		fatal("malloc: failed to allocate mirror events");
+
+	len = 0;
+	first = 0;
+	newest = 0;
+	synced = journal.synced;
+
+	for (idx = 0; idx < count; idx++) {
+		if (xfer->size - size - off < CHAT_ENTRY_HEAD)
+			break;
+
+		memcpy(&seq, xfer->data + off, sizeof(seq));
+		seq = be64toh(seq);
+		off += sizeof(seq);
+
+		memcpy(&jlen, xfer->data + off, sizeof(jlen));
+		jlen = be32toh(jlen);
+		off += sizeof(jlen);
+
+		if (jlen == 0 || jlen > xfer->size - size - off)
+			break;
+
+		if (len + jlen + 1 > CHAT_COMPANION_BATCH)
+			break;
+
+		if (seq > journal.acked && seq > newest) {
+			if (newest == 0 && seq != journal.acked + 1) {
+				vigil_log(LOG_NOTICE, "[companion] entries %"
+				    PRIu64 " to %" PRIu64 " never reached us",
+				    journal.acked + 1, seq - 1);
+				synced = VIGIL_JOURNAL_UNSYNCED;
+			}
+
+			if (newest == 0)
+				first = seq;
+
+			synced = chat_desktop_mark(synced,
+			    xfer->data + off, jlen);
+
+			if (chat_desktop_done(xfer->data + off, jlen))
+				requests_done = requests_head;
+
+			if (len > 0)
+				json[len++] = ',';
+			memcpy(json + len, xfer->data + off, jlen);
+			len += jlen;
+			newest = seq;
+		}
+
+		off += jlen;
+	}
+
+	if (idx != count || off + size != xfer->size) {
+		vigil_log(LOG_NOTICE, "[companion] bad parcel from our phone");
+		nyfe_mem_zero(json, CHAT_COMPANION_BATCH);
+		free(json);
+		chat_data_discard(tun, xfer);
+		return (0);
+	}
+
+	if (newest == 0) {
+		nyfe_mem_zero(json, CHAT_COMPANION_BATCH);
+		free(json);
+		chat_data_discard(tun, xfer);
+		return (0);
+	}
+
+	companion_last = last;
+
+	vigil_log(LOG_INFO, "[companion] got entries %" PRIu64 "-%" PRIu64
+	    "/%" PRIu64 " from our phone, %u bytes of data", first, newest,
+	    companion_last, size);
+
+	evt = calloc(1, sizeof(*evt));
+	if (evt == NULL)
+		fatal("calloc: failed to allocate mirror event");
+
+	evt->json = json;
+	evt->json_len = len;
+	evt->value = ++tokens;
+	evt->peer = companion.id;
+	evt->type = CHAT_EVENT_MIRROR;
+	evt->size = size;
+
+	parcel = NULL;
+	token = evt->value;
+
+	if (size > 0) {
+		parcel = calloc(1, sizeof(*parcel));
+		if (parcel == NULL)
+			fatal("calloc: failed to allocate mirror data");
+
+		parcel->off = off;
+		parcel->data = xfer->data;
+		parcel->size = xfer->size;
+		parcel->age = vigil->now;
+		parcel->token = token;
+
+		xfer->data = NULL;
+	}
+
+	if (chat_event_insert(evt) == -1) {
+		if (parcel != NULL)
+			chat_parcel_free(parcel);
+		return (-1);
+	}
+
+	if (parcel != NULL)
+		chat_parcel_hold(parcel);
+
+	seen = &tun->seen[tun->seen_next++ % CHAT_SEEN_MAX];
+
+	seen->hash = 0;
+	seen->avatar = 0;
+	seen->id = xfer->id;
+	seen->token = token;
+	seen->synced = synced;
+	seen->journal = newest;
+	seen->age = vigil->now;
+	seen->size = xfer->size;
+
+	return (0);
+}
+
+/*
+ * Forget that we are synced, our phone then sends us a full resync.
+ */
+static void
+chat_desktop_unsync(void)
+{
+	if (companion_role != VIGIL_COMPANION_DESKTOP)
+		return;
+
+	vigil_log(LOG_INFO, "[companion] asking our phone for a full resync");
+
+	if (vigil_journal_synced(&journal, VIGIL_JOURNAL_UNSYNCED) == -1) {
+		vigil_log(LOG_NOTICE,
+		    "[companion] could not save if we are synced");
+	}
+}
+
+/*
+ * Returns if we are synced after the given entry from our phone, given if
+ * we were synced before it.
+ */
+static u_int8_t
+chat_desktop_mark(u_int8_t synced, const u_int8_t *json, size_t len)
+{
+	PRECOND(json != NULL);
+
+	if (chat_desktop_is(json, len, CHAT_SYNC_RESET_JSON))
+		return (VIGIL_JOURNAL_SYNCING);
+
+	if (synced == VIGIL_JOURNAL_SYNCING &&
+	    chat_desktop_is(json, len, CHAT_SYNC_DONE_JSON))
+		return (VIGIL_JOURNAL_SYNCED);
+
+	return (synced);
+}
+
+/*
+ * Returns 1 if the given entry from our phone is the given mark, our phone
+ * only adds the time it wrote the entry to it.
+ */
+static int
+chat_desktop_is(const u_int8_t *json, size_t len, const char *mark)
+{
+	size_t		mlen;
+
+	PRECOND(json != NULL);
+	PRECOND(mark != NULL);
+
+	mlen = strlen(mark) - 1;
+
+	if (len <= mlen)
+		return (0);
+
+	if (memcmp(json, mark, mlen) || json[mlen] != ',')
+		return (0);
+
+	return (1);
+}
+
+/*
+ * Our platform stored the entries of our phone up to the given seq, after
+ * which we are synced or not.
+ */
+static void
+chat_desktop_stored(u_int64_t seq, u_int8_t synced)
+{
+	PRECOND(companion_role == VIGIL_COMPANION_DESKTOP);
+
+	/* Done before we move past the record, so we never send it again. */
+	if (requests_done != 0) {
+		vigil_log(LOG_INFO, "[companion] our phone did request %"
+		    PRIu64 ", it does not go out again", requests_done);
+		chat_desktop_acked(requests_done);
+		chat_desktop_recall();
+		requests_done = 0;
+	}
+
+	if (vigil_journal_ack(&journal, seq) == -1) {
+		vigil_log(LOG_NOTICE, "[companion] could not save that "
+		    "we stored up to %" PRIu64, seq);
+		return;
+	}
+
+	vigil_log(LOG_INFO, "[companion] stored entries %" PRIu64
+	    "/%" PRIu64, seq, companion_last);
+
+	if (synced != journal.synced) {
+		vigil_log(LOG_INFO, "[companion] we are %s",
+		    synced == VIGIL_JOURNAL_SYNCED ? "synced" :
+		    synced == VIGIL_JOURNAL_SYNCING ? "syncing" : "not synced");
+	}
+
+	if (vigil_journal_synced(&journal, synced) == -1)
+		vigil_log(LOG_NOTICE,
+		    "[companion] could not save if we are synced");
 }

@@ -29,7 +29,6 @@ import io.flutter.view.TextureRegistry
 import io.flutter.plugin.common.MethodCall
 import io.flutter.plugin.common.MethodChannel
 import java.security.KeyStore
-import java.security.SecureRandom
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -110,7 +109,11 @@ class MainActivity : FlutterActivity() {
             when (call.method) {
                 "list" -> result.success(store.list().toString())
                 "check" -> wiped(call.arguments as ByteArray) { result.success(checked(it)) }
-                "import" -> wiped(call.arguments as ByteArray) { result.success(imported(it).toString()) }
+                "import" -> wiped(call.arguments as ByteArray) {
+                    val tunnel = imported(it)
+                    store.companionApply()
+                    result.success(tunnel.toString())
+                }
                 "handoff" -> result.success(Handoff.token() ?: ByteArray(0))
                 "edit" -> result.success(
                     store.edit(call.argument<String>("id")!!, call.argument<String>("edits")!!)
@@ -118,8 +121,10 @@ class MainActivity : FlutterActivity() {
                 )
                 "remove" -> {
                     store.remove(call.arguments as String)
+                    store.companionApply()
                     result.success("")
                 }
+                "companion" -> result.success(store.companionSummary()?.toString() ?: "")
                 "connect" -> connect(call.arguments as String, result)
                 "disconnect" -> {
                     startService(service(VigilVpnService.ACTION_DISCONNECT))
@@ -241,14 +246,17 @@ class MainActivity : FlutterActivity() {
                 }
                 "names" -> {
                     val names = call.arguments as String?
-                    result.success(
-                        (if (names == null) PeerNames.load(this)
-                        else PeerNames.save(this, JSONObject(names))).toString()
-                    )
+                    if (names != null) {
+                        PeerNames.save(this, JSONObject(names))
+                        Chats.prefsChanged(this)
+                    }
+
+                    result.success(PeerNames.load(this).toString())
                 }
                 "chats" -> background(result) {
                     val vault = Chats.vault(this)
                     vault.merge()
+                    Chats.topicsFill(vault)
                     Chats.arrange(this, vault.conversations()).toString()
                 }
                 "chat" -> {
@@ -298,7 +306,7 @@ class MainActivity : FlutterActivity() {
 
                         val ref = vault.ref()
 
-                        Chats.submit(vault, vault.send(id, text, ref, quote, topic, self()))
+                        Chats.submit(vault, vault.send(id, text, ref, quote, topic, Chats.self()))
                         Chats.changed()
                         ref.toString()
                     }
@@ -487,36 +495,17 @@ class MainActivity : FlutterActivity() {
                     val ref = call.argument<Number>("ref")!!.toLong()
 
                     background(result) {
-                        val vault = Chats.vault(this)
-                        val self = if (ChatVault.group(id) != null) self() else ""
-                        val retracted = vault.retract(id, ref, self)
-
-                        Chats.drop(retracted.dropped)
-                        Chats.submit(vault, retracted.queued)
-                        Chats.changed()
+                        Chats.retract(this, id, ref)
                         ""
                     }
                 }
                 "chatTopic" -> {
                     val id = chat(call.argument<String>("peer")!!)
-                    val name = call.argument<String>("name")!!.trim()
-                    val color = call.argument<Number>("color")!!.toInt() and 0xffffff
-                    val topic = topic(id, call.argument<String>("topic")).ifEmpty {
-                        "%016x".format(SecureRandom().nextLong().takeIf { it != 0L } ?: 1L)
-                    }
+                    val name = call.argument<String>("name")!!
+                    val color = call.argument<Number>("color")!!.toInt()
+                    val topic = topic(id, call.argument<String>("topic"))
 
-                    require(name.toByteArray().size <= TOPIC_NAME_MAX) {
-                        "A topic name is at most $TOPIC_NAME_MAX bytes."
-                    }
-
-                    background(result) {
-                        val vault = Chats.vault(this)
-                        val self = if (ChatVault.group(id) != null) self() else ""
-
-                        Chats.submit(vault, vault.topic(id, topic, name, color, vault.ref(), self))
-                        Chats.changed()
-                        topic
-                    }
+                    background(result) { Chats.topic(this, id, topic, name, color) }
                 }
                 "chatPin" -> {
                     val id = chat(call.argument<String>("peer")!!)
@@ -540,19 +529,7 @@ class MainActivity : FlutterActivity() {
                     val id = chat(call.arguments as String)
 
                     background(result) {
-                        val vault = Chats.vault(this)
-
-                        if (ChatVault.group(id) == null) {
-                            check(Vigil.chatForget(id.toInt(16))) { "Vigil is busy, try deleting the chat again." }
-                        } else if (vault.groupInfo(id)?.optString("state") == "open") {
-                            groupLeave(id)
-                        }
-
-                        vault.delete(id)
-                        Chats.mute(this, id, 0L)
-                        Chats.unlist(this, id)
-                        Chats.seen(this, id)
-                        Chats.changed()
+                        Chats.delete(this, id)
                         ""
                     }
                 }
@@ -560,7 +537,7 @@ class MainActivity : FlutterActivity() {
                     val name = call.argument<String>("name")!!.trim()
                     val members = call.argument<List<String>>("members")!!
 
-                    background(result) { groupCreate(name, members) }
+                    background(result) { Chats.groupCreate(this, name, members) }
                 }
                 "groupEdit" -> {
                     val id = chat(call.argument<String>("peer")!!)
@@ -568,7 +545,7 @@ class MainActivity : FlutterActivity() {
                     val members = call.argument<List<String>>("members")
 
                     background(result) {
-                        groupEdit(id, name, members)
+                        Chats.groupEdit(this, id, name, members)
                         ""
                     }
                 }
@@ -576,7 +553,7 @@ class MainActivity : FlutterActivity() {
                     val id = chat(call.arguments as String)
 
                     background(result) {
-                        groupLeave(id)
+                        Chats.groupLeave(this, id)
                         ""
                     }
                 }
@@ -1023,127 +1000,10 @@ class MainActivity : FlutterActivity() {
         val vault = Chats.vault(this)
         val ref = vault.ref()
 
-        Chats.submit(vault, vault.sendData(id, media, name, data, ref, topic, self()))
+        Chats.submit(vault, vault.sendData(id, media, name, data, ref, topic, Chats.self()))
         Chats.changed()
 
         return ref.toString()
-    }
-
-    private fun self(): String {
-        val local = Chats.local
-
-        require(local.isNotEmpty()) { "Gospel is not running." }
-
-        return local
-    }
-
-    private fun groupCreate(name: String, picked: List<String>): String {
-        val local = self()
-        val members = picked.filter { it.matches(Regex("[0-9a-f]{2}")) && it != local }.distinct()
-
-        require(name.toByteArray().size <= GROUP_NAME_MAX) { "A group name is at most $GROUP_NAME_MAX bytes." }
-        require(members.isNotEmpty()) { "Pick at least one member." }
-
-        val id = "%016x".format(SecureRandom().nextLong().takeIf { it != 0L } ?: 1L)
-        val chat = ChatVault.groupChat(local, id)
-        val vault = Chats.vault(this)
-        val info = JSONObject()
-            .put("owner", local)
-            .put("id", id)
-            .put("name", name)
-            .put("members", JSONArray(members + local))
-            .put("serial", 1)
-            .put("state", "open")
-
-        vault.groupSave(chat, info)
-        vault.deliver(chat, local.toInt(16), "", name, System.currentTimeMillis(), "created")
-        vault.merge()
-
-        Chats.submit(vault, vault.rosterQueue(chat, info, local))
-        Chats.namesChanged()
-        Chats.changed()
-
-        return chat
-    }
-
-    private fun groupEdit(chat: String, name: String?, picked: List<String>?) {
-        val local = self()
-        val vault = Chats.vault(this)
-        val info = vault.groupInfo(chat) ?: throw IllegalArgumentException("There is no group $chat.")
-        val before = ChatVault.members(info)
-        val time = System.currentTimeMillis()
-
-        require(info.getString("owner") == local) { "Only the owner can change a group." }
-        require(info.getString("state") == "open") { "This group is closed." }
-
-        val members = picked?.filter { it.matches(Regex("[0-9a-f]{2}")) && it != local }?.distinct()?.plus(local)
-            ?: before
-
-        require(members.size > 1) { "A group needs at least one other member." }
-
-        if (name != null) {
-            require(name.toByteArray().size <= GROUP_NAME_MAX) { "A group name is at most $GROUP_NAME_MAX bytes." }
-
-            if (name != info.getString("name")) {
-                vault.deliver(chat, local.toInt(16), "", name, time, "renamed")
-            }
-
-            info.put("name", name)
-        }
-
-        val gone = before.filter { it !in members }
-
-        for (member in members.filter { it !in before }) {
-            vault.deliver(chat, member.toInt(16), "", "", time, "joined")
-        }
-
-        for (member in gone) {
-            vault.deliver(chat, member.toInt(16), "", "", time, "left")
-        }
-
-        info.put("members", JSONArray(members))
-        info.put("serial", info.getInt("serial") + 1)
-        info.put("topics", vault.topicsOf(chat, info))
-
-        vault.groupSave(chat, info)
-        Chats.drop(vault.groupDrop(chat, gone))
-        vault.merge()
-
-        Chats.submit(vault, vault.rosterQueue(chat, info, local, gone))
-        Chats.submit(vault, vault.topicQueue(chat, local, members.filter { it !in before }))
-        Chats.namesChanged()
-        Chats.changed()
-    }
-
-    private fun groupLeave(chat: String) {
-        val local = self()
-        val vault = Chats.vault(this)
-        val info = vault.groupInfo(chat) ?: return
-        val owner = info.getString("owner")
-        val time = System.currentTimeMillis()
-
-        if (info.getString("state") != "open") {
-            return
-        }
-
-        Chats.drop(vault.groupDrop(chat, ChatVault.members(info) + owner))
-
-        if (owner == local) {
-            info.put("state", "ended")
-            info.put("serial", info.getInt("serial") + 1)
-            vault.groupSave(chat, info)
-            vault.deliver(chat, local.toInt(16), "", "", time, "ended")
-            Chats.submit(vault, vault.rosterQueue(chat, info, local))
-        } else {
-            info.put("state", "left")
-            vault.groupSave(chat, info)
-            vault.deliver(chat, local.toInt(16), "", "", time, "parted")
-            Chats.submit(vault, JSONArray().put(vault.leaveQueue(chat, owner)))
-        }
-
-        vault.merge()
-        Chats.namesChanged()
-        Chats.changed()
     }
 
     private fun fileSend(id: String, uri: Uri, topic: String): String {
@@ -1288,13 +1148,7 @@ class MainActivity : FlutterActivity() {
         }.start()
     }
 
-    private fun chat(id: String): String {
-        require(
-            ChatVault.group(id) != null || (id.matches(Regex("[0-9a-f]{2}")) && id.toInt(16) in 1..0xfe)
-        ) { "There is no chat $id." }
-
-        return id
-    }
+    private fun chat(id: String): String = Chats.checked(id)
 
     private fun topic(id: String, topic: String?): String {
         if (topic.isNullOrEmpty()) {
@@ -1326,11 +1180,9 @@ class MainActivity : FlutterActivity() {
         const val MESSAGE_MAX = 512
         const val REPLY_MAX = MESSAGE_MAX - 9
         const val TOPIC_MAX = MESSAGE_MAX - 17
-        const val TOPIC_NAME_MAX = 32
         const val GROUP_MAX = MESSAGE_MAX - 14
         const val GROUP_REPLY_MAX = GROUP_MAX - 9
         const val GROUP_TOPIC_MAX = GROUP_MAX - 17
-        const val GROUP_NAME_MAX = 32
         const val VIDEO_WIDTH = 960
         const val VIDEO_HEIGHT = 540
     }

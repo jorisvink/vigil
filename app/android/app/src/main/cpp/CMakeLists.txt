@@ -30,6 +30,7 @@ add_library(vigil SHARED
 	${VIGIL_ROOT}/src/grace.c
 	${VIGIL_ROOT}/src/inet.c
 	${VIGIL_ROOT}/src/io.c
+	${VIGIL_ROOT}/src/journal.c
 	${VIGIL_ROOT}/src/link.c
 	${VIGIL_ROOT}/src/liturgy.c
 	${VIGIL_ROOT}/src/peer.c
@@ -40,6 +41,7 @@ add_library(vigil SHARED
 	${VIGIL_ROOT}/src/video.c
 	${VIGIL_ROOT}/src/voice.c
 	${VIGIL_ROOT}/src/platform_android.c
+	${VIGIL_ROOT}/src/platform_posix.c
 	${VIGIL_ROOT}/src/audio_android.c
 	${VIGIL_ROOT}/src/video_android.c
 	${VIGIL_ROOT}/obj/version.c)

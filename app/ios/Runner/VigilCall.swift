@@ -85,7 +85,7 @@ final class VigilCall: NSObject, CXProviderDelegate {
         guard let phase else { return nil }
 
         return [
-            "peer": Self.hex(peer),
+            "peer": ChatVault.hex(peer),
             "incoming": incoming,
             "state": phase.rawValue,
             "muted": muted,
@@ -101,9 +101,9 @@ final class VigilCall: NSObject, CXProviderDelegate {
 
         begin(peer, incoming: false, phase: .dialing)
         camera(video)
-        send?("dial \(Self.hex(peer))")
+        send?("dial \(ChatVault.hex(peer))")
 
-        let action = CXStartCallAction(call: uuid, handle: CXHandle(type: .generic, value: Self.name(peer)))
+        let action = CXStartCallAction(call: uuid, handle: CXHandle(type: .generic, value: ChatVault.name(peer)))
         action.isVideo = video
 
         controller.request(CXTransaction(action: action)) { error in
@@ -238,7 +238,7 @@ final class VigilCall: NSObject, CXProviderDelegate {
     func provider(_ provider: CXProvider, perform action: CXEndCallAction) {
         if voice != 0 { vigil_voice_stop(voice) }
 
-        send?("done \(Self.hex(peer))")
+        send?("done \(ChatVault.hex(peer))")
         ignored.insert(peer)
 
         reset()
@@ -258,8 +258,8 @@ final class VigilCall: NSObject, CXProviderDelegate {
         begin(caller, incoming: true, phase: .ringing)
 
         let update = CXCallUpdate()
-        update.remoteHandle = CXHandle(type: .generic, value: Self.name(caller))
-        update.localizedCallerName = Self.name(caller)
+        update.remoteHandle = CXHandle(type: .generic, value: ChatVault.name(caller))
+        update.localizedCallerName = ChatVault.name(caller)
         update.hasVideo = false
         update.supportsHolding = false
         update.supportsGrouping = false
@@ -267,7 +267,7 @@ final class VigilCall: NSObject, CXProviderDelegate {
         update.supportsDTMF = false
 
         UNUserNotificationCenter.current()
-            .removeDeliveredNotifications(withIdentifiers: ["call-\(Self.hex(caller))"])
+            .removeDeliveredNotifications(withIdentifiers: ["call-\(ChatVault.hex(caller))"])
 
         provider.reportNewIncomingCall(with: uuid, update: update) { error in
             DispatchQueue.main.async {
@@ -308,7 +308,7 @@ final class VigilCall: NSObject, CXProviderDelegate {
         }
 
         if voice != 0 { vigil_voice_stop(voice) }
-        send?("done \(Self.hex(peer))")
+        send?("done \(ChatVault.hex(peer))")
 
         ignored.insert(peer)
         reset()
@@ -390,12 +390,4 @@ final class VigilCall: NSObject, CXProviderDelegate {
         try? AVAudioSession.sharedInstance().setCategory(
             .playAndRecord, mode: .voiceChat, options: [.allowBluetooth])
     }
-
-    static func hex(_ peer: UInt8) -> String { String(format: "%02x", peer) }
-
-    static func name(_ peer: UInt8) -> String { ChatVault.name(peer) }
-
-    static func names() -> [String: String] { ChatVault.names() }
-
-    static func save(_ names: [String: Any]) -> [String: String] { ChatVault.save(names) }
 }

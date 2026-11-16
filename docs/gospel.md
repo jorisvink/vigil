@@ -2,7 +2,6 @@
 
 Vigil can make voice and video calls and send text messages, images and
 files. All of this runs over sanctum tunnels. The protocol is called gospel.
-It is compatible with the confessions and gospel projects.
 
 ## The gospel configuration
 
@@ -129,7 +128,7 @@ sends it as a JPEG of at most 32 KB. Pictures are shown as circles.
 
 A device with a picture sets a feature bit in its heartbeats. Once a
 tunnel hears its peer, the device sends its picture over it as data,
-and again whenever the picture changes. Peers on gospel never get it.
+and again whenever the picture changes.
 
 Heartbeats also carry the hash of the picture the device holds of that
 peer, or zero if it holds none, once the picture has been stored. A device
@@ -203,7 +202,7 @@ You can snooze a group chat with the bell at the top of it, for a set time
 or until you turn it off. While it is snoozed you only get a notification
 for a message that mentions you. A mention is `@` followed by the nickname,
 signed name or device id of a member, in the text of the message. Type `@`
-to pick a member from a list. In gospel you type the name yourself.
+to pick a member from a list.
 
 Notification text is handled by the operating system. It is not part of
 the chat vault and can be shown on the lock screen.

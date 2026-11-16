@@ -1,19 +1,14 @@
 import 'dart:async';
-import 'dart:convert';
-import 'dart:io';
 
 import 'package:flutter/material.dart';
 
 import '../app.dart';
+import '../reliquary.dart';
 import '../theme.dart';
 import '../vigil.dart';
 import '../widgets/buttons.dart';
 import '../widgets/ui.dart';
 import 'import.dart';
-
-const _reliquary = 'https://vessel.reliquary.se/v1';
-
-const _wordCount = 33;
 
 class JoinPage extends StatefulWidget {
   const JoinPage({super.key});
@@ -24,7 +19,7 @@ class JoinPage extends StatefulWidget {
 
 class _JoinPageState extends State<JoinPage> {
   final _words = TextEditingController();
-  final _api = TextEditingController(text: _reliquary);
+  final _api = TextEditingController(text: reliquary);
 
   Set<String> _list = const {};
   List<String> _sorted = const [];
@@ -92,63 +87,11 @@ class _JoinPageState extends State<JoinPage> {
     _words.selection = TextSelection.collapsed(offset: _words.text.length);
   }
 
-  Uri? _endpoint(String path) {
-    final api = _api.text.trim().replaceAll(RegExp(r'/+$'), '');
-    final uri = Uri.tryParse('$api/$path');
-
-    if (uri == null ||
-        (uri.scheme != 'https' &&
-            !(uri.scheme == 'http' && uri.host == '127.0.0.1'))) {
-      return null;
-    }
-
-    return uri;
-  }
-
   Future<Map<String, dynamic>> _create(String flock, List<int> cosk) async {
-    final uri = _endpoint('device/$flock/create');
-    if (uri == null) {
-      throw VigilError('Reliquary must be an https address.');
-    }
-
-    final client = HttpClient()
-      ..connectionTimeout = const Duration(seconds: 15);
-
     try {
-      final request = await client.postUrl(uri);
-      request.headers.contentType = ContentType.binary;
-      request.contentLength = cosk.length;
-      request.add(cosk);
-
-      final response = await request.close().timeout(
-        const Duration(seconds: 30),
-      );
-      final body = await response.transform(utf8.decoder).join();
-
-      if (response.statusCode != 200) {
-        throw VigilError(
-          'Reliquary did not let us join (${response.statusCode}).',
-        );
-      }
-
-      final json = jsonDecode(body) as Map<String, dynamic>;
-      final id = json['cathedral_id'] as String? ?? '';
-      final secret = json['cathedral_secret'] as String? ?? '';
-
-      if (!RegExp(r'^[0-9a-f]{8}$').hasMatch(id) ||
-          !RegExp(r'^[0-9a-f]{64}$').hasMatch(secret)) {
-        throw VigilError('Reliquary sent back something we do not understand.');
-      }
-
-      return json;
-    } on SocketException catch (e) {
-      throw VigilError('Could not reach Reliquary: ${e.message}');
-    } on TimeoutException {
-      throw VigilError('Reliquary did not answer in time.');
-    } on FormatException {
-      throw VigilError('Reliquary sent back something we do not understand.');
-    } finally {
-      client.close(force: true);
+      return await reliquaryCreate(_api.text, flock, cosk);
+    } on ReliquaryError catch (e) {
+      throw VigilError(e.message);
     }
   }
 
@@ -165,9 +108,9 @@ class _JoinPageState extends State<JoinPage> {
   Future<void> _join() async {
     final typed = _typed;
 
-    if (typed.length != _wordCount || _unknown.isNotEmpty) {
+    if (typed.length != wordCount || _unknown.isNotEmpty) {
       setState(
-        () => _problem = 'Type all $_wordCount secret words you were given.',
+        () => _problem = 'Type all $wordCount secret words you were given.',
       );
       return;
     }
@@ -271,7 +214,7 @@ class _JoinPageState extends State<JoinPage> {
         label: 'Join',
         expand: true,
         busy: _running,
-        onTap: count == _wordCount && unknown.isEmpty ? _join : null,
+        onTap: count == wordCount && unknown.isEmpty ? _join : null,
       ),
       children: [
         const Text(
@@ -314,7 +257,7 @@ class _JoinPageState extends State<JoinPage> {
         Text(
           unknown.isNotEmpty
               ? 'Not in the word list: ${unknown.join(', ')}'
-              : '$count of $_wordCount words',
+              : '$count of $wordCount words',
           style: Styles.detail.copyWith(
             color: unknown.isNotEmpty ? Palette.amber : null,
           ),
@@ -338,7 +281,7 @@ class _JoinPageState extends State<JoinPage> {
               keyboardType: TextInputType.url,
               style: Styles.pre,
               cursorColor: Palette.amber,
-              decoration: const InputDecoration.collapsed(hintText: _reliquary),
+              decoration: const InputDecoration.collapsed(hintText: reliquary),
             ),
           ),
       ],

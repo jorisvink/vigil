@@ -13,6 +13,7 @@ import '../app.dart';
 import '../links.dart';
 import '../vigil.dart';
 import '../theme.dart';
+import '../voice.dart';
 import '../widgets/background.dart';
 import '../widgets/buttons.dart';
 import '../widgets/marks.dart';
@@ -4081,15 +4082,7 @@ class _PhotoPageState extends State<_PhotoPage> {
                 ),
               ),
             ),
-            Positioned(
-              top: 4,
-              left: Metrics.edge - 12,
-              child: GlyphBtn(
-                GlyphKind.close,
-                label: 'Close',
-                onTap: () => Navigator.of(context).maybePop(),
-              ),
-            ),
+            const CornerClose(),
           ],
         ),
       ),
@@ -4621,22 +4614,6 @@ class _Voice {
   final List<double> bars;
 }
 
-const _adtsRates = [
-  96000,
-  88200,
-  64000,
-  48000,
-  44100,
-  32000,
-  24000,
-  22050,
-  16000,
-  12000,
-  11025,
-  8000,
-  7350,
-];
-
 List<double> _voiceShape(String seed) {
   final bars = <double>[];
   var x = seed.hashCode & 0x7fffffff;
@@ -4650,62 +4627,9 @@ List<double> _voiceShape(String seed) {
 }
 
 _Voice _voice(Uint8List bytes, String seed) {
-  final sizes = <int>[];
-  var rate = 0;
-  var off = 0;
+  final (ms, bars) = voiceShape(bytes, _voiceBars);
 
-  while (off + 7 <= bytes.length) {
-    if (bytes[off] != 0xff || (bytes[off + 1] & 0xf6) != 0xf0) {
-      break;
-    }
-
-    final index = (bytes[off + 2] >> 2) & 0x0f;
-    if (index >= _adtsRates.length) {
-      break;
-    }
-
-    final len =
-        ((bytes[off + 3] & 0x03) << 11) |
-        (bytes[off + 4] << 3) |
-        (bytes[off + 5] >> 5);
-    if (len <= 7) {
-      break;
-    }
-
-    rate = _adtsRates[index];
-    sizes.add(len);
-    off += len;
-  }
-
-  if (sizes.isEmpty) {
-    return _Voice(0, _voiceShape(seed));
-  }
-
-  final seconds = (sizes.length * 1024 / rate).round();
-  final bars = <double>[];
-
-  for (var i = 0; i < _voiceBars; i++) {
-    final from = i * sizes.length ~/ _voiceBars;
-    final to = (i + 1) * sizes.length ~/ _voiceBars;
-    var sum = 0;
-
-    for (var j = from; j < to; j++) {
-      sum += sizes[j];
-    }
-
-    bars.add(to > from ? sum / (to - from) : 0);
-  }
-
-  final low = bars.reduce((a, b) => a < b ? a : b);
-  final high = bars.reduce((a, b) => a > b ? a : b);
-
-  if (high - low < high * 0.08) {
-    return _Voice(seconds, _voiceShape(seed));
-  }
-
-  return _Voice(seconds, [
-    for (final b in bars) 0.15 + 0.85 * (b - low) / (high - low),
-  ]);
+  return _Voice((ms / 1000).round(), bars ?? _voiceShape(seed));
 }
 
 class _VoiceNote extends StatefulWidget {

@@ -13,6 +13,7 @@ import android.os.SystemClock
 import android.util.Log
 import org.json.JSONArray
 import org.json.JSONObject
+import java.security.SecureRandom
 
 object Chats {
     private data class Receipt(val peer: String, val ref: Long, val kind: String)
@@ -52,7 +53,13 @@ object Chats {
         private set
 
     fun vault(context: Context): ChatVault =
-        vault ?: ChatVault(context.applicationContext).also { vault = it }
+        vault ?: ChatVault(context.applicationContext).also {
+            val store = TunnelStore(context.applicationContext)
+
+            it.mirror = ::mirror
+            it.linked = store::linked
+            vault = it
+        }
 
     fun attach(service: VigilVpnService) {
         service.getSystemService(NotificationManager::class.java).createNotificationChannel(
@@ -161,12 +168,8 @@ object Chats {
                         val nick = event.optString("nick")
                         val quote = ChatVault.quote(event.optString("author"), event.optString("hash"))
 
-                        when (check(vault, id, peer, event)) {
-                            ChatVault.GROUP_DROP -> {
-                                stored(event.getLong("token"))
-                                continue
-                            }
-                            ChatVault.GROUP_HOLD -> continue
+                        if (!admitted(vault, id, peer, event)) {
+                            continue
                         }
 
                         vault.deliver(id, peer, nick, text, time, quote = quote, topic = event.optString("topic"))
@@ -189,16 +192,9 @@ object Chats {
                         val data = Vigil.chatDataTake(token, event.getInt("size"))
                             ?: throw IllegalStateException("data $token is gone")
 
-                        when (check(vault, id, peer, event)) {
-                            ChatVault.GROUP_DROP -> {
-                                data.fill(0)
-                                stored(token)
-                                continue
-                            }
-                            ChatVault.GROUP_HOLD -> {
-                                data.fill(0)
-                                continue
-                            }
+                        if (!admitted(vault, id, peer, event)) {
+                            data.fill(0)
+                            continue
                         }
 
                         try {
@@ -221,12 +217,8 @@ object Chats {
                         }
                     }
                     "topic" -> {
-                        when (check(vault, id, peer, event)) {
-                            ChatVault.GROUP_DROP -> {
-                                stored(event.getLong("token"))
-                                continue
-                            }
-                            ChatVault.GROUP_HOLD -> continue
+                        if (!admitted(vault, id, peer, event)) {
+                            continue
                         }
 
                         vault.deliver(
@@ -261,12 +253,8 @@ object Chats {
                         avatarChanged()
                     }
                     "retract" -> {
-                        when (check(vault, id, peer, event)) {
-                            ChatVault.GROUP_DROP -> {
-                                stored(event.getLong("token"))
-                                continue
-                            }
-                            ChatVault.GROUP_HOLD -> continue
+                        if (!admitted(vault, id, peer, event)) {
+                            continue
                         }
 
                         vault.deliver(
@@ -287,6 +275,11 @@ object Chats {
                         id, peer, "", event.getString("generation"), System.currentTimeMillis(),
                         "ambry"
                     )
+                    "echo" -> {
+                        echo(vault, id, event)
+                        stored(event.optLong("token"))
+                    }
+                    "desktop" -> desktop(service, event)
                     "sent", "delivered" ->
                         receipt(vault, Receipt(Calls.hex(peer), event.getLong("ref"), event.getString("type")))
                 }
@@ -295,14 +288,515 @@ object Chats {
                 Log.e(TAG, "failed to store a chat event", e)
             }
         }
+
+        resyncStep(service, vault, status)
     }
 
-    private fun check(vault: ChatVault, chat: String, peer: Int, event: JSONObject): Int {
-        if (ChatVault.group(chat) == null) {
-            return ChatVault.GROUP_STORE
+    private fun echo(vault: ChatVault, chat: String, event: JSONObject) {
+        val what = event.getString("what")
+        val list = event.optJSONArray("members")
+        val to = (0 until (list?.length() ?: 0)).map { list!!.getString(it) }
+        val quote = ChatVault.quote(event.optString("author"), event.optString("hash"))
+        val time = System.currentTimeMillis()
+
+        if (vault.groupGone(chat)) {
+            unsent(chat, event, to)
+            return
         }
 
-        return vault.groupCheck(chat, Calls.hex(peer), event.getInt("serial"))
+        if (what == "text") {
+            vault.echo(
+                chat, event.getLong("ref"), event.getString("text"), time, quote, event.optString("topic"), to,
+                event.optInt("serial")
+            )
+            return
+        }
+
+        if (what != "data") {
+            return
+        }
+
+        val data = Vigil.chatDataTake(event.getLong("token"), event.getInt("size"))
+            ?: throw IllegalStateException("data ${event.getLong("token")} is gone")
+
+        try {
+            vault.echo(
+                chat, event.getLong("ref"), "", time, null, event.optString("topic"), to, event.optInt("serial"),
+                data = data, media = event.getString("kind"), name = event.getString("name")
+            )
+        } finally {
+            data.fill(0)
+        }
+    }
+
+    private fun unsent(chat: String, event: JSONObject, to: List<String>) {
+        val ref = event.getLong("ref")
+        val token = event.optLong("token")
+
+        Log.i(TAG, "dropped a message from our desktop to $chat, we are no longer in that group")
+
+        if (event.optString("what") == "data") {
+            Vigil.chatDataTake(token, event.getInt("size"))?.fill(0)
+        }
+
+        for (member in to) {
+            Vigil.chatDrop(member.toInt(16), ref)
+        }
+
+        val answer = JSONObject()
+            .put("op", "answer")
+            .put("what", "send")
+            .put("ok", false)
+            .put("reason", "You are no longer in that group.")
+            .put("chat", chat)
+            .put("ref", ref)
+
+        if (!mirror(answer, null)) {
+            Log.w(TAG, "could not tell our desktop its message to $chat was not sent")
+        }
+    }
+
+    private fun desktop(service: VigilVpnService, event: JSONObject) {
+        if (event.getString("what") == "resync") {
+            resync(service)
+            return
+        }
+
+        if (event.getString("what") != "ask") {
+            return
+        }
+
+        val ask = JSONObject(event.getString("ask"))
+        val token = event.optLong("token")
+        val data = if (event.optInt("size") > 0) Vigil.chatDataTake(token, event.getInt("size")) else null
+        val answer = JSONObject().put("op", "answer").put("id", ask.optLong("id")).put("what", ask.optString("what"))
+
+        try {
+            asked(service, ask, data)
+            answer.put("ok", true)
+        } catch (e: ChatVault.Locked) {
+            Log.w(TAG, "could not do what our desktop asked while locked")
+            answer.put("ok", false).put("reason", "Unlock your phone to do that.")
+        } catch (e: Exception) {
+            Log.w(TAG, "could not do what our desktop asked", e)
+            answer.put("ok", false).put("reason", e.message ?: "")
+        } finally {
+            data?.fill(0)
+        }
+
+        if (!mirror(answer, null)) {
+            Log.w(TAG, "could not answer our desktop")
+        }
+
+        stored(token)
+    }
+
+    private fun asked(service: VigilVpnService, ask: JSONObject, data: ByteArray?) {
+        val chat = ask.optString("chat")
+
+        when (ask.getString("what")) {
+            "topic" -> topic(service, checked(chat), ask.optString("topic"), ask.getString("name"),
+                ask.getInt("color"))
+            "retract" -> retract(
+                service, checked(chat), ask.getLong("ref"), ask.optString("hash"), ask.optString("topic")
+            )
+            "group" -> groupCreate(service, ask.getString("name"), strings(ask.getJSONArray("members")))
+            "edit" -> groupEdit(
+                service, checked(chat), if (ask.has("name")) ask.getString("name") else null,
+                ask.optJSONArray("members")?.let { strings(it) }
+            )
+            "leave" -> groupLeave(service, checked(chat))
+            "delete" -> delete(service, checked(chat))
+            "read" -> {
+                vault(service).read(checked(chat), ask.optString("topic"))
+                seen(service, chat)
+            }
+            "favorite" -> vault(service).favorite(checked(chat), ask.getLong("ref"), ask.getBoolean("on"))
+            "pin" -> vault(service).pin(checked(chat), ask.getLong("ref"), ask.getBoolean("on"))
+            "star" -> star(service, checked(chat), ask.getBoolean("on"))
+            "compact" -> compact(service, checked(chat), ask.getBoolean("on"))
+            "mute" -> mute(service, checked(chat), ask.getLong("until"))
+            "nick" -> settings(service, ask.getString("nick"), null)
+            "avatar" -> {
+                val image = data?.let { Images.avatar(it) }
+
+                try {
+                    avatar(service, image)
+                } finally {
+                    image?.fill(0)
+                }
+            }
+            else -> throw IllegalArgumentException("Vigil does not know how to do that.")
+        }
+
+        changed()
+    }
+
+    fun checked(chat: String): String {
+        require(
+            ChatVault.group(chat) != null || (chat.matches(Regex("[0-9a-f]{2}")) && chat.toInt(16) in 1..0xfe)
+        ) { "There is no chat $chat." }
+
+        return chat
+    }
+
+    private class Resync(val full: Boolean) {
+        val what: String
+            get() {
+                if (full) {
+                    return "full resync of our desktop"
+                }
+
+                return "repair of what our desktop missed"
+            }
+
+        var chats: List<String>? = null
+        var chat = 0
+        var at = 0
+        var file = 0
+        val files = mutableListOf<Pair<String, String>>()
+    }
+
+    private var resync: Resync? = null
+
+    private fun mirror(op: JSONObject, data: ByteArray?): Boolean =
+        Vigil.chatCompanionSync(op.toString().toByteArray(), data)
+
+    private fun resync(context: Context) {
+        prefs(context).edit().putBoolean("resync", true).apply()
+        vault(context).dumpEnd()
+        resync = Resync(true)
+    }
+
+    private fun resyncStep(service: VigilVpnService, vault: ChatVault, status: JSONObject) {
+        if (resync == null && prefs(service).getBoolean("resync", false)) {
+            resync = Resync(true)
+        }
+
+        val companion = status.optJSONObject("chat")?.optJSONObject("companion") ?: return
+
+        if (companion.optString("role") != "phone") {
+            return
+        }
+
+        if (resync == null && !vault.lostSet().isEmpty()) {
+            resync = Resync(false)
+        }
+
+        val job = resync ?: return
+
+        var room = companion.optLong("room") - RESYNC_MARGIN
+
+        if (room < RESYNC_MARGIN) {
+            return
+        }
+
+        val dump = ChatVault.Dump(minOf(room / 2, RESYNC_STEP).toInt())
+
+        try {
+            if (job.chats == null) {
+                if (!synchronized(vault) { resyncHead(service, vault, job) }) {
+                    return
+                }
+
+                Log.i(TAG, "${job.what} started, ${job.chats?.size} chats")
+            }
+
+            val chats = job.chats ?: return
+
+            while (job.chat < chats.size && dump.budget > 0) {
+                val chat = chats[job.chat]
+                val names = mutableListOf<String>()
+
+                dump.at = job.at
+
+                val done = vault.dumpChat(chat, dump, names)
+
+                if (job.full) {
+                    job.files.addAll(names.map { chat to it })
+                }
+
+                job.at = dump.at
+
+                if (done) {
+                    job.chat++
+                    job.at = 0
+                    Log.i(TAG, "${job.what}: sent chat ${job.chat} of ${chats.size}")
+                }
+            }
+
+            room -= minOf(room / 2, RESYNC_STEP) - dump.budget
+
+            while (job.chat == chats.size && job.file < job.files.size && dump.budget > 0) {
+                val (chat, file) = job.files[job.file]
+
+                if (vault.dataSize(file) > room) {
+                    return
+                }
+
+                val sent = vault.dumpData(chat, file)
+
+                if (sent < 0) {
+                    return
+                }
+
+                room -= sent
+                dump.budget -= sent
+                job.file++
+                Log.i(TAG, "${job.what}: sent file ${job.file} of ${job.files.size}")
+            }
+
+            if (job.chat == chats.size && job.file == job.files.size && Vigil.chatCompanionResync(true)) {
+                resync = null
+
+                if (job.full) {
+                    prefs(service).edit().putBoolean("resync", false).apply()
+                }
+
+                Log.i(TAG, "${job.what} finished")
+            }
+        } catch (e: ChatVault.Locked) {
+            return
+        } catch (e: Exception) {
+            Log.w(TAG, "resync of our desktop failed, trying again", e)
+        }
+    }
+
+    private fun resyncHead(context: Context, vault: ChatVault, job: Resync): Boolean {
+        val head = vault.dumpHead()
+
+        try {
+            if (job.full && !Vigil.chatCompanionResync(false)) {
+                return false
+            }
+
+            val lost = vault.lostSet()
+
+            if (job.full || lost.state) {
+                if (!mirror(prefsOf(context), null)) {
+                    return false
+                }
+
+                if (!vault.dumpHead(head)) {
+                    return false
+                }
+
+                if (job.full) {
+                    job.chats = head.chats
+                    return true
+                }
+            }
+
+            job.chats = lost.chats.toList()
+            job.files.addAll(lost.files.map { it.value to it.key })
+
+            return true
+        } finally {
+            head.wipe()
+        }
+    }
+
+    fun prefsChanged(context: Context) {
+        vault(context).emit(prefsOf(context))
+    }
+
+    private fun prefsOf(context: Context): JSONObject =
+        JSONObject()
+            .put("op", "prefs")
+            .put("stars", stars(context))
+            .put("compacts", compacts(context))
+            .put("mutes", mutes(context))
+            .put("order", JSONArray(order(context)))
+            .put("names", PeerNames.load(context))
+
+    private fun strings(list: JSONArray): List<String> = (0 until list.length()).map { list.getString(it) }
+
+    fun self(): String {
+        require(local.isNotEmpty()) { "Gospel is not running." }
+
+        return local
+    }
+
+    fun topic(context: Context, id: String, topic: String, name: String, color: Int): String {
+        val trimmed = name.trim()
+        val chosen = topic.ifEmpty {
+            "%016x".format(SecureRandom().nextLong().takeIf { it != 0L } ?: 1L)
+        }
+
+        require(trimmed.toByteArray().size <= TOPIC_NAME_MAX) { "A topic name is at most $TOPIC_NAME_MAX bytes." }
+        require(chosen.matches(Regex("[0-9a-f]{16}")) && chosen != "0".repeat(16)) { "There is no topic $topic." }
+
+        val vault = vault(context)
+        val self = if (ChatVault.group(id) != null) self() else ""
+
+        submit(vault, vault.topic(id, chosen, trimmed, color and 0xffffff, vault.ref(), self))
+        merge(vault)
+        changed()
+
+        return chosen
+    }
+
+    fun retract(context: Context, id: String, ref: Long, hash: String = "", topic: String = "") {
+        val vault = vault(context)
+        val self = if (ChatVault.group(id) != null) self() else ""
+        val retracted = try {
+            vault.retract(id, ref, self)
+        } catch (e: ChatVault.Locked) {
+            if (!hash.matches(Regex("[0-9a-f]{16}"))) {
+                throw e
+            }
+
+            vault.retractHash(id, ref, java.lang.Long.parseUnsignedLong(hash, 16), topic, self)
+        }
+
+        drop(retracted.dropped)
+        submit(vault, retracted.queued)
+        changed()
+    }
+
+    fun groupCreate(context: Context, name: String, picked: List<String>): String {
+        val local = self()
+        val trimmed = name.trim()
+        val members = picked.filter { it.matches(Regex("[0-9a-f]{2}")) && it != local }.distinct()
+
+        require(trimmed.toByteArray().size <= GROUP_NAME_MAX) { "A group name is at most $GROUP_NAME_MAX bytes." }
+        require(members.isNotEmpty()) { "Pick at least one member." }
+
+        val id = "%016x".format(SecureRandom().nextLong().takeIf { it != 0L } ?: 1L)
+        val chat = ChatVault.groupChat(local, id)
+        val vault = vault(context)
+        val info = JSONObject()
+            .put("owner", local)
+            .put("id", id)
+            .put("name", trimmed)
+            .put("members", JSONArray(members + local))
+            .put("serial", 1)
+            .put("state", "open")
+            .put("topics", JSONArray())
+
+        vault.groupSave(chat, info)
+        vault.deliver(chat, local.toInt(16), "", trimmed, System.currentTimeMillis(), "created")
+
+        submit(vault, vault.rosterQueue(chat, info, local))
+        merge(vault)
+        namesChanged()
+        changed()
+
+        return chat
+    }
+
+    fun groupEdit(context: Context, chat: String, name: String?, picked: List<String>?) {
+        val local = self()
+        val vault = vault(context)
+        val info = vault.groupInfo(chat) ?: throw IllegalArgumentException("There is no group $chat.")
+        val before = ChatVault.members(info)
+        val time = System.currentTimeMillis()
+
+        require(info.getString("owner") == local) { "Only the owner can change a group." }
+        require(info.getString("state") == "open") { "This group is closed." }
+
+        val members = picked?.filter { it.matches(Regex("[0-9a-f]{2}")) && it != local }?.distinct()?.plus(local)
+            ?: before
+
+        require(members.size > 1) { "A group needs at least one other member." }
+
+        if (name != null) {
+            val trimmed = name.trim()
+
+            require(trimmed.toByteArray().size <= GROUP_NAME_MAX) { "A group name is at most $GROUP_NAME_MAX bytes." }
+
+            if (trimmed != info.getString("name")) {
+                vault.deliver(chat, local.toInt(16), "", trimmed, time, "renamed")
+            }
+
+            info.put("name", trimmed)
+        }
+
+        val gone = before.filter { it !in members }
+
+        for (member in members.filter { it !in before }) {
+            vault.deliver(chat, member.toInt(16), "", "", time, "joined")
+        }
+
+        for (member in gone) {
+            vault.deliver(chat, member.toInt(16), "", "", time, "left")
+        }
+
+        info.put("members", JSONArray(members))
+        info.put("serial", info.getInt("serial") + 1)
+        info.put("topics", vault.topicsOf(chat, info))
+
+        vault.groupSave(chat, info)
+        drop(vault.groupDrop(chat, gone))
+
+        submit(vault, vault.rosterQueue(chat, info, local, gone))
+        submit(vault, vault.topicQueue(chat, local, members.filter { it !in before }))
+        merge(vault)
+        namesChanged()
+        changed()
+    }
+
+    fun delete(context: Context, chat: String) {
+        val vault = vault(context)
+
+        if (ChatVault.group(chat) == null) {
+            check(Vigil.chatForget(chat.toInt(16))) { "Vigil is busy, try deleting the chat again." }
+        } else if (vault.groupInfo(chat)?.optString("state") == "open") {
+            groupLeave(context, chat)
+        }
+
+        vault.delete(chat)
+        mute(context, chat, 0L)
+        unlist(context, chat)
+        seen(context, chat)
+        changed()
+    }
+
+    fun groupLeave(context: Context, chat: String) {
+        val local = self()
+        val vault = vault(context)
+        val info = vault.groupInfo(chat) ?: return
+        val owner = info.getString("owner")
+        val time = System.currentTimeMillis()
+
+        if (info.getString("state") != "open") {
+            return
+        }
+
+        drop(vault.groupDrop(chat, ChatVault.members(info) + owner))
+
+        if (owner == local) {
+            info.put("state", "ended")
+            info.put("serial", info.getInt("serial") + 1)
+            vault.groupSave(chat, info)
+            vault.deliver(chat, local.toInt(16), "", "", time, "ended")
+            submit(vault, vault.rosterQueue(chat, info, local))
+        } else {
+            info.put("state", "left")
+            vault.groupSave(chat, info)
+            vault.deliver(chat, local.toInt(16), "", "", time, "parted")
+            submit(vault, JSONArray().put(vault.leaveQueue(chat, owner)))
+        }
+
+        merge(vault)
+        namesChanged()
+        changed()
+    }
+
+    private fun admitted(vault: ChatVault, chat: String, peer: Int, event: JSONObject): Boolean {
+        if (ChatVault.group(chat) == null) {
+            return true
+        }
+
+        when (vault.groupCheck(chat, Calls.hex(peer), event.getInt("serial"))) {
+            ChatVault.GROUP_DROP -> {
+                stored(event.getLong("token"))
+                return false
+            }
+            ChatVault.GROUP_HOLD -> return false
+        }
+
+        return true
     }
 
     private fun roster(service: VigilVpnService, vault: ChatVault, chat: String, peer: Int, event: JSONObject) {
@@ -512,6 +1006,10 @@ object Chats {
     }
 
     private fun submit(vault: ChatVault, entry: JSONObject): Boolean {
+        if (entry.optBoolean("echo")) {
+            return true
+        }
+
         val peer = entry.getString("peer").toInt(16)
         val chat = entry.optString("chat", entry.getString("peer"))
         val group = ChatVault.group(chat)
@@ -563,7 +1061,11 @@ object Chats {
             return Vigil.chatSend(peer, ref, text, quote?.peer ?: 0, quote?.digest ?: 0L, topic)
         }
 
-        val data = vault.data(chat, entry.getString("data")) ?: return true
+        val data = try {
+            vault.data(chat, entry.getString("data")) ?: return true
+        } catch (e: ChatVault.Locked) {
+            return false
+        }
         val kind = ChatVault.kind(entry.getString("media"))
         val name = entry.getString("name").toByteArray()
 
@@ -653,7 +1155,21 @@ object Chats {
             .put("openTopic", topic.ifEmpty { JSONObject.NULL })
     }
 
+    fun topicsFill(vault: ChatVault) {
+        if (local.isNotEmpty()) {
+            vault.topicsFill(local)
+        }
+    }
+
     @Synchronized
+    private fun merge(vault: ChatVault) {
+        try {
+            vault.merge()
+        } catch (e: ChatVault.Locked) {
+            Log.i(TAG, "inbox stays until the device is unlocked")
+        }
+    }
+
     fun changed() {
         version++
     }
@@ -705,6 +1221,7 @@ object Chats {
             }
 
             prefs(context).edit().putString("mutes", mutes.toString()).apply()
+            prefsChanged(context)
         }
 
         return muted(context, id)
@@ -733,6 +1250,7 @@ object Chats {
         }
 
         prefs(context).edit().putString("stars", stars.toString()).apply()
+        prefsChanged(context)
     }
 
     fun compact(context: Context, id: String, on: Boolean) {
@@ -745,10 +1263,12 @@ object Chats {
         }
 
         prefs(context).edit().putString("compacts", compacts.toString()).apply()
+        prefsChanged(context)
     }
 
     fun order(context: Context, chats: List<String>) {
         prefs(context).edit().putString("order", JSONArray(chats).toString()).apply()
+        prefsChanged(context)
     }
 
     fun unlist(context: Context, id: String) {
@@ -942,6 +1462,10 @@ object Chats {
     const val EXTRA_TOPIC = "topic"
     const val CHAT_LIST = "gospel"
 
+    private const val TOPIC_NAME_MAX = 32
+    private const val GROUP_NAME_MAX = 32
+    private const val RESYNC_STEP = 2L * 1024 * 1024
+    private const val RESYNC_MARGIN = 256L * 1024
     private const val TAG = "vigil"
     private const val CHANNEL = "messages"
     private const val NOTIFICATION_BASE = 0x1000

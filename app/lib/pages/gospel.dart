@@ -167,6 +167,8 @@ class _GospelPageState extends State<GospelPage> with WidgetsBindingObserver {
                 ?_offline(voice, status),
                 if (status.running && !status.linked) const LinkNotice(),
                 if (!status.background) const BackgroundNotice(),
+                if (status.chat?.companion case final desktop?)
+                  _Desktop(desktop: desktop),
                 ..._chatList(status),
               ],
             ],
@@ -451,6 +453,66 @@ class _Offline extends StatelessWidget {
             busy: busy,
             onTap: busy ? null : onAction,
           ),
+        ],
+      ),
+    );
+  }
+}
+
+class _Desktop extends StatelessWidget {
+  const _Desktop({required this.desktop});
+
+  final Map<String, dynamic> desktop;
+
+  Future<void> _unlink() async {
+    if (!await confirm(
+      title: 'Unlink desktop',
+      text:
+          'Your desktop stops hearing from this phone, what it has stays '
+          'on the desktop.',
+      action: 'Unlink',
+    )) {
+      return;
+    }
+
+    try {
+      await Vigil.instance.unlinkDesktop();
+    } on VigilError catch (e) {
+      notify(e.message);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final online = desktop['online'] as bool? ?? false;
+    final queued = desktop['queued'] as int? ?? 0;
+    final version = desktop['version'] as int? ?? 0;
+    final other = desktop['other'] as int?;
+    var synced = online;
+
+    var text = online ? 'Desktop linked' : 'Desktop away';
+    if (queued > 0) {
+      text = '$text, $queued waiting';
+    }
+
+    if (online && other != null && other < version) {
+      text = 'Your desktop runs an older Vigil, update it to sync';
+      synced = false;
+    }
+
+    if (online && other != null && other > version) {
+      text = 'Update Vigil on this phone to sync with your desktop';
+      synced = false;
+    }
+
+    return Panel(
+      padding: const EdgeInsets.fromLTRB(16, 8, 8, 8),
+      child: Row(
+        children: [
+          StateDot(synced ? Liveness.online : Liveness.pending),
+          const SizedBox(width: 10),
+          Expanded(child: Text(text, style: Styles.detail)),
+          Btn(label: 'Unlink', kind: BtnKind.secondary, onTap: _unlink),
         ],
       ),
     );

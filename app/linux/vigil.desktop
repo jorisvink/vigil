@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Vigil
+Comment=Desktop companion for Vigil on your phone
+Exec=@APPDIR@/vigil
+Icon=vigil
+Terminal=false
+Categories=Network;InstantMessaging;
+StartupWMClass=vigil
+StartupNotify=true

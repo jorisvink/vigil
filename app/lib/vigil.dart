@@ -45,6 +45,7 @@ class Summary {
     'cathedral' => 'Cathedral tunnel',
     'liturgy' => tier6 ? 'Tier6' : 'Liturgy',
     'gospel' => 'Gospel',
+    'companion' => 'Desktop link',
     _ => 'Direct tunnel',
   };
 
@@ -287,6 +288,9 @@ class ChatStatus {
       .toList();
 
   ChatPeer? peer(String id) => peers.where((p) => p.id == id).firstOrNull;
+
+  Map<String, dynamic>? get companion =>
+      json['companion'] as Map<String, dynamic>?;
 }
 
 class ChatGroup {
@@ -805,6 +809,8 @@ class Vigil {
     await reload();
     return tunnel;
   }
+
+  Future<void> unlinkDesktop() => _invoke('remove', 'companion');
 
   Future<void> remove(String id) async {
     final voice = _list.any((t) => t.id == id && t.summary.voice);

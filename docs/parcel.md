@@ -141,11 +141,10 @@ flowchart TD
     B -- yes --> P[chat_xfer_pump]
     B -- no --> C{heard a heartbeat?}
     C -- no --> Z[wait]
-    C -- yes --> D[first outbox msg with blob and id]
-    D --> E{peer has FEATURE_DATA?}
-    E -- no --> G[blob ref dropped<br/>text: 'I sent you an image, but you are on gospel...']
-    G --> D
-    E -- yes --> N[chat_xfer_new]
+    C -- yes --> E{peer has FEATURE_DATA?}
+    E -- no --> Z
+    E -- yes --> D[first outbox msg with blob and id]
+    D --> N[chat_xfer_new]
     D -- none left --> AV{avatar to push?}
     AV -- yes --> N
     AV -- no --> Z

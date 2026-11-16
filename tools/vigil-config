@@ -23,6 +23,10 @@
 #       -x <id> -k <kek> -I <cathedral_id> -C <cathedral_secret> \
 #       -K <cathedral_cosk> [-g <group>] [common options]
 #
+#   vigil-config companion -i <instance> -c <host:port> -f <flock> \
+#       -x <0102|0201> -k <kek> -I <cathedral_id> -C <cathedral_secret> \
+#       -K <cathedral_cosk> [common options]
+#
 # common options:
 #   -r <net/mask>   route via the tunnel (may be repeated, not in liturgy,
 #                   tier6 or gospel)
@@ -46,7 +50,7 @@
 set -e
 
 usage() {
-	sed -n '3,44p' "$0" | sed 's/^# \{0,1\}//'
+	sed -n '3,48p' "$0" | sed 's/^# \{0,1\}//'
 	exit 1
 }
 
@@ -68,7 +72,7 @@ mode=$1
 shift
 
 case $mode in
-tunnel|cathedral|liturgy|tier6|gospel)
+tunnel|cathedral|liturgy|tier6|gospel|companion)
 	;;
 *)
 	usage
@@ -127,7 +131,7 @@ config() {
 		echo "peer $peer"
 		echo "secret $secret"
 		;;
-	cathedral|liturgy|tier6|gospel)
+	cathedral|liturgy|tier6|gospel|companion)
 		[ -n "$cathedral" ] || die "no cathedral given (-c)"
 		[ -n "$flock" ] || die "no flock given (-f)"
 		[ -n "$spi" ] || die "no spi given (-x)"
@@ -151,6 +155,15 @@ config() {
 			[ -z "$dns" ] || die "dns (-d) is not used for gospel"
 			echo "mode gospel"
 			[ -z "$group" ] || echo "liturgy_group $group"
+		elif [ "$mode" = "companion" ]; then
+			[ -z "$routes" ] || die "routes (-r) are not used for" \
+			    "a companion"
+			[ -z "$dns" ] || die "dns (-d) is not used for a companion"
+			case "$spi" in
+			0102|0201) ;;
+			*) die "spi (-x) must be 0102 or 0201" ;;
+			esac
+			echo "mode companion"
 		elif [ "$mode" = "tier6" ]; then
 			[ -z "$routes" ] || die "routes (-r) are not used with" \
 			    "tier6, the tunnel network is routed"

@@ -73,6 +73,11 @@ static jboolean		android_chat_drop(JNIEnv *, jclass, jint, jlong);
 static jboolean		android_chat_stored(JNIEnv *, jclass, jlong);
 static jboolean		android_chat_nick(JNIEnv *, jclass, jstring);
 static jboolean		android_chat_avatar(JNIEnv *, jclass, jbyteArray);
+static jboolean		android_chat_companion(JNIEnv *, jclass, jbyteArray);
+static jboolean		android_chat_companion_sync(JNIEnv *, jclass,
+			    jbyteArray, jbyteArray);
+static jboolean		android_chat_companion_resync(JNIEnv *, jclass,
+			    jboolean);
 static void		android_chat_open(JNIEnv *, jclass, jint, jboolean);
 static void		android_chat_typing(JNIEnv *, jclass, jint, jlong,
 			    jboolean);
@@ -131,6 +136,11 @@ static JNINativeMethod	methods[] = {
 	{ "chatTyping", "(IJZ)V", (void *)android_chat_typing },
 	{ "chatNick", "(Ljava/lang/String;)Z", (void *)android_chat_nick },
 	{ "chatAvatar", "([B)Z", (void *)android_chat_avatar },
+	{ "chatCompanion", "([B)Z", (void *)android_chat_companion },
+	{ "chatCompanionSync", "([B[B)Z",
+	    (void *)android_chat_companion_sync },
+	{ "chatCompanionResync", "(Z)Z",
+	    (void *)android_chat_companion_resync },
 	{ "chatGroupTyping", "(IJJ[B)V", (void *)android_chat_group_typing },
 	{ "chatGroupSend", "(IJIJIJ[BIJ)Z", (void *)android_chat_group_send },
 	{ "chatGroupTopic", "(IJJIJI[B)Z", (void *)android_chat_group_topic },
@@ -242,41 +252,6 @@ vigil_platform_socket(int fd)
 	}
 
 	return (0);
-}
-
-/*
- * A protected socket needs nothing when it is closed.
- */
-void
-vigil_platform_socket_close(int fd)
-{
-	PRECOND(fd >= 0);
-}
-
-/*
- * Read a single packet from the tunnel interface.
- */
-ssize_t
-vigil_platform_tun_read(int fd, u_int8_t *buf, size_t len)
-{
-	PRECOND(fd >= 0);
-	PRECOND(buf != NULL);
-	PRECOND(len > 0);
-
-	return (read(fd, buf, len));
-}
-
-/*
- * Write a single packet to the tunnel interface.
- */
-ssize_t
-vigil_platform_tun_write(int fd, const u_int8_t *buf, size_t len)
-{
-	PRECOND(fd >= 0);
-	PRECOND(buf != NULL);
-	PRECOND(len > 0);
-
-	return (write(fd, buf, len));
 }
 
 /*
@@ -1251,6 +1226,96 @@ android_gospel(JNIEnv *env, jclass cls, jbyteArray config)
 		android_bytes_free(buf, len);
 
 	if (ret == -1)
+		return (JNI_FALSE);
+
+	return (JNI_TRUE);
+}
+
+/*
+ * Vigil.chatCompanion(), sets the configuration of the tunnel to our
+ * desktop or drops it if config is null.
+ */
+static jboolean
+android_chat_companion(JNIEnv *env, jclass cls, jbyteArray config)
+{
+	int		ret;
+	size_t		len;
+	char		*buf;
+
+	len = 0;
+	buf = NULL;
+
+	if (config != NULL) {
+		buf = android_bytes_copy(env, config, VIGIL_CONFIG_MAX, &len);
+		if (buf == NULL)
+			return (JNI_FALSE);
+	}
+
+	ret = vigil_chat_companion(buf, len);
+
+	if (buf != NULL)
+		android_bytes_free(buf, len);
+
+	if (ret == -1)
+		return (JNI_FALSE);
+
+	return (JNI_TRUE);
+}
+
+/*
+ * Vigil.chatCompanionSync(), sends the given JSON to our desktop with the
+ * given data, if any.
+ */
+static jboolean
+android_chat_companion_sync(JNIEnv *env, jclass cls, jbyteArray json,
+    jbyteArray data)
+{
+	int		ret;
+	size_t		len, size;
+	char		*buf, *dbuf;
+
+	if (json == NULL)
+		return (JNI_FALSE);
+
+	buf = android_bytes_copy(env, json, VIGIL_COMPANION_JSON_MAX, &len);
+	if (buf == NULL)
+		return (JNI_FALSE);
+
+	size = 0;
+	dbuf = NULL;
+
+	if (data != NULL) {
+		dbuf = android_bytes_copy(env, data, VIGIL_CHAT_DATA_MAX, &size);
+		if (dbuf == NULL) {
+			android_bytes_free(buf, len);
+			return (JNI_FALSE);
+		}
+	}
+
+	ret = -1;
+
+	if (len > 0)
+		ret = vigil_chat_companion_sync(buf, len, dbuf, size);
+
+	if (dbuf != NULL)
+		android_bytes_free(dbuf, size);
+
+	android_bytes_free(buf, len);
+
+	if (ret == -1)
+		return (JNI_FALSE);
+
+	return (JNI_TRUE);
+}
+
+/*
+ * Vigil.chatCompanionResync(), marks the start or the end of a full copy
+ * of our chats for our desktop.
+ */
+static jboolean
+android_chat_companion_resync(JNIEnv *env, jclass cls, jboolean done)
+{
+	if (vigil_chat_companion_resync(done == JNI_TRUE) == -1)
 		return (JNI_FALSE);
 
 	return (JNI_TRUE);

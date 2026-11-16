@@ -25,11 +25,17 @@
  * VIGIL_MODE_CATHEDRAL - A tunnel using a cathedral for peer discovery.
  * VIGIL_MODE_LITURGY   - Automatic full-mesh cathedral tunnels.
  * VIGIL_MODE_GOSPEL    - Calls and text messages over cathedral tunnels.
+ * VIGIL_MODE_COMPANION - The cathedral tunnel between a phone and its desktop.
  */
 #define VIGIL_MODE_TUNNEL		1
 #define VIGIL_MODE_CATHEDRAL		2
 #define VIGIL_MODE_LITURGY		3
 #define VIGIL_MODE_GOSPEL		4
+#define VIGIL_MODE_COMPANION		5
+
+/* The kek ids of the phone and its desktop in a companion flock. */
+#define VIGIL_COMPANION_PHONE		0x01
+#define VIGIL_COMPANION_DESKTOP		0x02
 
 /* The version of the configuration format we understand. */
 #define VIGIL_CONFIG_VERSION		1
@@ -271,6 +277,7 @@
 #define VIGIL_CHAT_DATA_FILE		2
 #define VIGIL_CHAT_DATA_VOICE		3
 #define VIGIL_CHAT_DATA_AVATAR		4
+#define VIGIL_CHAT_DATA_COMPANION	5
 #define VIGIL_CHAT_DATA_NAME_MAX	126
 
 /* Set on the kind of data in a topic, the topic follows the head. */
@@ -279,8 +286,38 @@
 /* Set on the kind of data in a group, its owner, id and serial follow. */
 #define VIGIL_CHAT_DATA_GROUP		0x40
 
+/* Set on every ref the desktop of a phone hands out. */
+#define VIGIL_CHAT_COMPANION_REF	(1ULL << 62)
+
+/* The requests the desktop of a phone sends its phone. */
+#define VIGIL_COMPANION_SEND		1
+#define VIGIL_COMPANION_CALL		2
+#define VIGIL_COMPANION_ASK		3
+
+/* What the desktop of a phone does with a call. */
+#define VIGIL_COMPANION_DIAL		1
+#define VIGIL_COMPANION_ANSWER		2
+#define VIGIL_COMPANION_DECLINE		3
+#define VIGIL_COMPANION_HANGUP		4
+
+/* The flags of the call a phone tells its desktop about. */
+#define VIGIL_COMPANION_CALL_RELAY	0x01
+#define VIGIL_COMPANION_CALL_RINGING	0x02
+#define VIGIL_COMPANION_CALL_OUTGOING	0x04
+
+/* The most typing peers a phone sends the group and topic of. */
+#define VIGIL_COMPANION_TYPED		8
+
+/* The longest JSON a phone hands its core for its desktop. */
+#define VIGIL_COMPANION_JSON_MAX	(16 * 1024)
+
 /* The largest avatar we send or take. */
 #define VIGIL_CHAT_AVATAR_MAX		(32 * 1024)
+
+/* The tones we play until we hear our peer. */
+#define VIGIL_VOICE_TONE_NONE		0
+#define VIGIL_VOICE_TONE_RINGBACK	1
+#define VIGIL_VOICE_TONE_PIPS		2
 
 /* The different type of voice frames. */
 #define VIGIL_VOICE_TYPE_VOICE		1
@@ -364,6 +401,13 @@ int	vigil_chat_group_topic(u_int8_t, u_int64_t, u_int64_t, u_int32_t,
 	    u_int64_t, u_int32_t, const char *, size_t);
 int	vigil_chat_group_data_send(u_int8_t, u_int64_t, u_int8_t, u_int64_t,
 	    u_int32_t, u_int64_t, int, const char *, const void *, size_t);
+int	vigil_chat_call(int, u_int8_t);
+int	vigil_chat_companion(const char *, size_t);
+int	vigil_chat_companion_sync(const char *, size_t, const void *, size_t);
+int	vigil_chat_companion_resync(int);
+int	vigil_chat_companion_unsync(void);
+int	vigil_chat_companion_ask(u_int64_t, const char *, size_t,
+	    const void *, size_t);
 int	vigil_chat_retract(u_int8_t, u_int64_t, u_int64_t, u_int64_t);
 int	vigil_chat_group_retract(u_int8_t, u_int64_t, u_int8_t, u_int64_t,
 	    u_int32_t, u_int64_t, u_int64_t);

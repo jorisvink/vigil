@@ -163,6 +163,8 @@ class VigilVpnService : VpnService() {
         store.last = id
 
         synchronized(lock) {
+            store.companionApply()
+
             val number = Vigil.runId()
 
             val worker = Thread({
@@ -232,6 +234,8 @@ class VigilVpnService : VpnService() {
         } else {
             null
         }
+
+        store.companionApply()
 
         if (!Vigil.gospel(config)) {
             Log.w(TAG, "Gospel was not attached, vigil is not running")

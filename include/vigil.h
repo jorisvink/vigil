@@ -89,6 +89,9 @@
 #define vigil_atomic_add(x, e)		\
     __atomic_fetch_add(x, e, __ATOMIC_SEQ_CST)
 
+#define vigil_atomic_sub(x, e)		\
+    __atomic_fetch_sub(x, e, __ATOMIC_SEQ_CST)
+
 #define vigil_atomic_fence()		\
     __atomic_thread_fence(__ATOMIC_SEQ_CST)
 
@@ -302,6 +305,84 @@ struct vigil_chat_chunk {
 } __attribute__((packed));
 
 /*
+ * A request from the desktop of a phone. A send carries text or data for
+ * peer, or for every peer set in members when group is set. Kind is 0 for
+ * text, else the kind of the data, the text or data follows. A call has
+ * the call op in kind. An ask has ask bytes of JSON for the platform of
+ * the phone, the data of the ask may follow the JSON.
+ */
+struct vigil_chat_request {
+	u_int8_t		op;
+	u_int64_t		ref;
+	u_int8_t		peer;
+	u_int8_t		kind;
+	u_int8_t		author;
+	u_int64_t		hash;
+	u_int64_t		topic;
+	u_int8_t		owner;
+	u_int64_t		group;
+	u_int32_t		serial;
+	u_int8_t		members[VIGIL_CHAT_GROUP_ROSTER];
+	u_int16_t		ask;
+	u_int8_t		len;
+	u_int8_t		name[VIGIL_CHAT_DATA_NAME_MAX];
+} __attribute__((packed));
+
+/*
+ * A peer that types in a group or topic, as a phone tells its desktop.
+ */
+struct vigil_companion_typed {
+	u_int8_t		peer;
+	u_int8_t		owner;
+	u_int64_t		group;
+	u_int64_t		topic;
+} __attribute__((packed));
+
+/*
+ * The state a phone appends to each heartbeat to its desktop, its sync
+ * version, a bit for every peer, the call the phone runs, the last call
+ * that ended and the last seq in its journal. The magic and version always
+ * come first.
+ */
+struct vigil_companion_phone {
+	u_int16_t			magic;
+	u_int16_t			version;
+	u_int8_t			present[VIGIL_CHAT_GROUP_ROSTER];
+	u_int8_t			online[VIGIL_CHAT_GROUP_ROSTER];
+	u_int8_t			typing[VIGIL_CHAT_GROUP_ROSTER];
+	u_int8_t			incoming[VIGIL_CHAT_GROUP_ROSTER];
+	u_int8_t			call_peer;
+	u_int8_t			call_state;
+	u_int8_t			call_flags;
+	u_int8_t			typed_count;
+	struct vigil_companion_typed	typed[VIGIL_COMPANION_TYPED];
+	u_int8_t			ended_peer;
+	u_int8_t			ended_why;
+	u_int64_t			ended;
+	u_int64_t			last;
+} __attribute__((packed));
+
+/*
+ * The state a desktop appends to each heartbeat to its phone, its sync
+ * version, the peers the desktop types to, the chats the desktop has open,
+ * the seq up to which the desktop stored what its phone sent and if the
+ * desktop holds a full copy of the chats of its phone. The magic and
+ * version always come first.
+ */
+struct vigil_companion_desktop {
+	u_int16_t		magic;
+	u_int16_t		version;
+	u_int8_t		typing[VIGIL_CHAT_GROUP_ROSTER];
+	u_int8_t		opened[VIGIL_CHAT_GROUP_ROSTER];
+	u_int64_t		topic;
+	u_int8_t		owner;
+	u_int64_t		group;
+	u_int8_t		members[VIGIL_CHAT_GROUP_ROSTER];
+	u_int64_t		have;
+	u_int8_t		synced;
+} __attribute__((packed));
+
+/*
  * A fragment of a message on the link, always sent at full size.
  */
 struct vigil_link_fragment {
@@ -472,6 +553,26 @@ struct vigil_remembrance {
 };
 
 /*
+ * The numbered entries a phone holds for its desktop, see src/journal.c.
+ * A desktop only keeps the acked seq in it, and if it holds a full copy
+ * of the chats of its phone.
+ */
+#define VIGIL_JOURNAL_UNSYNCED	0
+#define VIGIL_JOURNAL_SYNCING	1
+#define VIGIL_JOURNAL_SYNCED	2
+
+struct vigil_journal {
+	int			sealed;
+	u_int8_t		synced;
+	u_int64_t		last;
+	u_int64_t		acked;
+	size_t			items;
+	size_t			bytes;
+	u_int8_t		key[32];
+	char			dir[1024];
+};
+
+/*
  * A fixed size buffer we append text to, see src/buf.c.
  */
 #define VIGIL_BUF_FULL		0x0001
@@ -569,6 +670,7 @@ struct vigil_state {
 	struct sockaddr_in		peer;
 	struct vigil_cathedral		cathedral;
 	struct vigil_remembrance	remembrance;
+	const char			*datadir;
 
 	u_int64_t			gospel_rx;
 	u_int64_t			gospel_tx;
@@ -603,6 +705,8 @@ int	vigil_inet_match(struct sockaddr_in *, struct sockaddr_in *);
 int	vigil_resolve(const char *, u_int16_t, struct sockaddr_in *);
 void	vigil_log(int, const char *, ...)
 	    __attribute__((format (printf, 2, 3)));
+void	vigil_kyrka_cathedral(KYRKA *, struct kyrka_cathedral_cfg *,
+	    const struct vigil_config *, int, u_int16_t);
 void	fatal(const char *, ...) __attribute__((format (printf, 1, 2)))
 	    __attribute__((noreturn));
 
@@ -649,6 +753,9 @@ void	vigil_chat_update(void);
 void	vigil_chat_rebind(void);
 void	vigil_chat_cleanup(void);
 void	vigil_chat_status(struct vigil_buf *);
+void	vigil_chat_companion_voice(const u_int8_t *, size_t);
+int	vigil_chat_companion_send(const struct vigil_chat_request *,
+	    const void *, size_t);
 
 /* src/ether.c */
 void	vigil_ether_init(struct vigil_peer *);
@@ -662,6 +769,14 @@ void	vigil_ether_input(struct vigil_peer *, struct sockaddr_in *,
 
 /* src/voice.c */
 int	vigil_voice_busy(void);
+void	vigil_voice_relay_update(void);
+int	vigil_voice_relay_answer(u_int8_t);
+void	vigil_voice_relay_call(u_int8_t, int);
+void	vigil_voice_relay(u_int8_t, int, int);
+void	vigil_voice_relay_play(const u_int8_t *, size_t);
+void	vigil_voice_relay_input(const u_int8_t *, size_t);
+void	vigil_voice_relay_state(u_int8_t *, u_int8_t *, u_int8_t *);
+void	vigil_voice_ended(u_int8_t *, u_int8_t *, u_int64_t *);
 void	vigil_voice_hangup(void);
 void	vigil_voice_update(void);
 void	vigil_voice_rebind(void);
@@ -669,6 +784,8 @@ void	vigil_voice_cleanup(void);
 void	vigil_voice_call(u_int8_t, int);
 void	vigil_voice_playback(int16_t *, size_t);
 void	vigil_voice_capture(const int16_t *, size_t);
+
+const char	*vigil_voice_end_name(int);
 
 /* src/ring.c */
 size_t	vigil_ring_pending(struct vigil_ring *);
@@ -740,6 +857,17 @@ size_t	vigil_inet_icmp_frag(const u_int8_t *, size_t, u_int16_t,
 	    u_int8_t *, size_t);
 
 u_int8_t	vigil_inet_version(const u_int8_t *, size_t);
+
+/* src/journal.c */
+void		vigil_journal_close(struct vigil_journal *);
+int		vigil_journal_ack(struct vigil_journal *, u_int64_t);
+int		vigil_journal_synced(struct vigil_journal *, u_int8_t);
+int		vigil_journal_open(struct vigil_journal *, const char *,
+		    const char *, const u_int8_t *, size_t);
+u_int64_t	vigil_journal_append(struct vigil_journal *,
+		    const void *, size_t);
+u_int8_t	*vigil_journal_read(struct vigil_journal *, u_int64_t,
+		    size_t *);
 
 /* src/remembrance.c */
 void	vigil_remembrance_cleanup(struct vigil_remembrance *);

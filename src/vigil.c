@@ -170,6 +170,7 @@ vigil_run(u_int64_t id, int fd, const char *cfg, size_t cfglen,
 
 	datadir_run = datadir;
 	vigil->fd = fd;
+	vigil->datadir = datadir;
 
 	vigil_gospel_drop();
 
@@ -188,6 +189,20 @@ vigil_run(u_int64_t id, int fd, const char *cfg, size_t cfglen,
 		    "a gospel configuration runs without a tunnel");
 		vigil_cleanup();
 		return (-1);
+	}
+
+	if (vigil->config->mode == VIGIL_MODE_COMPANION) {
+		if (fd != -1) {
+			vigil_log(LOG_ERR,
+			    "a companion configuration runs without a tunnel");
+			vigil_cleanup();
+			return (-1);
+		}
+
+		if (vigil_chat_companion(cfg, cfglen) == -1) {
+			vigil_cleanup();
+			return (-1);
+		}
 	}
 
 	if (vigil->config->mode == VIGIL_MODE_GOSPEL) {
@@ -278,6 +293,9 @@ vigil_run(u_int64_t id, int fd, const char *cfg, size_t cfglen,
 			vigil_chat_init();
 		}
 
+		if (vigil->config->mode == VIGIL_MODE_COMPANION)
+			vigil_chat_init();
+
 		vigil_log(LOG_INFO, "up and running");
 	}
 
@@ -303,6 +321,9 @@ vigil_run(u_int64_t id, int fd, const char *cfg, size_t cfglen,
 				vigil_chat_rebind();
 				vigil_voice_rebind();
 			}
+
+			if (vigil->config->mode == VIGIL_MODE_COMPANION)
+				vigil_chat_rebind();
 		}
 
 		vigil_poke_handle();
@@ -317,6 +338,9 @@ vigil_run(u_int64_t id, int fd, const char *cfg, size_t cfglen,
 			vigil_chat_update();
 			vigil_voice_update();
 		}
+
+		if (vigil->config->mode == VIGIL_MODE_COMPANION)
+			vigil_chat_update();
 
 		vigil_peer_prune();
 	}
@@ -468,6 +492,57 @@ vigil_socket_close(int fd)
 
 	vigil_platform_socket_close(fd);
 	(void)close(fd);
+}
+
+/*
+ * Configure a libkyrka context for the cathedrals in the given config,
+ * loading our device kek too if kek is 1.
+ */
+void
+vigil_kyrka_cathedral(KYRKA *ctx, struct kyrka_cathedral_cfg *cfg,
+    const struct vigil_config *config, int kek, u_int16_t mtu)
+{
+	PRECOND(ctx != NULL);
+	PRECOND(cfg != NULL);
+	PRECOND(config != NULL);
+	PRECOND(kek == 0 || kek == 1);
+
+	if (config->flags & VIGIL_CONFIG_FLAG_SHROUD) {
+		if (kyrka_shroud_enable(ctx) == -1) {
+			fatal("failed to enable shroud: %d",
+			    kyrka_last_error(ctx));
+		}
+	}
+
+	if (kyrka_cathedral_config(ctx, cfg) == -1) {
+		fatal("failed to configure cathedral: %d",
+		    kyrka_last_error(ctx));
+	}
+
+	if (kek) {
+		if (kyrka_device_kek_load(ctx, config->kek,
+		    sizeof(config->kek)) == -1) {
+			fatal("kyrka_device_kek_load: %d",
+			    kyrka_last_error(ctx));
+		}
+	}
+
+	if (kyrka_cathedral_secret_load(ctx, config->cathedral_secret,
+	    sizeof(config->cathedral_secret)) == -1) {
+		fatal("kyrka_cathedral_secret_load: %d",
+		    kyrka_last_error(ctx));
+	}
+
+	if (kyrka_cathedral_cosk_load(ctx, config->cathedral_cosk,
+	    sizeof(config->cathedral_cosk)) == -1) {
+		fatal("kyrka_cathedral_cosk_load: %d",
+		    kyrka_last_error(ctx));
+	}
+
+	if (kyrka_mtu_size(ctx, mtu) == -1) {
+		fatal("failed to set libkyrka mtu size: %d",
+		    kyrka_last_error(ctx));
+	}
 }
 
 /*
@@ -794,6 +869,7 @@ vigil_hosts_resolve(void)
 		port = vigil->config->cathedral_port;
 		break;
 	case VIGIL_MODE_GOSPEL:
+	case VIGIL_MODE_COMPANION:
 		return (0);
 	default:
 		fatal("unknown mode %d", vigil->config->mode);
@@ -853,6 +929,11 @@ vigil_cleanup(void)
 		vigil_liturgy_cleanup();
 
 	vigil_gospel_detach();
+
+	if (vigil->config != NULL &&
+	    vigil->config->mode == VIGIL_MODE_COMPANION)
+		vigil_chat_cleanup();
+
 	vigil_peer_cleanup();
 	vigil_remembrance_cleanup(&vigil->remembrance);
 	vigil_io_cleanup();
@@ -956,6 +1037,9 @@ vigil_poke_handle(void)
 		vigil_call_poke();
 		vigil_chat_poke();
 	}
+
+	if (vigil->config->mode == VIGIL_MODE_COMPANION)
+		vigil_chat_poke();
 }
 
 /*
@@ -999,7 +1083,8 @@ vigil_gospel_handle(void)
 	if (!vigil_atomic_cas(&gospel, &req, &none))
 		return;
 
-	if (vigil->config->mode == VIGIL_MODE_GOSPEL) {
+	if (vigil->config->mode == VIGIL_MODE_GOSPEL ||
+	    vigil->config->mode == VIGIL_MODE_COMPANION) {
 		vigil_log(LOG_NOTICE, "[gospel] runs on its own, not swapped");
 	} else if (req->len == 0) {
 		vigil_gospel_detach();
