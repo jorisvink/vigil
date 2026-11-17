@@ -638,7 +638,7 @@ class ChatVault(context: Context) {
 
             while (dump.at + batch.length() < dumped.size) {
                 val op = dumped[dump.at + batch.length()]
-                val len = op.toString().length
+                val len = op.toString().toByteArray().size
 
                 if (batch.length() > 0 && size + len > BATCH_MAX) {
                     break

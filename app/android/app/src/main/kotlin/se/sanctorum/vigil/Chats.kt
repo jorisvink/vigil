@@ -518,11 +518,13 @@ object Chats {
 
                 job.at = dump.at
 
-                if (done) {
-                    job.chat++
-                    job.at = 0
-                    Log.i(TAG, "${job.what}: sent chat ${job.chat} of ${chats.size}")
+                if (!done) {
+                    return
                 }
+
+                job.chat++
+                job.at = 0
+                Log.i(TAG, "${job.what}: sent chat ${job.chat} of ${chats.size}")
             }
 
             room -= minOf(room / 2, RESYNC_STEP) - dump.budget
