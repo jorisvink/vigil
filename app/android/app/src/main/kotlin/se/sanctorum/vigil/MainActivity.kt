@@ -578,6 +578,32 @@ class MainActivity : FlutterActivity() {
                     Chats.changed()
                     result.success("")
                 }
+                "safetyCodes" -> background(result) { Chats.safetyCodes(this) }
+                "safetyCode" -> {
+                    val peer = call.argument<String>("peer")!!
+                    val clear = call.argument<Boolean>("clear") == true
+                    val on = call.argument<Boolean>("on")
+
+                    background(result) { Chats.safetyCode(this, peer, clear, on) }
+                }
+                "safetyBegin" -> {
+                    val peer = call.argument<String>("peer")!!
+
+                    background(result) { Chats.safetyBegin(peer) }
+                }
+                "safetyWords" -> {
+                    val peer = call.argument<String>("peer")!!
+                    val words = call.argument<ByteArray>("words")!!
+
+                    background(result) {
+                        wiped(words) { Chats.safetyWords(peer, it) }
+                        ""
+                    }
+                }
+                "safetyStop" -> background(result) {
+                    Chats.safetyStop(this)
+                    ""
+                }
                 "chatSettings" -> result.success(
                     Chats.settings(
                         this, call.argument<String>("nick"), call.argument<Boolean>("preview")

@@ -94,6 +94,8 @@ static int	chatter_data_take(const char *);
 static void	chatter_mirror(const char *, const u_int8_t *, size_t);
 static int	chatter_avatar_take(const char *);
 static void	chatter_group_event(const char *);
+static void	chatter_safety_get(const char *);
+static void	chatter_safety_start(const char *);
 static void	chatter_events_handle(int *, int *);
 static int	chatter_members_parse(const char *);
 static void	chatter_roster_send(u_int8_t, int *);
@@ -183,7 +185,7 @@ usage(void)
 	    "[-o dir] [-t peer] [-T] [-O peer] [-e count] [-x secs] "
 	    "[-l count] [-r author:hash] [-c topic:name] [-C peer:topic] "
 	    "[-P file] [-R peer:hash] [-M companion] [-D datadir] "
-	    "<gospel>\n");
+	    "[-S peer:input] [-W peer:own:theirs] <gospel>\n");
 	exit(1);
 }
 
@@ -197,6 +199,7 @@ main(int argc, char **argv)
 	long		peer, session;
 	int		ch, idx, expect, quit, delivered;
 	int		got, sent, gsent, gwanted, wanted;
+	u_int8_t	ikm[VIGIL_ADDITIONAL_INPUT_LEN];
 
 	quit = 60;
 	got = 0;
@@ -207,7 +210,7 @@ main(int argc, char **argv)
 	delivered = 0;
 
 	while ((ch = getopt(argc, argv,
-	    "a:A:c:C:D:e:f:F:g:G:i:I:j:K:l:Lm:M:n:o:O:P:r:R:t:Tx:")) != -1) {
+	    "a:A:c:C:D:e:f:F:g:G:i:I:j:K:l:Lm:M:n:o:O:P:r:R:S:t:TW:x:")) != -1) {
 		switch (ch) {
 		case 'M':
 			gospel_len = chatter_config_read(optarg,
@@ -241,6 +244,24 @@ main(int argc, char **argv)
 			break;
 		case 'P':
 			chatter_avatar(optarg);
+			break;
+		case 'S':
+			peer = strtol(optarg, &ep, 16);
+			if (*ep != ':')
+				usage();
+			if (peer <= 0 || peer >= KYRKA_PEERS_PER_FLOCK)
+				usage();
+			if (strlen(ep + 1) != sizeof(ikm) * 2)
+				usage();
+			for (idx = 0; idx < (int)sizeof(ikm); idx++) {
+				if (sscanf(ep + 1 + idx * 2, "%2hhx",
+				    &ikm[idx]) != 1)
+					usage();
+			}
+			vigil_additional_input(peer, ikm, sizeof(ikm));
+			break;
+		case 'W':
+			chatter_safety_start(optarg);
 			break;
 		case 'R':
 			if (retract_count == CHATTER_MESSAGES_MAX)
@@ -687,8 +708,10 @@ chatter_events_handle(int *got, int *delivered)
 			fatal("failed to resync our desktop");
 	}
 
-	for (p = buf; (p = strstr(p, "{\"peer\":")) != NULL; p++)
+	for (p = buf; (p = strstr(p, "{\"peer\":")) != NULL; p++) {
 		chatter_group_event(p);
+		chatter_safety_get(p);
+	}
 
 	for (p = buf; (p = strstr(p, "\"token\":")) != NULL; p++) {
 		if (chatter_avatar_take(p) != -1)
@@ -714,6 +737,92 @@ chatter_events_handle(int *got, int *delivered)
 		(*delivered)++;
 
 	fflush(stdout);
+}
+
+/*
+ * Start a safety code exchange from peer:own:theirs with both halves in
+ * hex, our half goes through its words and back first.
+ */
+static void
+chatter_safety_start(const char *arg)
+{
+	int		idx;
+	long		peer;
+	char		*ep;
+	u_int8_t	own[VIGIL_SAFETY_HALF_LEN];
+	u_int8_t	back[VIGIL_SAFETY_HALF_LEN];
+	u_int8_t	theirs[VIGIL_SAFETY_HALF_LEN];
+	char		words[VIGIL_SAFETY_WORDS_LEN];
+
+	PRECOND(arg != NULL);
+
+	peer = strtol(arg, &ep, 16);
+	if (*ep != ':' || peer <= 0 || peer >= KYRKA_PEERS_PER_FLOCK)
+		usage();
+
+	if (strlen(ep) != 2 + sizeof(own) * 4)
+		usage();
+
+	if (ep[1 + sizeof(own) * 2] != ':')
+		usage();
+
+	for (idx = 0; idx < (int)sizeof(own); idx++) {
+		if (sscanf(ep + 1 + idx * 2, "%2hhx", &own[idx]) != 1)
+			usage();
+		if (sscanf(ep + 2 + sizeof(own) * 2 + idx * 2, "%2hhx",
+		    &theirs[idx]) != 1)
+			usage();
+	}
+
+	if (vigil_safety_words(own, sizeof(own), words, sizeof(words)) == -1)
+		fatal("failed to make our safety words");
+
+	if (vigil_safety_half(words, back, sizeof(back)) == -1)
+		fatal("our safety words do not parse: %s", words);
+
+	if (memcmp(own, back, sizeof(own)))
+		fatal("our safety words do not give our half back: %s", words);
+
+	printf("chatter: safety words %s\n", words);
+
+	if (vigil_safety_start(peer, own, theirs, sizeof(own)) == -1)
+		fatal("failed to start the safety code exchange");
+}
+
+/*
+ * Obtain the input of a safety code exchange the given event tells us
+ * about and load the input for the peer.
+ */
+static void
+chatter_safety_get(const char *event)
+{
+	int		idx;
+	long		peer;
+	char		code[VIGIL_SAFETY_CODE_LEN];
+	u_int8_t	input[VIGIL_ADDITIONAL_INPUT_LEN];
+
+	PRECOND(event != NULL);
+
+	if (strncmp(event + 13, "\"type\":\"safety\"", 15) != 0)
+		return;
+
+	peer = strtol(event + 9, NULL, 16);
+
+	if (vigil_safety_get(peer, input, sizeof(input)) == -1) {
+		printf("chatter: safety input for %02lx is gone\n", peer);
+		return;
+	}
+
+	printf("chatter: safety input %02lx ", peer);
+	for (idx = 0; idx < (int)sizeof(input); idx++)
+		printf("%02x", input[idx]);
+	printf("\n");
+
+	if (vigil_safety_code(input, sizeof(input), code, sizeof(code)) == -1)
+		fatal("failed to make the safety code");
+
+	printf("chatter: safety code %02lx %s\n", peer, code);
+	vigil_additional_input(peer, input, sizeof(input));
 }
 
 /*

@@ -18,6 +18,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
     private var chatSession: UInt64 = 0
     private var chatResubmit: TimeInterval = 0
     private var chatSweep: TimeInterval = 0
+    private var safetyPeer: UInt8 = 0
     private var chatAround = Set<String>()
     private var chatWaiting = Set<UInt64>()
     private var receipts = [(String, Int64, String)]()
@@ -72,6 +73,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         let attach = ChatVault.defaults.object(forKey: "gospelEnabled") as? Bool ?? true
 
         attachCompanion()
+        ChatVault.safetyApplyAll()
 
         run = vigil_run_id()
         let number = run
@@ -195,6 +197,68 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         vigil_poke()
     }
 
+    private func safetyStart(_ peer: UInt8, _ own: String, _ theirs: String) {
+        var mine = Self.unhex(own)
+        var other = Self.unhex(theirs)
+        defer {
+            TunnelKeychain.wipe(&mine)
+            TunnelKeychain.wipe(&other)
+        }
+
+        let len = Int(VIGIL_SAFETY_HALF_LEN)
+
+        guard mine.count == len, other.count == len else { return }
+
+        safetyStop()
+
+        if vigil_safety_start(peer, mine, other, len) == 0 {
+            safetyPeer = peer
+        }
+    }
+
+    private func safetyStop() {
+        if safetyPeer != 0 {
+            safetyStore(safetyPeer)
+        }
+
+        vigil_safety_stop()
+        safetyPeer = 0
+    }
+
+    private func safetyStore(_ peer: UInt8) {
+        var input = [UInt8](repeating: 0, count: Int(VIGIL_ADDITIONAL_INPUT_LEN))
+        defer { TunnelKeychain.wipe(&input) }
+
+        guard vigil_safety_get(peer, &input, input.count) == 0 else { return }
+
+        do {
+            try ChatVault.shared.safetyCode(peer, Data(input))
+        } catch {
+            NSLog("vigil: failed to store the safety code for \(ChatVault.hex(peer)): \(error)")
+            return
+        }
+
+        ChatVault.code(ChatVault.hex(peer), on: true)
+        ChatVault.safetyApply(peer)
+    }
+
+    private static func unhex(_ hex: String) -> [UInt8] {
+        let chars = Array(hex.utf8)
+        var out = [UInt8]()
+
+        guard chars.count % 2 == 0 else { return [] }
+
+        for idx in stride(from: 0, to: chars.count, by: 2) {
+            guard let byte = UInt8(String(decoding: chars[idx..<idx + 2], as: UTF8.self), radix: 16) else {
+                return []
+            }
+
+            out.append(byte)
+        }
+
+        return out
+    }
+
     override func handleAppMessage(_ messageData: Data,
                                    completionHandler: ((Data?) -> Void)?) {
         var request = TunnelLink.input(messageData) ?? []
@@ -260,6 +324,16 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             if words.count == 3, let peer = UInt8(words[1], radix: 16), let ref = UInt64(words[2], radix: 16) {
                 drop([(ChatVault.hex(peer), Int64(bitPattern: ref))])
             }
+        case "chat-safety":
+            if words.count == 2, let peer = UInt8(words[1], radix: 16), peer > 0, peer < 0xff {
+                ChatVault.safetyApply(peer)
+            }
+        case "chat-safety-start":
+            if words.count == 4, let peer = UInt8(words[1], radix: 16), peer > 0, peer < 0xff {
+                safetyStart(peer, String(words[2]), String(words[3]))
+            }
+        case "chat-safety-stop":
+            safetyStop()
         case "chat-forget":
             if words.count == 2, let peer = UInt8(words[1], radix: 16), peer > 0, peer < 0xff,
                vigil_chat_forget(peer) == -1 {
@@ -418,6 +492,8 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
                         fresh[chat, default: 0] += 1
                         notifyChat(chat, member, "", "", text, topic: "", badge: unseen.values.reduce(0, +))
                     }
+                case "safety":
+                    safetyStore(peer)
                 case "ambry":
                     try vault.deliver(chat: chat, peer: peer, nick: "",
                                       text: event["generation"] as? String ?? "",

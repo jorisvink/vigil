@@ -130,7 +130,6 @@ static void	remote_ack(const u_int8_t *, size_t);
 static void	remote_secret_derive(u_int8_t *, size_t);
 static int	remote_passphrase(const u_int16_t *, size_t);
 static void	remote_received(const struct remote_config *);
-static int	remote_words_parse(const char *, u_int16_t *, size_t);
 static int	remote_route_decode(const u_int16_t *, size_t,
 		    u_int8_t *, size_t);
 
@@ -155,6 +154,64 @@ vigil_remote_word(u_int16_t idx)
 		return (NULL);
 
 	return (vigil_words[idx]);
+}
+
+/*
+ * Split the words and look each of them up in the word list, there must
+ * be exactly count of them. Returns -1 if a word is not in the list or
+ * if the count is off.
+ */
+int
+vigil_remote_words_parse(const char *words, u_int16_t *out, size_t count)
+{
+	size_t		idx, len;
+	int		ret, which;
+	char		copy[REMOTE_WORDS_LEN], *word, *next;
+
+	PRECOND(words != NULL);
+	PRECOND(out != NULL);
+	PRECOND(count > 0 && count <= VIGIL_REMOTE_WORDS);
+
+	if ((len = strlen(words)) >= sizeof(copy))
+		return (-1);
+
+	nyfe_zeroize_register(copy, sizeof(copy));
+	memcpy(copy, words, len + 1);
+
+	ret = 0;
+	idx = 0;
+
+	for (word = copy; word != NULL; word = next) {
+		if ((next = strchr(word, ' ')) != NULL)
+			*(next)++ = '\0';
+
+		for (which = 0; which < VIGIL_WORD_COUNT; which++) {
+			if (!strcmp(vigil_words[which], word))
+				break;
+		}
+
+		if (which == VIGIL_WORD_COUNT) {
+			ret = -1;
+			break;
+		}
+
+		if (idx == count) {
+			ret = -1;
+			break;
+		}
+
+		out[idx++] = which;
+	}
+
+	nyfe_zeroize(copy, sizeof(copy));
+
+	if (ret == -1)
+		return (-1);
+
+	if (idx != count)
+		return (-1);
+
+	return (0);
 }
 
 /*
@@ -190,7 +247,7 @@ vigil_remote_words(const char *words, char *out, size_t outlen)
 
 	nyfe_zeroize_register(all, sizeof(all));
 
-	if (remote_words_parse(words, all, VIGIL_REMOTE_WORDS) == -1)
+	if (vigil_remote_words_parse(words, all, VIGIL_REMOTE_WORDS) == -1)
 		goto cleanup;
 
 	if (remote_route_decode(all, VIGIL_REMOTE_ROUTE_WORDS,
@@ -601,64 +658,6 @@ remote_config_check(const char *config)
 	}
 
 	vigil_config_free(cfg);
-
-	return (0);
-}
-
-/*
- * Split the words and look each of them up in the word list, there must
- * be exactly count of them. Returns -1 if a word is not in the list or
- * if the count is off.
- */
-static int
-remote_words_parse(const char *words, u_int16_t *out, size_t count)
-{
-	size_t		idx, len;
-	int		ret, which;
-	char		copy[REMOTE_WORDS_LEN], *word, *next;
-
-	PRECOND(words != NULL);
-	PRECOND(out != NULL);
-	PRECOND(count == VIGIL_REMOTE_WORDS);
-
-	if ((len = strlen(words)) >= sizeof(copy))
-		return (-1);
-
-	nyfe_zeroize_register(copy, sizeof(copy));
-	memcpy(copy, words, len + 1);
-
-	ret = 0;
-	idx = 0;
-
-	for (word = copy; word != NULL; word = next) {
-		if ((next = strchr(word, ' ')) != NULL)
-			*(next)++ = '\0';
-
-		for (which = 0; which < VIGIL_WORD_COUNT; which++) {
-			if (!strcmp(vigil_words[which], word))
-				break;
-		}
-
-		if (which == VIGIL_WORD_COUNT) {
-			ret = -1;
-			break;
-		}
-
-		if (idx == count) {
-			ret = -1;
-			break;
-		}
-
-		out[idx++] = which;
-	}
-
-	nyfe_zeroize(copy, sizeof(copy));
-
-	if (ret == -1)
-		return (-1);
-
-	if (idx != count)
-		return (-1);
 
 	return (0);
 }

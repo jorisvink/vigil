@@ -2409,7 +2409,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
     if (isGroup(peer)) {
       await _members();
     } else {
-      await renamePeer(peer);
+      await peerDetails(peer);
     }
 
     if (mounted) {
@@ -2468,6 +2468,27 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
                                   shown.name,
                                   style: Styles.barTitle,
                                   overflow: TextOverflow.ellipsis,
+                                ),
+                              ),
+                            ],
+                          )
+                        else if (!group && vigil.safetyActive(peer))
+                          Row(
+                            children: [
+                              Flexible(
+                                child: PeerName(
+                                  peer,
+                                  style: Styles.barTitle,
+                                  shrink: 15,
+                                ),
+                              ),
+                              const SizedBox(width: 6),
+                              Semantics(
+                                label: 'Safety code on',
+                                child: Glyph(
+                                  GlyphKind.shield,
+                                  size: 16,
+                                  color: Palette.good,
                                 ),
                               ),
                             ],

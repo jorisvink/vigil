@@ -23,6 +23,8 @@ object Chats {
     private var resubmit = 0L
     private var sweep = 0L
     private var screen: BroadcastReceiver? = null
+    private var safetyHalf: ByteArray? = null
+    private var safetyFor = 0
     private data class Shown(val text: String, val time: Long, val name: String, val key: String)
 
     private val shown = mutableMapOf<String, MutableList<Shown>>()
@@ -271,6 +273,7 @@ object Chats {
                         left(service, vault, id, Calls.hex(peer))
                         stored(event.getLong("token"))
                     }
+                    "safety" -> safetyStore(service, peer)
                     "ambry" -> vault.deliver(
                         id, peer, "", event.getString("generation"), System.currentTimeMillis(),
                         "ambry"
@@ -618,6 +621,146 @@ object Chats {
 
         return local
     }
+
+    fun safetyCode(context: Context, id: String, clear: Boolean, on: Boolean?): String {
+        val peer = safetyPeer(id)
+        val vault = vault(context)
+
+        safetyStore(context, peer)
+
+        val codes = codes(context)
+
+        if (on != null) {
+            if (on) {
+                codes.put(id, true)
+            } else {
+                codes.remove(id)
+            }
+
+            prefs(context).edit().putString("codes", codes.toString()).apply()
+        }
+
+        if (clear) {
+            vault.safetyCode(peer, null)
+        }
+
+        val stored = vault.safetyCode(peer)?.takeIf { it.size == ChatVault.INPUT }
+        val code = stored?.let { Vigil.safetyCode(it) } ?: ""
+
+        stored?.fill(0)
+
+        if (on != null || clear) {
+            safetyApply(context, peer)
+        }
+
+        return JSONObject().put("set", code.isNotEmpty()).put("code", code).put("since", vault.safetyTime(peer))
+            .put("on", codes.optBoolean(id)).toString()
+    }
+
+    @Synchronized
+    fun safetyBegin(id: String): String {
+        val peer = safetyPeer(id)
+        val half = ByteArray(8).also { SecureRandom().nextBytes(it) }
+
+        Vigil.safetyStop()
+        safetyHalf?.fill(0)
+        safetyHalf = half
+        safetyFor = peer
+
+        return Vigil.safetyWords(half) ?: throw IllegalStateException("No words for our half.")
+    }
+
+    @Synchronized
+    fun safetyWords(id: String, words: ByteArray) {
+        val peer = safetyPeer(id)
+        val own = safetyHalf?.takeIf { safetyFor == peer } ?: throw IllegalArgumentException("Open the safety code again.")
+        val theirs = Vigil.safetyHalf(words) ?: throw IllegalArgumentException("Those are not $SAFETY_WORDS words from the list.")
+
+        try {
+            require(!own.contentEquals(theirs)) { "Those are your own words." }
+            require(Vigil.safetyStart(peer, own, theirs)) { "Could not start the safety code exchange." }
+        } finally {
+            theirs.fill(0)
+        }
+    }
+
+    @Synchronized
+    fun safetyStop(context: Context) {
+        val peer = safetyFor
+
+        Vigil.safetyStop()
+
+        if (peer != 0) {
+            safetyStore(context, peer)
+        }
+
+        safetyHalf?.fill(0)
+        safetyHalf = null
+        safetyFor = 0
+    }
+
+    fun safetyStore(context: Context, peer: Int) {
+        val input = Vigil.safetyGet(peer) ?: return
+        val codes = codes(context)
+
+        try {
+            vault(context).safetyCode(peer, input)
+        } finally {
+            input.fill(0)
+        }
+
+        codes.put(Calls.hex(peer), true)
+        prefs(context).edit().putString("codes", codes.toString()).apply()
+        safetyApply(context, peer)
+    }
+
+    private fun safetyPeer(id: String): Int {
+        require(id.matches(Regex("[0-9a-f]{2}")) && id != "00" && id != "ff") { "There is no peer $id." }
+
+        return id.toInt(16)
+    }
+
+    fun safetyCodes(context: Context): String {
+        val set = JSONArray()
+
+        for ((peer, input) in vault(context).safetyInputs()) {
+            set.put(Calls.hex(peer))
+            input.fill(0)
+        }
+
+        return JSONObject().put("on", JSONArray(codes(context).keys().asSequence().toList())).put("set", set).toString()
+    }
+
+    private fun safetyApply(context: Context, peer: Int) {
+        val input = vault(context).safetyInputs()[peer]
+
+        if (input != null && codes(context).optBoolean(Calls.hex(peer))) {
+            Vigil.additionalInput(peer, input)
+        } else {
+            Vigil.additionalInput(peer, null)
+        }
+
+        input?.fill(0)
+    }
+
+    fun safetyApplyAll(context: Context) {
+        try {
+            val codes = codes(context)
+
+            for ((peer, input) in vault(context).safetyInputs()) {
+                if (codes.optBoolean(Calls.hex(peer))) {
+                    Vigil.additionalInput(peer, input)
+                }
+
+                input.fill(0)
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "failed to load the safety codes for our peers", e)
+        }
+    }
+
+    private fun codes(context: Context): JSONObject =
+        JSONObject(prefs(context).getString("codes", "{}") ?: "{}")
 
     fun topic(context: Context, id: String, topic: String, name: String, color: Int): String {
         val trimmed = name.trim()
@@ -1477,4 +1620,5 @@ object Chats {
     private const val GROUP = "se.sanctorum.vigil.chats"
     private const val RESUBMIT_MS = 10_000L
     private const val SWEEP_MS = 15_000L
+    private const val SAFETY_WORDS = 5
 }

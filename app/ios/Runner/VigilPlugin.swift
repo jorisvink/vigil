@@ -33,6 +33,8 @@ final class VigilPlugin: NSObject, FlutterPlugin, UIDocumentPickerDelegate,
     private let remote = DispatchQueue(label: "se.sanctorum.vigil.remote")
     private let resyncWork = DispatchQueue(label: "se.sanctorum.vigil.resync")
     private var resyncing = false
+    private var safetyHalf: [UInt8]?
+    private var safetyFor: UInt8 = 0
     private var opened: String?
     private var last: String?
     private var silent: TimeInterval?
@@ -343,6 +345,17 @@ final class VigilPlugin: NSObject, FlutterPlugin, UIDocumentPickerDelegate,
              "chatPin", "chatMute", "chatTopic", "groupCreate", "groupEdit", "groupLeave",
              "chatStar", "chatCompact", "chatOrder", "chatRetract":
             result(Self.reply { try chat(call) })
+        case "safetyCode":
+            result(Self.reply { try safetyCode(call) })
+        case "safetyBegin":
+            result(Self.reply { try safetyBegin(call) })
+        case "safetyWords":
+            result(Self.reply { try safetyWords(call) })
+        case "safetyStop":
+            safetyStop()
+            result("")
+        case "safetyCodes":
+            result(Self.reply { try json(ChatVault.shared.safetyCodes()) })
         case "flag":
             let args = call.arguments as? [String: Any] ?? [:]
             let key = "ui.\(args["key"] as? String ?? "")"
@@ -1286,6 +1299,131 @@ final class VigilPlugin: NSObject, FlutterPlugin, UIDocumentPickerDelegate,
             "\"voice\":\(voice()),\"phone\":\(phone)," +
             "\"chats\":\(chats()),\"gospel\":\(Self.gospelEnabled)," +
             "\"link\":\(linked),\"linking\":\(linking)}"
+    }
+
+    private func safetyCode(_ call: FlutterMethodCall) throws -> String {
+        let vault = ChatVault.shared
+        let args = call.arguments as? [String: Any] ?? [:]
+        let hex = args["peer"] as? String ?? ""
+        let clear = args["clear"] as? Bool == true
+        let on = args["on"] as? Bool
+        let peer = try Self.safetyPeer(hex)
+
+        if let on {
+            ChatVault.code(hex, on: on)
+        }
+
+        if clear {
+            try vault.safetyCode(peer, nil)
+        }
+
+        var stored = try vault.safetyCode(peer) ?? Data()
+        var out = [CChar](repeating: 0, count: Int(VIGIL_SAFETY_CODE_LEN))
+        var code = ""
+
+        if stored.count == Int(VIGIL_ADDITIONAL_INPUT_LEN) {
+            let ret = stored.withUnsafeBytes { raw in
+                vigil_safety_code(raw.baseAddress?.assumingMemoryBound(to: UInt8.self), raw.count,
+                                  &out, out.count)
+            }
+
+            if ret == 0 {
+                code = String(cString: out)
+            }
+        }
+
+        stored.resetBytes(in: 0..<stored.count)
+
+        if on != nil || clear {
+            ChatVault.safetyApply(peer)
+            VigilCall.shared.send?("chat-safety \(hex)")
+        }
+
+        return json(["set": !code.isEmpty, "code": code, "since": try vault.safetyTime(peer),
+                     "on": ChatVault.codes().contains(hex)])
+    }
+
+    private func safetyBegin(_ call: FlutterMethodCall) throws -> String {
+        let args = call.arguments as? [String: Any] ?? [:]
+        let peer = try Self.safetyPeer(args["peer"] as? String ?? "")
+        var half = [UInt8](repeating: 0, count: Int(VIGIL_SAFETY_HALF_LEN))
+        var words = [CChar](repeating: 0, count: Int(VIGIL_SAFETY_WORDS) * 10 + 1)
+        defer { TunnelKeychain.wipe(&words) }
+
+        guard SecRandomCopyBytes(kSecRandomDefault, half.count, &half) == errSecSuccess else {
+            throw ChatVault.Failure(description: "No random bytes for the safety code.")
+        }
+
+        safetyStop()
+
+        guard vigil_safety_words(half, half.count, &words, words.count) == 0 else {
+            TunnelKeychain.wipe(&half)
+            throw ChatVault.Failure(description: "No words for our half.")
+        }
+
+        safetyHalf = half
+        safetyFor = peer
+
+        return String(cString: words)
+    }
+
+    private func safetyWords(_ call: FlutterMethodCall) throws -> String {
+        let args = call.arguments as? [String: Any] ?? [:]
+        let hex = args["peer"] as? String ?? ""
+        let peer = try Self.safetyPeer(hex)
+        var words = Self.bytes(args["words"])
+        var theirs = [UInt8](repeating: 0, count: Int(VIGIL_SAFETY_HALF_LEN))
+        words.append(0)
+        defer {
+            TunnelKeychain.wipe(&words)
+            TunnelKeychain.wipe(&theirs)
+        }
+
+        guard let own = safetyHalf, safetyFor == peer else {
+            throw ChatVault.Failure(description: "Open the safety code again.")
+        }
+
+        let parsed = words.withUnsafeBytes { raw in
+            vigil_safety_half(raw.baseAddress?.assumingMemoryBound(to: CChar.self), &theirs, theirs.count)
+        }
+
+        guard parsed == 0 else {
+            throw ChatVault.Failure(description: "Those are not \(VIGIL_SAFETY_WORDS) words from the list.")
+        }
+
+        guard own != theirs else {
+            throw ChatVault.Failure(description: "Those are your own words.")
+        }
+
+        let mine = own.map { String(format: "%02x", $0) }.joined()
+        let other = theirs.map { String(format: "%02x", $0) }.joined()
+
+        guard let send = VigilCall.shared.send else {
+            throw ChatVault.Failure(description: "Gospel is not running.")
+        }
+
+        send("chat-safety-start \(hex) \(mine) \(other)")
+
+        return ""
+    }
+
+    private func safetyStop() {
+        VigilCall.shared.send?("chat-safety-stop")
+
+        if safetyHalf != nil {
+            TunnelKeychain.wipe(&safetyHalf!)
+        }
+
+        safetyHalf = nil
+        safetyFor = 0
+    }
+
+    private static func safetyPeer(_ hex: String) throws -> UInt8 {
+        guard hex.count == 2, let peer = UInt8(hex, radix: 16), peer > 0, peer < 0xff else {
+            throw ChatVault.Failure(description: "There is no peer \(hex).")
+        }
+
+        return peer
     }
 
     private func chat(_ call: FlutterMethodCall) throws -> String {

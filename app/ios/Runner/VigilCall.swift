@@ -349,6 +349,8 @@ final class VigilCall: NSObject, CXProviderDelegate {
         if mode != Int32(VIGIL_VOICE_MODE_DECLINE) { voice = id }
 
         queue.async {
+            ChatVault.safetyApply(peer)
+
             let ret = config.withUnsafeBytes { raw in
                 let ptr = raw.baseAddress?.assumingMemoryBound(to: CChar.self)
 

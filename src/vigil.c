@@ -32,6 +32,14 @@
 
 #include <libkyrka/libnyfe.h>
 
+/*
+ * The additional kdf input for a peer needs a 256-bit
+ * kyrka_additional_kdf_input(), see dist-build/patches.
+ */
+#if KYRKA_ADDITIONAL_INPUT_LENGTH != VIGIL_ADDITIONAL_INPUT_LEN
+#error "libkyrka without 256-bit additional input, see dist-build/patches"
+#endif
+
 /* The maximum number of milliseconds we block waiting for i/o. */
 #define VIGIL_IO_WAIT_MAX	500
 
@@ -64,6 +72,14 @@ static struct vigil_config	*vigil_gospel_parse(const char *, size_t);
 struct vigil_gospel {
 	size_t		len;
 	char		cfg[VIGIL_CONFIG_MAX];
+};
+
+/*
+ * The additional kdf input for a peer, only used once it is set.
+ */
+struct vigil_input {
+	int		set;
+	u_int8_t	ikm[VIGIL_ADDITIONAL_INPUT_LEN];
 };
 
 /* The global vigil state. */
@@ -110,6 +126,10 @@ static pthread_mutex_t		kyrka_lock = PTHREAD_MUTEX_INITIALIZER;
 
 /* Set on the thread that holds kyrka_lock. */
 static __thread int		kyrka_held = 0;
+
+/* The additional kdf input per peer, see vigil_additional_input(). */
+static struct vigil_input	inputs[KYRKA_PEERS_PER_FLOCK];
+static pthread_mutex_t		input_lock = PTHREAD_MUTEX_INITIALIZER;
 
 /*
  * Returns the vigil version string.
@@ -631,6 +651,31 @@ gospel_again:
 	vigil_wake_signal();
 
 	return (0);
+}
+
+/*
+ * Set the additional kdf input for the given peer, NULL drops it.
+ * May be called from any thread, our chat tunnel with the peer is torn
+ * down so the next one uses the new input.
+ */
+void
+vigil_additional_input(u_int8_t peer, const void *ikm, size_t len)
+{
+	PRECOND(peer > 0 && peer < KYRKA_PEERS_PER_FLOCK);
+	PRECOND(ikm != NULL || len == 0);
+	PRECOND(ikm == NULL || len == VIGIL_ADDITIONAL_INPUT_LEN);
+
+	vigil_lock(&input_lock);
+
+	if (ikm == NULL) {
+		nyfe_mem_zero(&inputs[peer], sizeof(inputs[peer]));
+	} else {
+		inputs[peer].set = 1;
+		memcpy(inputs[peer].ikm, ikm, len);
+	}
+
+	vigil_unlock(&input_lock);
+	vigil_chat_additional_input(peer);
 }
 
 /*
@@ -1210,6 +1255,36 @@ vigil_wake_read(void *udata)
 }
 
 /*
+ * Load the additional kdf input for the given peer into the given context,
+ * if we have one. Returns 1 if we loaded an input, 0 if not.
+ */
+int
+vigil_kyrka_additional_input(KYRKA *ctx, u_int8_t peer)
+{
+	int		ret, set;
+
+	PRECOND(ctx != NULL);
+	PRECOND(peer > 0 && peer < KYRKA_PEERS_PER_FLOCK);
+
+	ret = 0;
+	vigil_lock(&input_lock);
+
+	set = inputs[peer].set;
+
+	if (set) {
+		ret = kyrka_additional_kdf_input(ctx,
+		    inputs[peer].ikm, sizeof(inputs[peer].ikm));
+	}
+
+	vigil_unlock(&input_lock);
+
+	if (ret == -1)
+		fatal("kyrka_additional_kdf_input: %d", kyrka_last_error(ctx));
+
+	return (set);
+}
+
+/*
  * Erase all libkyrka contexts. We take kyrka_lock and never give it
  * back, anyone else wanting libkyrka blocks until the process is gone.
  */
@@ -1222,6 +1297,8 @@ vigil_kyrka_erase(void)
 	}
 
 	kyrka_emergency_erase();
+	nyfe_mem_zero(inputs, sizeof(inputs));
+	vigil_safety_erase();
 }
 
 /*

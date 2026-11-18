@@ -42,6 +42,8 @@ static jstring		android_string_new(JNIEnv *, const char *);
 static jstring		android_check(JNIEnv *, jclass, jbyteArray);
 static jboolean		android_gospel(JNIEnv *, jclass, jbyteArray);
 static jbyteArray	android_edit(JNIEnv *, jclass, jbyteArray, jstring);
+static jboolean		android_additional_input(JNIEnv *, jclass, jint,
+			    jbyteArray);
 static jint		android_run(JNIEnv *, jclass, jobject, jint, jbyteArray,
 			    jbyteArray, jstring, jlong);
 
@@ -65,6 +67,14 @@ static jstring		android_remote_word(JNIEnv *, jclass, jint);
 static jstring		android_remote_words(JNIEnv *, jclass, jbyteArray);
 static jboolean		android_remote_start(JNIEnv *, jclass, jstring,
 			    jstring);
+
+static void		android_safety_stop(JNIEnv *, jclass);
+static jbyteArray	android_safety_get(JNIEnv *, jclass, jint);
+static jstring		android_safety_code(JNIEnv *, jclass, jbyteArray);
+static jbyteArray	android_safety_half(JNIEnv *, jclass, jbyteArray);
+static jstring		android_safety_words(JNIEnv *, jclass, jbyteArray);
+static jboolean		android_safety_start(JNIEnv *, jclass, jint,
+			    jbyteArray, jbyteArray);
 
 static jbyteArray	android_chat_events(JNIEnv *, jclass);
 static jbyteArray	android_chat_data_take(JNIEnv *, jclass, jlong, jint);
@@ -154,6 +164,7 @@ static JNINativeMethod	methods[] = {
 	    (void *)android_chat_group_data_send },
 	{ "chatDataTake", "(JI)[B", (void *)android_chat_data_take },
 	{ "gospel", "([B)Z", (void *)android_gospel },
+	{ "additionalInput", "(I[B)Z", (void *)android_additional_input },
 	{ "remoteWord", "(I)Ljava/lang/String;", (void *)android_remote_word },
 	{ "remoteWords", "([B)Ljava/lang/String;",
 	    (void *)android_remote_words },
@@ -162,6 +173,14 @@ static JNINativeMethod	methods[] = {
 	{ "remoteRun", "()I", (void *)android_remote_run },
 	{ "remoteConfig", "()[B", (void *)android_remote_config },
 	{ "remoteStop", "()V", (void *)android_remote_stop },
+	{ "safetyWords", "([B)Ljava/lang/String;",
+	    (void *)android_safety_words },
+	{ "safetyHalf", "([B)[B", (void *)android_safety_half },
+	{ "safetyCode", "([B)Ljava/lang/String;",
+	    (void *)android_safety_code },
+	{ "safetyStart", "(I[B[B)Z", (void *)android_safety_start },
+	{ "safetyGet", "(I)[B", (void *)android_safety_get },
+	{ "safetyStop", "()V", (void *)android_safety_stop },
 };
 
 /*
@@ -1232,6 +1251,42 @@ android_gospel(JNIEnv *env, jclass cls, jbyteArray config)
 }
 
 /*
+ * Vigil.additionalInput(), sets the additional kdf input for the given
+ * peer, null for none.
+ */
+static jboolean
+android_additional_input(JNIEnv *env, jclass cls, jint peer, jbyteArray ikm)
+{
+	size_t		len;
+	char		*buf;
+
+	if (peer <= 0)
+		return (JNI_FALSE);
+
+	if (peer >= KYRKA_PEERS_PER_FLOCK)
+		return (JNI_FALSE);
+
+	if (ikm == NULL) {
+		vigil_additional_input(peer, NULL, 0);
+		return (JNI_TRUE);
+	}
+
+	buf = android_bytes_copy(env, ikm, VIGIL_ADDITIONAL_INPUT_LEN, &len);
+	if (buf == NULL)
+		return (JNI_FALSE);
+
+	if (len != VIGIL_ADDITIONAL_INPUT_LEN) {
+		android_bytes_free(buf, len);
+		return (JNI_FALSE);
+	}
+
+	vigil_additional_input(peer, buf, len);
+	android_bytes_free(buf, len);
+
+	return (JNI_TRUE);
+}
+
+/*
  * Vigil.chatCompanion(), sets the configuration of the tunnel to our
  * desktop or drops it if config is null.
  */
@@ -1441,6 +1496,199 @@ static void
 android_remote_stop(JNIEnv *env, jclass cls)
 {
 	vigil_remote_stop();
+}
+
+/*
+ * Vigil.safetyWords(), returns the words for the given half or null.
+ */
+static jstring
+android_safety_words(JNIEnv *env, jclass cls, jbyteArray half)
+{
+	int		ret;
+	size_t		len;
+	jstring		out;
+	char		*buf;
+	char		words[VIGIL_SAFETY_WORDS_LEN];
+
+	if (half == NULL)
+		return (NULL);
+
+	buf = android_bytes_copy(env, half, VIGIL_SAFETY_HALF_LEN, &len);
+	if (buf == NULL)
+		return (NULL);
+
+	if (len != VIGIL_SAFETY_HALF_LEN) {
+		android_bytes_free(buf, len);
+		return (NULL);
+	}
+
+	ret = vigil_safety_words((const u_int8_t *)buf, len,
+	    words, sizeof(words));
+	android_bytes_free(buf, len);
+
+	if (ret == -1)
+		return (NULL);
+
+	out = android_string_new(env, words);
+	nyfe_mem_zero(words, sizeof(words));
+
+	return (out);
+}
+
+/*
+ * Vigil.safetyCode(), returns the code both peers compare for the given
+ * additional input or null.
+ */
+static jstring
+android_safety_code(JNIEnv *env, jclass cls, jbyteArray input)
+{
+	int		ret;
+	size_t		len;
+	char		*buf;
+	char		code[VIGIL_SAFETY_CODE_LEN];
+
+	if (input == NULL)
+		return (NULL);
+
+	buf = android_bytes_copy(env, input, VIGIL_ADDITIONAL_INPUT_LEN, &len);
+	if (buf == NULL)
+		return (NULL);
+
+	if (len != VIGIL_ADDITIONAL_INPUT_LEN) {
+		android_bytes_free(buf, len);
+		return (NULL);
+	}
+
+	ret = vigil_safety_code((const u_int8_t *)buf, len, code, sizeof(code));
+	android_bytes_free(buf, len);
+
+	if (ret == -1)
+		return (NULL);
+
+	return (android_string_new(env, code));
+}
+
+/*
+ * Vigil.safetyHalf(), reads a half from the given words and wipes them
+ * from the array. Returns null if the words are not right.
+ */
+static jbyteArray
+android_safety_half(JNIEnv *env, jclass cls, jbyteArray words)
+{
+	int		ret;
+	size_t		len;
+	jbyteArray	out;
+	char		*buf;
+	u_int8_t	half[VIGIL_SAFETY_HALF_LEN];
+
+	if (words == NULL)
+		return (NULL);
+
+	buf = android_bytes_copy(env, words, VIGIL_SAFETY_WORDS_LEN, &len);
+	if (buf == NULL)
+		return (NULL);
+
+	android_bytes_wipe(env, words, len);
+
+	ret = vigil_safety_half(buf, half, sizeof(half));
+	android_bytes_free(buf, len);
+
+	if (ret == -1)
+		return (NULL);
+
+	out = (*env)->NewByteArray(env, sizeof(half));
+
+	if (out != NULL) {
+		(*env)->SetByteArrayRegion(env, out, 0, sizeof(half),
+		    (const jbyte *)half);
+	}
+
+	nyfe_mem_zero(half, sizeof(half));
+
+	return (out);
+}
+
+/*
+ * Vigil.safetyStart(), starts a safety code exchange with the given peer
+ * from our half and theirs.
+ */
+static jboolean
+android_safety_start(JNIEnv *env, jclass cls, jint peer, jbyteArray own,
+    jbyteArray theirs)
+{
+	int		ret;
+	char		*mine, *other;
+	size_t		mine_len, other_len;
+
+	if (peer <= 0 || peer >= KYRKA_PEERS_PER_FLOCK)
+		return (JNI_FALSE);
+
+	if (own == NULL || theirs == NULL)
+		return (JNI_FALSE);
+
+	mine = android_bytes_copy(env, own, VIGIL_SAFETY_HALF_LEN, &mine_len);
+	if (mine == NULL)
+		return (JNI_FALSE);
+
+	other = android_bytes_copy(env, theirs,
+	    VIGIL_SAFETY_HALF_LEN, &other_len);
+	if (other == NULL) {
+		android_bytes_free(mine, mine_len);
+		return (JNI_FALSE);
+	}
+
+	ret = -1;
+
+	if (mine_len == VIGIL_SAFETY_HALF_LEN &&
+	    other_len == VIGIL_SAFETY_HALF_LEN) {
+		ret = vigil_safety_start(peer, (const u_int8_t *)mine,
+		    (const u_int8_t *)other, VIGIL_SAFETY_HALF_LEN);
+	}
+
+	android_bytes_free(mine, mine_len);
+	android_bytes_free(other, other_len);
+
+	if (ret == -1)
+		return (JNI_FALSE);
+
+	return (JNI_TRUE);
+}
+
+/*
+ * Vigil.safetyGet(), returns the input the safety code exchange with the
+ * given peer gave us, only once, or null.
+ */
+static jbyteArray
+android_safety_get(JNIEnv *env, jclass cls, jint peer)
+{
+	jbyteArray	out;
+	u_int8_t	input[VIGIL_ADDITIONAL_INPUT_LEN];
+
+	if (peer <= 0 || peer >= KYRKA_PEERS_PER_FLOCK)
+		return (NULL);
+
+	if (vigil_safety_get(peer, input, sizeof(input)) == -1)
+		return (NULL);
+
+	out = (*env)->NewByteArray(env, sizeof(input));
+
+	if (out != NULL) {
+		(*env)->SetByteArrayRegion(env, out, 0, sizeof(input),
+		    (const jbyte *)input);
+	}
+
+	nyfe_mem_zero(input, sizeof(input));
+
+	return (out);
+}
+
+/*
+ * Vigil.safetyStop(), stops the safety code exchange.
+ */
+static void
+android_safety_stop(JNIEnv *env, jclass cls)
+{
+	vigil_safety_stop();
 }
 
 /*

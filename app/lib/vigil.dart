@@ -289,6 +289,12 @@ class ChatStatus {
 
   ChatPeer? peer(String id) => peers.where((p) => p.id == id).firstOrNull;
 
+  String get safetyPeer =>
+      (json['safety'] as Map<String, dynamic>?)?['peer'] as String? ?? '';
+
+  String get safetyState =>
+      (json['safety'] as Map<String, dynamic>?)?['state'] as String? ?? '';
+
   Map<String, dynamic>? get companion =>
       json['companion'] as Map<String, dynamic>?;
 }
@@ -419,6 +425,17 @@ class ChatSettings {
   bool get preview => json['preview'] as bool? ?? false;
 }
 
+class SafetyCode {
+  SafetyCode(this.json);
+
+  final Map<String, dynamic> json;
+
+  bool get set => json['set'] as bool? ?? false;
+  String get code => json['code'] as String? ?? '';
+  int get since => json['since'] as int? ?? 0;
+  bool get on => json['on'] as bool? ?? false;
+}
+
 class Status {
   Status(
     this.json,
@@ -533,6 +550,8 @@ class Vigil {
   DateTime _connectingSince = DateTime.now();
 
   Map<String, String> _names = const {};
+  Set<String> _safetyOn = const {};
+  Set<String> _safetySet = const {};
   Map<String, ChatGroup> _groups = const {};
   final Map<String, Future<Uint8List?>> _data = {};
   static const _dataMax = 24;
@@ -647,11 +666,28 @@ class Vigil {
   bool authenticated(String peer) =>
       !_names.containsKey(peer) && _signed.containsKey(peer);
 
+  bool safetyActive(String peer) =>
+      _safetyOn.contains(peer) && _safetySet.contains(peer);
+
+  bool safetyOn(String peer) => _safetyOn.contains(peer);
+
   void start() {
     _poll ??= Timer.periodic(const Duration(seconds: 1), (_) => refresh());
     refresh();
     reload();
     _loadNames(null).catchError((Object _) {});
+    _loadSafety().catchError((Object _) {});
+  }
+
+  Future<void> _loadSafety() async {
+    final raw = await _invoke('safetyCodes', null);
+    final all = jsonDecode(raw.isEmpty ? '{}' : raw) as Map<String, dynamic>;
+    final on = all['on'] as List<dynamic>? ?? const [];
+    final set = all['set'] as List<dynamic>? ?? const [];
+
+    _safetyOn = {for (final peer in on) peer as String};
+    _safetySet = {for (final peer in set) peer as String};
+    _publish(_last);
   }
 
   Future<void> rename(String peer, String name) async {
@@ -713,6 +749,14 @@ class Vigil {
               status.uptime <= since.inSeconds + 1) ||
           since > _connectLimit) {
         _connecting = null;
+      }
+
+      final chat = status.chat;
+
+      if (chat != null &&
+          chat.safetyState == 'done' &&
+          !_safetySet.contains(chat.safetyPeer)) {
+        _loadSafety().catchError((Object _) {});
       }
 
       _publish(status);
@@ -1223,6 +1267,40 @@ class Vigil {
             )
             as Map<String, dynamic>,
       );
+
+  Future<SafetyCode> safetyCode(
+    String peer, {
+    bool clear = false,
+    bool? on,
+  }) async {
+    final raw = await _invoke('safetyCode', {
+      'peer': peer,
+      'clear': clear,
+      'on': on,
+    });
+    final state = SafetyCode(jsonDecode(raw) as Map<String, dynamic>);
+
+    _safetyOn = {..._safetyOn.where((p) => p != peer), if (state.on) peer};
+    _safetySet = {..._safetySet.where((p) => p != peer), if (state.set) peer};
+    _publish(_last);
+
+    return state;
+  }
+
+  Future<String> safetyBegin(String peer) =>
+      _invoke('safetyBegin', {'peer': peer});
+
+  Future<void> safetyWords(String peer, String words) async {
+    final bytes = utf8.encode(words);
+
+    try {
+      await _invoke('safetyWords', {'peer': peer, 'words': bytes});
+    } finally {
+      bytes.fillRange(0, bytes.length, 0);
+    }
+  }
+
+  Future<void> safetyStop() => _invoke('safetyStop', null);
 
   Future<bool> flag(String key, [bool? value]) async =>
       await _invoke('flag', {'key': key, 'value': value}) == 'true';

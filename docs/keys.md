@@ -119,9 +119,105 @@ Vigil uses domains to separate its different uses of the same keys:
 - domain `0x0a` for calls
 - domain `0x0b` for one-to-one chats
 - domain `0x0c` for the chat signaling liturgy
+- domain `0x0d` for the safety code exchange
 
 Because the domain is part of the derivation, a call tunnel and a chat
 tunnel between the same two devices never share keys.
+
+## Safety codes
+
+A safety code is an extra 256-bit secret that two peers share. The
+secret is called the additional input. Vigil only uses the additional
+input for one-to-one chats and calls between those two peers.
+
+### How the input is used
+
+libkyrka derives the base keys for a peer with KMAC256, see above. When
+an additional input is loaded, libkyrka appends the length of the input
+and the input to the data of that KMAC256:
+
+	x = len(flock_a) || flock_a || len(flock_b) || flock_b
+	x = x || len(input) || input
+
+This applies to the peer offer key, the traffic keys and the peer shroud
+key. The cathedral offer key, the cathedral shroud key and the KEK unwrap
+are not changed. An attacker now also needs the additional input to learn
+a session key.
+
+Without a safety code the core loads no additional input, and the keys
+are the same as without the feature. If only one of the two peers has an
+input, or the inputs differ, the chat and call tunnels between them do
+not come up.
+
+The support lives in `dist-build/patches/libkyrka-kdf-input.patch`, which
+adds `kyrka_additional_kdf_input()` to libkyrka.
+
+### Making a safety code
+
+Both peers open the safety code page at the same time, in person or over
+a call. Each phone makes a fresh 64-bit half and shows the half as 5
+words from the same 7776 word list Covenant uses. The words are a number
+in base 7776, most significant word first. Each user reads their words
+to the other user and types the words of the other user.
+
+The two halves give the secret for a tunnel between both phones:
+
+	x = len(flock) || flock || len(low) || low || len(high) || high
+	secret = KMAC256(half_low || half_high, "VIGIL.SAFETY.KDF.SECRET", x)
+
+Here low and high are the KEK ids of both peers, half_low is the half of
+the peer with the lowest KEK id and flock is the cathedral flock. The
+secret is the shared secret of a cathedral tunnel in domain `0x0d`. This
+tunnel uses no ambry and no KEK, so only the words protect the tunnel.
+
+The secret is used as the authentication mechanism for this temporary tunnel.
+If the words do not match, the key exchange never succeeds.
+
+Over that tunnel each phone sends a fresh 128-bit share once a second
+until the other phone acks the share. Each phone answers every share
+from the other phone with a burst of 5 acks. A phone is done once the
+phone has:
+
+- the share of the other phone
+- an ack for its own share
+- sent its acks for the share of the other phone
+
+The additional input is then:
+
+	input = share_low || share_high
+
+Both phones wipe the shares and close the tunnel. The words and halves
+are never stored. If no tunnel comes up within two minutes the attempt
+fails and both users start over with new words.
+
+If all 5 acks from one phone are lost, that phone has the input and the
+other phone does not. The chats between both peers then fail until the
+users make a new safety code.
+
+### Storing the input
+
+The platform code stores the additional input per peer in
+`chats/safety/<peer>.box`. The file holds a random key wrapped with the
+outbox key, followed by the input sealed with AES-256-GCM under that
+random key. The outbox key is readable while the phone is locked, so the
+Gospel service loads every input when the service starts.
+
+Each peer has an on and off switch. When the switch is off, the core gets
+no additional input for that peer but the file stays. Renewing the safety
+code runs a new exchange and replaces the file. A desktop companion has no
+safety codes of its own, the chat tunnels of the desktop run on the phone.
+
+### Comparing safety codes
+
+Once a safety code is set, both phones show a code made from the
+additional input:
+
+	code = KMAC256(zero key, "VIGIL.SAFETY.CODE", input)
+
+The key is 32 zero bytes. The phone shows the first 64 bits of the output
+as 16 hex digits in groups of 4. Both users compare the codes to check
+that both phones hold the same additional input. The code reveals nothing
+useful about the input.
 
 ## Shroud
 
@@ -153,12 +249,3 @@ This is the path the keys take through the app:
    configuration is overwritten with zeros.
 
 The keys are never written to disk in the clear by Vigil.
-
-## Where this lives in the code
-
-- `src/config.c` parses and checks configurations.
-- `src/peer.c` loads the keys into libkyrka for tunnels.
-- `src/voice.c`, `src/call.c` and `src/chat.c` do the same for calls and
-  chats.
-- The sanctum documentation in `docs/crypto.md` of the sanctum project
-  has the full key derivation details.

@@ -108,6 +108,9 @@
 #define VIGIL_REMOTE_WORDS		\
     (VIGIL_REMOTE_ROUTE_WORDS + VIGIL_REMOTE_PASS_WORDS)
 
+/* The number of words in the word list. */
+#define VIGIL_WORD_COUNT		7776
+
 /*
  * The states of the tunnel to covenant when joining remotely.
  */
@@ -117,6 +120,20 @@
 
 /* The buffer vigil_status() needs at most, with all log lines escaped. */
 #define VIGIL_STATUS_MAX		(512 * 1024)
+
+/* The length of the additional kdf input for a peer, 256-bit. */
+#define VIGIL_ADDITIONAL_INPUT_LEN	32
+
+/*
+ * The words each side of a safety code exchange reads to the other side,
+ * they carry a 64-bit half of the secret for the tunnel between both.
+ */
+#define VIGIL_SAFETY_WORDS		5
+#define VIGIL_SAFETY_HALF_LEN		8
+#define VIGIL_SAFETY_WORDS_LEN		(VIGIL_SAFETY_WORDS * 10 + 1)
+
+/* The length of the code both peers compare, with its NUL. */
+#define VIGIL_SAFETY_CODE_LEN		20
 
 /*
  * The link its secret, largest message (at least VIGIL_STATUS_MAX),
@@ -161,6 +178,9 @@
 /* Flock domains for gospel text messaging. */
 #define VIGIL_CHAT_FLOCK_DOMAIN		0x0b
 #define VIGIL_CHAT_GROUP_DOMAIN		0x0c
+
+/* The flock domain for the safety code exchange. */
+#define VIGIL_SAFETY_FLOCK_DOMAIN	0x0d
 
 /* The liturgy group gospel signals in. */
 #define VIGIL_CHAT_SIGNAL_GROUP		0x0000
@@ -428,6 +448,15 @@ int	vigil_remote_words(const char *, char *, size_t);
 
 const char	*vigil_remote_word(u_int16_t);
 
+/* src/safety.c */
+void	vigil_safety_stop(void);
+int	vigil_safety_get(u_int8_t, u_int8_t *, size_t);
+int	vigil_safety_half(const char *, u_int8_t *, size_t);
+int	vigil_safety_code(const u_int8_t *, size_t, char *, size_t);
+int	vigil_safety_words(const u_int8_t *, size_t, char *, size_t);
+int	vigil_safety_start(u_int8_t, const u_int8_t *, const u_int8_t *,
+	    size_t);
+
 /* src/config.c */
 int	vigil_config_check(const char *, size_t, char *, size_t);
 int	vigil_config_edit(const char *, size_t, const char *, size_t,
@@ -438,6 +467,7 @@ void	vigil_poke(void);
 void	vigil_rebind(void);
 void	vigil_stop(u_int64_t);
 int	vigil_gospel(const char *, size_t);
+void	vigil_additional_input(u_int8_t, const void *, size_t);
 int	vigil_run(u_int64_t, int, const char *, size_t,
 	    const char *, size_t, const char *);
 

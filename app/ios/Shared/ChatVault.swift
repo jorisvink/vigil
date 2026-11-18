@@ -91,6 +91,8 @@ final class ChatVault {
     private static let mirrorAad = Data("VIGIL.CHAT.MIRROR".utf8)
     private static let ambryAad = Data("VIGIL.CHAT.AMBRY".utf8)
     private static let lostAad = Data("VIGIL.CHAT.LOST".utf8)
+    private static let safetyAad = Data("VIGIL.CHAT.SAFETY".utf8)
+    private static let wrapped = 12 + 32 + 16
     private static let creating: Set<String> = ["msg", "member", "topic"]
     private static let batchMax = 12 * 1024
     private static let truncated: UInt64 = 1
@@ -100,6 +102,7 @@ final class ChatVault {
     private let mirror: URL?
     private let avatars: URL?
     private let names: URL?
+    private let safety: URL?
     private var open = [String: Conversation]()
     private var history: History?
     private var holding = 0
@@ -119,8 +122,9 @@ final class ChatVault {
         mirror = base?.appendingPathComponent("mirror", isDirectory: true)
         avatars = base?.appendingPathComponent("avatars", isDirectory: true)
         names = base?.appendingPathComponent("names", isDirectory: true)
+        safety = base?.appendingPathComponent("safety", isDirectory: true)
 
-        for case var url? in [dir, inbox, mirror, avatars, names] {
+        for case var url? in [dir, inbox, mirror, avatars, names, safety] {
             try? FileManager.default.createDirectory(
                 at: url, withIntermediateDirectories: true,
                 attributes: [.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication])
@@ -2361,6 +2365,117 @@ final class ChatVault {
             }
 
             emit(["op": "avatar", "peer": Self.hex(peer)], data)
+        }
+    }
+
+    func safetyTime(_ peer: UInt8) throws -> Int64 {
+        return try mutex.withLock {
+            let file = try folder(safety).appendingPathComponent("\(Self.hex(peer)).box")
+            let attributes = try? FileManager.default.attributesOfItem(atPath: file.path)
+
+            guard let date = attributes?[.modificationDate] as? Date else { return 0 }
+
+            return Int64(date.timeIntervalSince1970 * 1000)
+        }
+    }
+
+    func safetyCode(_ peer: UInt8) throws -> Data? {
+        return try mutex.withLock {
+            let file = try folder(safety).appendingPathComponent("\(Self.hex(peer)).box")
+            guard let sealed = try? Data(contentsOf: file), sealed.count > Self.wrapped else { return nil }
+
+            let aad = Self.safetyAad + [peer]
+
+            do {
+                var raw = try openBox(Data(sealed.prefix(Self.wrapped)), key: outboxKey(), aad: aad)
+                defer { raw.resetBytes(in: 0..<raw.count) }
+
+                return try openBox(Data(sealed.dropFirst(Self.wrapped)), key: SymmetricKey(data: raw), aad: aad)
+            } catch is CryptoKitError {
+                try wipe(file)
+                return nil
+            }
+        }
+    }
+
+    func safetyCode(_ peer: UInt8, _ plain: Data?) throws {
+        try mutex.withLock {
+            let file = try folder(safety).appendingPathComponent("\(Self.hex(peer)).box")
+
+            guard let plain else {
+                try wipe(file)
+                return
+            }
+
+            let aad = Self.safetyAad + [peer]
+            let key = SymmetricKey(size: .bits256)
+            var raw = key.withUnsafeBytes { Data($0) }
+            defer { raw.resetBytes(in: 0..<raw.count) }
+
+            try write(file, sealBox(raw, key: outboxKey(), aad: aad) + sealBox(plain, key: key, aad: aad))
+        }
+    }
+
+    func safetyCodes() throws -> [String: Any] {
+        return try mutex.withLock {
+            let files = (try? FileManager.default.contentsOfDirectory(atPath: folder(safety).path)) ?? []
+            var out = [String]()
+
+            for name in files where name.count == 6 && name.hasSuffix(".box") {
+                guard let peer = UInt8(name.prefix(2), radix: 16) else { continue }
+                guard var record = try safetyCode(peer) else { continue }
+
+                if record.count == Int(VIGIL_ADDITIONAL_INPUT_LEN) {
+                    out.append(Self.hex(peer))
+                }
+
+                record.resetBytes(in: 0..<record.count)
+            }
+
+            return ["on": Self.codes(), "set": out]
+        }
+    }
+
+    static func codes() -> [String] {
+        shared.state()["codes"] as? [String] ?? []
+    }
+
+    static func code(_ peer: String, on: Bool) {
+        _ = shared.state { all in
+            var list = all["codes"] as? [String] ?? []
+
+            list.removeAll { $0 == peer }
+
+            if on {
+                list.append(peer)
+            }
+
+            all["codes"] = list
+        }
+    }
+
+    static func safetyApply(_ peer: UInt8) {
+        guard codes().contains(hex(peer)),
+              var record = try? shared.safetyCode(peer),
+              record.count == Int(VIGIL_ADDITIONAL_INPUT_LEN) else {
+            vigil_additional_input(peer, nil, 0)
+            return
+        }
+
+        record.withUnsafeBytes { vigil_additional_input(peer, $0.baseAddress, Int(VIGIL_ADDITIONAL_INPUT_LEN)) }
+        record.resetBytes(in: 0..<record.count)
+    }
+
+    static func safetyApplyAll() {
+        guard let folder = shared.safety,
+              let files = try? FileManager.default.contentsOfDirectory(atPath: folder.path) else {
+            return
+        }
+
+        for name in files where name.count == 6 && name.hasSuffix(".box") {
+            if let peer = UInt8(name.prefix(2), radix: 16), peer > 0, peer < 0xff {
+                safetyApply(peer)
+            }
         }
     }
 

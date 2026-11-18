@@ -37,6 +37,7 @@ add_library(vigil SHARED
 	${VIGIL_ROOT}/src/remembrance.c
 	${VIGIL_ROOT}/src/remote.c
 	${VIGIL_ROOT}/src/ring.c
+	${VIGIL_ROOT}/src/safety.c
 	${VIGIL_ROOT}/src/status.c
 	${VIGIL_ROOT}/src/video.c
 	${VIGIL_ROOT}/src/voice.c

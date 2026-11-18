@@ -132,6 +132,27 @@ object Vigil {
     external fun gospel(config: ByteArray?): Boolean
 
     @JvmStatic
+    external fun additionalInput(peer: Int, ikm: ByteArray?): Boolean
+
+    @JvmStatic
+    external fun safetyWords(half: ByteArray): String?
+
+    @JvmStatic
+    external fun safetyHalf(words: ByteArray): ByteArray?
+
+    @JvmStatic
+    external fun safetyCode(input: ByteArray): String?
+
+    @JvmStatic
+    external fun safetyStart(peer: Int, own: ByteArray, theirs: ByteArray): Boolean
+
+    @JvmStatic
+    external fun safetyGet(peer: Int): ByteArray?
+
+    @JvmStatic
+    external fun safetyStop()
+
+    @JvmStatic
     external fun chatCompanion(config: ByteArray?): Boolean
 
     @JvmStatic

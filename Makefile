@@ -42,6 +42,7 @@ SRC=	src/vigil.c \
 	src/remembrance.c \
 	src/remote.c \
 	src/ring.c \
+	src/safety.c \
 	src/status.c \
 	src/video.c \
 	src/voice.c

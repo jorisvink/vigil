@@ -1,0 +1,454 @@
+diff -ru a/include/libkyrka/libkyrka.h b/include/libkyrka/libkyrka.h
+--- a/include/libkyrka/libkyrka.h	2026-11-18 12:13:30.078902003 +0100
++++ b/include/libkyrka/libkyrka.h	2026-11-18 12:13:43.237043964 +0100
+@@ -86,6 +86,9 @@
+ #define KYRKA_EVENT_REMEMBRANCE_RECEIVED	7
+ #define KYRKA_EVENT_LOGMSG			8
+ 
++/* The length of the additional input for the base keys, 256-bit. */
++#define KYRKA_ADDITIONAL_INPUT_LENGTH		32
++
+ struct kyrka_event_keys_info {
+ 	u_int32_t			type;
+ 	u_int32_t			tx_spi;
+@@ -234,6 +237,7 @@
+ int	kyrka_mtu_size(KYRKA *, u_int16_t);
+ int	kyrka_secret_load_path(KYRKA *, const char *);
+ int	kyrka_secret_load(KYRKA *, const void *, size_t);
++int	kyrka_additional_kdf_input(KYRKA *, const void *, size_t);
+ int	kyrka_device_kek_load(KYRKA *, const void *, size_t);
+ int	kyrka_cathedral_cosk_load(KYRKA *, const void *, size_t);
+ int	kyrka_cathedral_secret_load(KYRKA *, const void *, size_t);
+diff -ru a/include/libkyrka/libkyrka-int.h b/include/libkyrka/libkyrka-int.h
+--- a/include/libkyrka/libkyrka-int.h	2026-11-18 12:13:30.071901928 +0100
++++ b/include/libkyrka/libkyrka-int.h	2026-11-18 12:13:43.237043964 +0100
+@@ -507,6 +507,9 @@
+ /* Are we using commixtion or not. */
+ #define KYRKA_FLAG_USE_COMMIXTION		(1 << 9)
+ 
++/* If additional input for the base keys was loaded. */
++#define KYRKA_FLAG_ADDITIONAL_INPUT		(1 << 10)
++
+ /* Explicit flags for shroud */
+ #define KYRKA_SHROUD_PEER_KEY			(1 << 0)
+ #define KYRKA_SHROUD_CATHEDRAL_KEY		(1 << 1)
+@@ -592,6 +595,7 @@
+ 		u_int16_t		mtu;
+ 		u_int8_t		kek[KYRKA_KEY_LENGTH];
+ 		u_int8_t		secret[KYRKA_KEY_LENGTH];
++		u_int8_t		input[KYRKA_ADDITIONAL_INPUT_LENGTH];
+ 	} cfg;
+ 
+ 	/* Cathedral config. */
+@@ -676,7 +680,7 @@
+ int	kyrka_cathedral_decrypt(struct kyrka *, struct kyrka_packet *);
+ 
+ /* src/kdf.c */
+-void	kyrka_base_key(const u_int8_t *, size_t, int, void *,
++void	kyrka_base_key(struct kyrka *, const u_int8_t *, size_t, int, void *,
+ 	    size_t, u_int64_t, u_int64_t);
+ int	kyrka_traffic_kdf(struct kyrka *, struct kyrka_kex *,
+ 	    u_int8_t *, size_t);
+diff -ru a/src/cathedral.c b/src/cathedral.c
+--- a/src/cathedral.c	2026-11-18 12:13:30.074901961 +0100
++++ b/src/cathedral.c	2026-11-18 12:13:30.088902111 +0100
+@@ -705,7 +705,7 @@
+ 	flock_dst = ctx->cathedral.flock_dst & ~(KYRKA_FLOCK_DOMAIN_MASK);
+ 
+ 	kyrka_mask(ctx, ctx->cfg.kek, sizeof(ctx->cfg.kek));
+-	kyrka_base_key(ctx->cfg.kek, sizeof(ctx->cfg.kek),
++	kyrka_base_key(ctx, ctx->cfg.kek, sizeof(ctx->cfg.kek),
+ 	    KYRKA_KDF_PURPOSE_KEY_KEK_UNWRAP, okm, sizeof(okm),
+ 	    flock_src, flock_dst);
+ 	kyrka_mask(ctx, ctx->cfg.kek, sizeof(ctx->cfg.kek));
+diff -ru a/src/kdf.c b/src/kdf.c
+--- a/src/kdf.c	2026-11-18 12:13:30.074901961 +0100
++++ b/src/kdf.c	2026-11-18 12:13:30.088902111 +0100
+@@ -53,7 +53,7 @@
+ 	}
+ 
+ 	len = 64;
+-	kyrka_base_key(secret, secret_len,
++	kyrka_base_key(ctx, secret, secret_len,
+ 	    purpose, key, sizeof(key), flock_a, flock_b);
+ 
+ 	nyfe_kmac256_init(&kdf, key, sizeof(key), label, strlen(label));
+@@ -101,7 +101,7 @@
+ 	nyfe_zeroize_register(secret, sizeof(secret));
+ 
+ 	kyrka_mask(ctx, ctx->cfg.secret, sizeof(ctx->cfg.secret));
+-	kyrka_base_key(ctx->cfg.secret, sizeof(ctx->cfg.secret),
++	kyrka_base_key(ctx, ctx->cfg.secret, sizeof(ctx->cfg.secret),
+ 	    kx->purpose, secret, sizeof(secret),
+ 	    ctx->cathedral.flock_src, ctx->cathedral.flock_dst);
+ 	kyrka_mask(ctx, ctx->cfg.secret, sizeof(ctx->cfg.secret));
+@@ -152,6 +152,10 @@
+  *		flock_b = flock_src
+  *
+  *	x = len(flock_a) || flock_a || len(flock_b) || flock_b
++ *
++ *	if the purpose is a peer one and additional input was loaded:
++ *		x = x || len(input) || input
++ *
+  *	K = KMAC256(secret, label_for_purpose, x), 256-bit
+  *
+  * The flocks are the configured cathedral flocks if a cathedral is in use
+@@ -160,13 +164,16 @@
+  * This is done to separate base key derivation between different flock domains.
+  */
+ void
+-kyrka_base_key(const u_int8_t *secret, size_t secret_len, int purpose,
+-    void *out, size_t out_len, u_int64_t flock_src, u_int64_t flock_dst)
++kyrka_base_key(struct kyrka *ctx, const u_int8_t *secret, size_t secret_len,
++    int purpose, void *out, size_t out_len, u_int64_t flock_src,
++    u_int64_t flock_dst)
+ {
+ 	struct nyfe_kmac256	kdf;
+-	u_int8_t		flen;
++	int			peer;
++	u_int8_t		flen, ilen;
+ 	const char		*label;
+ 
++	PRECOND(ctx != NULL);
+ 	PRECOND(secret != NULL);
+ 	PRECOND(secret_len == KYRKA_KEY_LENGTH);
+ 	PRECOND(out != NULL);
+@@ -181,24 +188,31 @@
+ 
+ 	switch (purpose) {
+ 	case KYRKA_KDF_PURPOSE_PEER_OFFER:
++		peer = 1;
+ 		label = KYRKA_PEER_OFFER_KDF_LABEL;
+ 		break;
+ 	case KYRKA_KDF_PURPOSE_CATHEDRAL_OFFER:
++		peer = 0;
+ 		label = KYRKA_CATHEDRAL_OFFER_KDF_LABEL;
+ 		break;
+ 	case KYRKA_KDF_PURPOSE_KEY_TRAFFIC_RX:
++		peer = 1;
+ 		label = KYRKA_KEY_TRAFFIC_RX_KDF_LABEL;
+ 		break;
+ 	case KYRKA_KDF_PURPOSE_KEY_TRAFFIC_TX:
++		peer = 1;
+ 		label = KYRKA_KEY_TRAFFIC_TX_KDF_LABEL;
+ 		break;
+ 	case KYRKA_KDF_PURPOSE_KEY_KEK_UNWRAP:
++		peer = 0;
+ 		label = KYRKA_KEY_KEK_UNWRAP_KDF_LABEL;
+ 		break;
+ 	case KYRKA_KDF_PURPOSE_SHROUD_PEER:
++		peer = 1;
+ 		label = KYRKA_SHROUD_KEY_KDF_LABEL;
+ 		break;
+ 	case KYRKA_KDF_PURPOSE_SHROUD_CATHEDRAL:
++		peer = 0;
+ 		label = KYRKA_CATHEDRAL_SHROUD_KEY_KDF_LABEL;
+ 		break;
+ 	default:
+@@ -225,6 +239,15 @@
+ 		nyfe_kmac256_update(&kdf, &flock_src, sizeof(flock_src));
+ 	}
+ 
++	if (peer && (ctx->flags & KYRKA_FLAG_ADDITIONAL_INPUT)) {
++		ilen = sizeof(ctx->cfg.input);
++		kyrka_mask(ctx, ctx->cfg.input, sizeof(ctx->cfg.input));
++		nyfe_kmac256_update(&kdf, &ilen, sizeof(ilen));
++		nyfe_kmac256_update(&kdf,
++		    ctx->cfg.input, sizeof(ctx->cfg.input));
++		kyrka_mask(ctx, ctx->cfg.input, sizeof(ctx->cfg.input));
++	}
++
+ 	nyfe_kmac256_final(&kdf, out, out_len);
+ 	nyfe_zeroize(&kdf, sizeof(kdf));
+ }
+diff -ru a/src/kyrka.c b/src/kyrka.c
+--- a/src/kyrka.c	2026-11-18 12:13:30.074901961 +0100
++++ b/src/kyrka.c	2026-11-18 12:13:30.088902111 +0100
+@@ -175,6 +175,29 @@
+ }
+ 
+ /*
++ * Load 256-bit of additional input that is mixed into every base key we
++ * derive for our peer, both sides must load the same input.
++ */
++int
++kyrka_additional_kdf_input(KYRKA *ctx, const void *ikm, size_t ikm_len)
++{
++	if (ctx == NULL)
++		return (-1);
++
++	if (ikm == NULL || ikm_len != KYRKA_ADDITIONAL_INPUT_LENGTH) {
++		ctx->last_error = KYRKA_ERROR_PARAMETER;
++		return (-1);
++	}
++
++	nyfe_memcpy(ctx->cfg.input, ikm, ikm_len);
++	kyrka_mask(ctx, ctx->cfg.input, sizeof(ctx->cfg.input));
++
++	ctx->flags |= KYRKA_FLAG_ADDITIONAL_INPUT;
++
++	return (0);
++}
++
++/*
+  * Sets the cathedral secret directly by copying in the given secret.
+  *
+  * Only call this if you did not specify the secret in the kyrka_cathedral_cfg
+diff -ru a/src/shroud.c b/src/shroud.c
+--- a/src/shroud.c	2026-11-18 12:13:30.075901972 +0100
++++ b/src/shroud.c	2026-11-18 12:13:30.088902111 +0100
+@@ -59,7 +59,7 @@
+ 
+ 	kyrka_mask(ctx, key, len);
+ 
+-	kyrka_base_key(key, len, purpose, okm, okm_len,
++	kyrka_base_key(ctx, key, len, purpose, okm, okm_len,
+ 	    flock_src, flock_dst);
+ 
+ 	kyrka_mask(ctx, key, len);
+diff -ru a/tests/tests/exchange.c b/tests/tests/exchange.c
+--- a/tests/tests/exchange.c	2026-11-18 20:29:17.590812810 +0100
++++ b/tests/tests/exchange.c	2026-11-18 20:29:28.313949736 +0100
+@@ -200,7 +200,7 @@
+ 	flock_dst = ctx->cathedral.flock_dst & ~(KYRKA_FLOCK_DOMAIN_MASK);
+ 
+ 	kyrka_mask(ctx, ctx->cfg.kek, sizeof(ctx->cfg.kek));
+-	kyrka_base_key(ctx->cfg.kek, sizeof(ctx->cfg.kek),
++	kyrka_base_key(ctx, ctx->cfg.kek, sizeof(ctx->cfg.kek),
+ 	    KYRKA_KDF_PURPOSE_KEY_KEK_UNWRAP, okm, sizeof(okm),
+ 	    flock_src, flock_dst);
+ 	kyrka_mask(ctx, ctx->cfg.kek, sizeof(ctx->cfg.kek));
+@@ -299,6 +299,69 @@
+ }
+ 
+ static void
++exchange_input(struct peer *peer, u_int8_t fill)
++{
++	u_int8_t	ikm[KYRKA_ADDITIONAL_INPUT_LENGTH];
++
++	memset(ikm, fill, sizeof(ikm));
++	VERIFY(kyrka_additional_kdf_input(peer->ctx, ikm, sizeof(ikm)) == 0);
++}
++
++static void
++key_exchange_additional_input(u_int8_t fill_a, u_int8_t fill_b, int flows)
++{
++	int		idx;
++
++	exchange_setup();
++
++	if (fill_a != 0)
++		exchange_input(&peer_a, fill_a);
++
++	if (fill_b != 0)
++		exchange_input(&peer_b, fill_b);
++
++	for (idx = 0; idx < 30; idx++)
++		exchange_pulse(0, 0);
++
++	if (flows) {
++		VERIFY(exchange_traffic_flows());
++		VERIFY(peer_a.ctx->tx.spi == peer_b.ctx->rx.spi);
++		VERIFY(peer_a.ctx->rx.spi == peer_b.ctx->tx.spi);
++	} else {
++		VERIFY(!exchange_traffic_flows());
++		VERIFY(peer_a.ctx->tx.cipher == NULL);
++		VERIFY(peer_b.ctx->tx.cipher == NULL);
++	}
++
++	exchange_cleanup();
++}
++
++static void
++key_exchange_additional_input_same_test(void)
++{
++	key_exchange_additional_input(0x11, 0x11, 1);
++}
++
++static void
++key_exchange_additional_input_differs_test(void)
++{
++	key_exchange_additional_input(0x11, 0x22, 0);
++}
++
++static void
++key_exchange_additional_input_one_side_test(void)
++{
++	key_exchange_additional_input(0x11, 0, 0);
++	key_exchange_additional_input(0, 0x11, 0);
++}
++
++static void
++key_exchange_additional_input_none_test(void)
++{
++	key_exchange_additional_input(0, 0, 1);
++}
++
++static void
+ key_exchange_peer_restart_test(void)
+ {
+ 	int		idx;
+@@ -555,6 +618,14 @@
+ 	    key_exchange_packet_loss_test);
+ 	test_framework_register("key_exchange_packet_loss_rekey_test",
+ 	    key_exchange_packet_loss_rekey_test);
++	test_framework_register("key_exchange_additional_input_same_test",
++	    key_exchange_additional_input_same_test);
++	test_framework_register("key_exchange_additional_input_differs_test",
++	    key_exchange_additional_input_differs_test);
++	test_framework_register("key_exchange_additional_input_one_side_test",
++	    key_exchange_additional_input_one_side_test);
++	test_framework_register("key_exchange_additional_input_none_test",
++	    key_exchange_additional_input_none_test);
+ 
+ 	test_framework_run();
+ }
+diff -ru a/tests/tests/kdf.c b/tests/tests/kdf.c
+--- a/tests/tests/kdf.c	2026-11-18 12:13:30.075901972 +0100
++++ b/tests/tests/kdf.c	2026-11-18 12:13:30.089902122 +0100
+@@ -32,13 +32,17 @@
+ static void
+ kdf_base_key_deterministic_test(void)
+ {
++	struct kyrka	*ctx;
+ 	u_int8_t	a[KYRKA_KEY_LENGTH];
+ 	u_int8_t	b[KYRKA_KEY_LENGTH];
+ 
+-	kyrka_base_key(secret, sizeof(secret), KYRKA_KDF_PURPOSE_PEER_OFFER,
+-	    a, sizeof(a), 0, 0);
+-	kyrka_base_key(secret, sizeof(secret), KYRKA_KDF_PURPOSE_PEER_OFFER,
+-	    b, sizeof(b), 0, 0);
++	ctx = kyrka_ctx_alloc(NULL, NULL);
++	VERIFY(ctx != NULL);
++
++	kyrka_base_key(ctx, secret, sizeof(secret),
++	    KYRKA_KDF_PURPOSE_PEER_OFFER, a, sizeof(a), 0, 0);
++	kyrka_base_key(ctx, secret, sizeof(secret),
++	    KYRKA_KDF_PURPOSE_PEER_OFFER, b, sizeof(b), 0, 0);
+ 
+ 	VERIFY(memcmp(a, b, sizeof(a)) == 0);
+ }
+@@ -46,12 +50,16 @@
+ static void
+ kdf_base_key_purpose_differs_test(void)
+ {
++	struct kyrka	*ctx;
+ 	u_int8_t	a[KYRKA_KEY_LENGTH];
+ 	u_int8_t	b[KYRKA_KEY_LENGTH];
+ 
+-	kyrka_base_key(secret, sizeof(secret),
++	ctx = kyrka_ctx_alloc(NULL, NULL);
++	VERIFY(ctx != NULL);
++
++	kyrka_base_key(ctx, secret, sizeof(secret),
+ 	    KYRKA_KDF_PURPOSE_PEER_OFFER, a, sizeof(a), 0, 0);
+-	kyrka_base_key(secret, sizeof(secret),
++	kyrka_base_key(ctx, secret, sizeof(secret),
+ 	    KYRKA_KDF_PURPOSE_CATHEDRAL_OFFER, b, sizeof(b), 0, 0);
+ 
+ 	VERIFY(memcmp(a, b, sizeof(a)) != 0);
+@@ -60,13 +68,17 @@
+ static void
+ kdf_base_key_flock_order_test(void)
+ {
++	struct kyrka	*ctx;
+ 	u_int8_t	a[KYRKA_KEY_LENGTH];
+ 	u_int8_t	b[KYRKA_KEY_LENGTH];
+ 
+-	kyrka_base_key(secret, sizeof(secret), KYRKA_KDF_PURPOSE_PEER_OFFER,
+-	    a, sizeof(a), 100, 200);
+-	kyrka_base_key(secret, sizeof(secret), KYRKA_KDF_PURPOSE_PEER_OFFER,
+-	    b, sizeof(b), 200, 100);
++	ctx = kyrka_ctx_alloc(NULL, NULL);
++	VERIFY(ctx != NULL);
++
++	kyrka_base_key(ctx, secret, sizeof(secret),
++	    KYRKA_KDF_PURPOSE_PEER_OFFER, a, sizeof(a), 100, 200);
++	kyrka_base_key(ctx, secret, sizeof(secret),
++	    KYRKA_KDF_PURPOSE_PEER_OFFER, b, sizeof(b), 200, 100);
+ 
+ 	VERIFY(memcmp(a, b, sizeof(a)) == 0);
+ }
+@@ -74,15 +86,69 @@
+ static void
+ kdf_base_key_flock_changes_output_test(void)
+ {
++	struct kyrka	*ctx;
++	u_int8_t	a[KYRKA_KEY_LENGTH];
++	u_int8_t	b[KYRKA_KEY_LENGTH];
++
++	ctx = kyrka_ctx_alloc(NULL, NULL);
++	VERIFY(ctx != NULL);
++
++	kyrka_base_key(ctx, secret, sizeof(secret),
++	    KYRKA_KDF_PURPOSE_PEER_OFFER, a, sizeof(a), 0, 0);
++	kyrka_base_key(ctx, secret, sizeof(secret),
++	    KYRKA_KDF_PURPOSE_PEER_OFFER, b, sizeof(b), 1, 2);
++
++	VERIFY(memcmp(a, b, sizeof(a)) != 0);
++}
++
++static void
++kdf_base_key_additional_input_test(void)
++{
++	struct kyrka	*ctx;
+ 	u_int8_t	a[KYRKA_KEY_LENGTH];
+ 	u_int8_t	b[KYRKA_KEY_LENGTH];
++	u_int8_t	ikm[KYRKA_ADDITIONAL_INPUT_LENGTH];
++
++	ctx = kyrka_ctx_alloc(NULL, NULL);
++	VERIFY(ctx != NULL);
+ 
+-	kyrka_base_key(secret, sizeof(secret), KYRKA_KDF_PURPOSE_PEER_OFFER,
+-	    a, sizeof(a), 0, 0);
+-	kyrka_base_key(secret, sizeof(secret), KYRKA_KDF_PURPOSE_PEER_OFFER,
+-	    b, sizeof(b), 1, 2);
++	memset(ikm, 0, sizeof(ikm));
+ 
++	kyrka_base_key(ctx, secret, sizeof(secret),
++	    KYRKA_KDF_PURPOSE_PEER_OFFER, a, sizeof(a), 0, 0);
++	VERIFY(kyrka_additional_kdf_input(ctx, ikm, sizeof(ikm)) == 0);
++	kyrka_base_key(ctx, secret, sizeof(secret),
++	    KYRKA_KDF_PURPOSE_PEER_OFFER, b, sizeof(b), 0, 0);
++	VERIFY(memcmp(a, b, sizeof(a)) != 0);
++
++	ikm[0] = 0x01;
++	VERIFY(kyrka_additional_kdf_input(ctx, ikm, sizeof(ikm)) == 0);
++	kyrka_base_key(ctx, secret, sizeof(secret),
++	    KYRKA_KDF_PURPOSE_PEER_OFFER, a, sizeof(a), 0, 0);
+ 	VERIFY(memcmp(a, b, sizeof(a)) != 0);
++
++	kyrka_base_key(ctx, secret, sizeof(secret),
++	    KYRKA_KDF_PURPOSE_KEY_TRAFFIC_TX, a, sizeof(a), 0, 0);
++	VERIFY(kyrka_additional_kdf_input(ctx, ikm, sizeof(ikm)) == 0);
++	kyrka_base_key(ctx, secret, sizeof(secret),
++	    KYRKA_KDF_PURPOSE_KEY_TRAFFIC_TX, b, sizeof(b), 0, 0);
++	VERIFY(memcmp(a, b, sizeof(a)) == 0);
++
++	kyrka_base_key(ctx, secret, sizeof(secret),
++	    KYRKA_KDF_PURPOSE_CATHEDRAL_OFFER, a, sizeof(a), 0, 0);
++	kyrka_ctx_free(ctx);
++
++	ctx = kyrka_ctx_alloc(NULL, NULL);
++	VERIFY(ctx != NULL);
++
++	kyrka_base_key(ctx, secret, sizeof(secret),
++	    KYRKA_KDF_PURPOSE_CATHEDRAL_OFFER, b, sizeof(b), 0, 0);
++	VERIFY(memcmp(a, b, sizeof(a)) == 0);
++
++	VERIFY(kyrka_additional_kdf_input(ctx, ikm, 0) == -1);
++	VERIFY(kyrka_additional_kdf_input(ctx, ikm, sizeof(ikm) - 1) == -1);
++	VERIFY(kyrka_additional_kdf_input(ctx, ikm, sizeof(ikm) + 1) == -1);
++	VERIFY(kyrka_additional_kdf_input(ctx, NULL, sizeof(ikm)) == -1);
+ }
+ 
+ static void
+@@ -180,6 +246,8 @@
+ 	    kdf_base_key_flock_order_test);
+ 	test_framework_register("kdf_base_key_flock_changes_output_test",
+ 	    kdf_base_key_flock_changes_output_test);
++	test_framework_register("kdf_base_key_additional_input_test",
++	    kdf_base_key_additional_input_test);
+ 	test_framework_register("kdf_offer_kdf_test", kdf_offer_kdf_test);
+ 	test_framework_register("kdf_traffic_kdf_requires_valid_remote_test",
+ 	    kdf_traffic_kdf_requires_valid_remote_test);

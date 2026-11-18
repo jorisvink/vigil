@@ -699,6 +699,7 @@ void	vigil_kyrka_leave(void);
 void	vigil_wake_signal(void);
 void	vigil_socket_nonblock(int);
 int	vigil_socket_unreachable(int, int);
+int	vigil_kyrka_additional_input(KYRKA *, u_int8_t);
 void	vigil_logv(int, const char *, va_list);
 int	vigil_rebind_due(u_int64_t *, u_int64_t *, u_int64_t);
 int	vigil_inet_match(struct sockaddr_in *, struct sockaddr_in *);
@@ -752,10 +753,22 @@ void	vigil_chat_poke(void);
 void	vigil_chat_update(void);
 void	vigil_chat_rebind(void);
 void	vigil_chat_cleanup(void);
+void	vigil_chat_safety(u_int8_t);
+void	vigil_chat_additional_input(u_int8_t);
 void	vigil_chat_status(struct vigil_buf *);
 void	vigil_chat_companion_voice(const u_int8_t *, size_t);
 int	vigil_chat_companion_send(const struct vigil_chat_request *,
 	    const void *, size_t);
+
+/* src/remote.c */
+int	vigil_remote_words_parse(const char *, u_int16_t *, size_t);
+
+/* src/safety.c */
+void	vigil_safety_erase(void);
+void	vigil_safety_update(void);
+void	vigil_safety_rebind(void);
+void	vigil_safety_cleanup(void);
+void	vigil_safety_status(struct vigil_buf *);
 
 /* src/ether.c */
 void	vigil_ether_init(struct vigil_peer *);

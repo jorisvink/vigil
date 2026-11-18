@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import '../app.dart';
 import '../vigil.dart';
@@ -30,17 +31,26 @@ Future<void> callPeer(String peer, {bool video = false}) async {
   }
 }
 
-Future<void> renamePeer(String peer) async {
+final _back = Object();
+
+Future<bool> renamePeer(String peer, {bool back = false}) async {
   final context = navigatorKey.currentContext;
   if (context == null) {
-    return;
+    return false;
   }
 
   final vigil = Vigil.instance;
-  final name = await sheet<String>(context, (context) => _NamePrompt(peer));
+  final name = await sheet<Object>(
+    context,
+    (context) => _NamePrompt(peer, back: back),
+  );
 
-  if (name == null) {
-    return;
+  if (name == _back) {
+    return true;
+  }
+
+  if (name is! String) {
+    return false;
   }
 
   try {
@@ -48,12 +58,35 @@ Future<void> renamePeer(String peer) async {
   } on VigilError catch (e) {
     notify(e.message);
   }
+
+  return false;
 }
 
+Future<bool> _safetyCode(String peer) async {
+  await push<void>(_SafetyCode(peer));
+
+  return true;
+}
+
+Widget _backTitle(BuildContext context, String title) => Transform.translate(
+  offset: const Offset(-12, 0),
+  child: Row(
+    children: [
+      GlyphBtn(
+        GlyphKind.back,
+        label: 'Back',
+        onTap: () => Navigator.of(context).pop(_back),
+      ),
+      Expanded(child: sheetTitle(title)),
+    ],
+  ),
+);
+
 class _NamePrompt extends StatefulWidget {
-  const _NamePrompt(this.peer);
+  const _NamePrompt(this.peer, {this.back = false});
 
   final String peer;
+  final bool back;
 
   @override
   State<_NamePrompt> createState() => _NamePromptState();
@@ -78,7 +111,10 @@ class _NamePromptState extends State<_NamePrompt> {
       mainAxisSize: MainAxisSize.min,
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        sheetTitle('Name peer $peer'),
+        if (widget.back)
+          _backTitle(context, 'Name peer $peer')
+        else
+          sheetTitle('Name peer $peer'),
         const SizedBox(height: 16),
         Pre(
           child: TextField(
@@ -112,6 +148,496 @@ class _NamePromptState extends State<_NamePrompt> {
           ),
         ),
       ],
+    );
+  }
+}
+
+Future<void> peerDetails(String peer) async {
+  var back = true;
+
+  while (back) {
+    final context = navigatorKey.currentContext;
+    if (context == null) {
+      return;
+    }
+
+    if (!context.mounted) {
+      return;
+    }
+
+    final action = await sheet<String>(
+      context,
+      (context) => _PeerDetails(peer),
+    );
+
+    back = false;
+
+    if (action == 'name') {
+      back = await renamePeer(peer, back: true);
+    }
+
+    if (action == 'code') {
+      back = await _safetyCode(peer);
+    }
+  }
+}
+
+String _safetyState(String peer) {
+  final vigil = Vigil.instance;
+
+  if (vigil.safetyActive(peer)) {
+    return 'On';
+  }
+
+  if (vigil.safetyOn(peer)) {
+    return 'On, not set yet';
+  }
+
+  return 'Off';
+}
+
+class _PeerDetails extends StatelessWidget {
+  const _PeerDetails(this.peer);
+
+  final String peer;
+
+  @override
+  Widget build(BuildContext context) {
+    final vigil = Vigil.instance;
+    final active = vigil.safetyActive(peer);
+
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        sheetTitle(vigil.name(peer)),
+        if (vigil.name(peer) != 'Peer $peer') ...[
+          const SizedBox(height: 6),
+          Text('Peer $peer', style: Styles.detail),
+        ],
+        const SizedBox(height: 16),
+        LinkList(
+          rows: [
+            LinkRow(
+              'Name',
+              () => Navigator.of(context).pop('name'),
+              detail: vigil.names[peer] ?? 'Not named',
+              glyph: GlyphKind.person,
+            ),
+            LinkRow(
+              'Safety code',
+              () => Navigator.of(context).pop('code'),
+              detail: _safetyState(peer),
+              glyph: GlyphKind.shield,
+              tint: active ? Palette.good : null,
+            ),
+          ],
+        ),
+      ],
+    );
+  }
+}
+
+const _safetyWords = 5;
+
+String _setAgo(int since) {
+  final days = DateTime.now()
+      .difference(DateTime.fromMillisecondsSinceEpoch(since))
+      .inDays;
+
+  if (days < 1) {
+    return 'This safety code was set today.';
+  }
+
+  if (days == 1) {
+    return 'This safety code was set 1 day ago.';
+  }
+
+  return 'This safety code was set $days days ago.';
+}
+
+const _codeStyle = TextStyle(
+  fontFamily: Fonts.mono,
+  fontSize: 15,
+  height: 1.4,
+  color: Palette.fg,
+);
+
+class _SafetyCode extends StatefulWidget {
+  const _SafetyCode(this.peer);
+
+  final String peer;
+
+  @override
+  State<_SafetyCode> createState() => _SafetyCodeState();
+}
+
+class _SafetyCodeState extends State<_SafetyCode> {
+  final _words = TextEditingController();
+  StreamSubscription<Status>? _status;
+  SafetyCode? _state;
+  Set<String> _list = const {};
+  List<String> _sorted = const [];
+  String _mine = '';
+  String _exchange = '';
+  bool _redo = false;
+  bool _started = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _words.addListener(() => setState(() {}));
+    _status = Vigil.instance.statuses.listen(_changed);
+    _load();
+
+    Vigil.instance.remoteWordList().then((list) {
+      if (mounted) {
+        setState(() {
+          _list = list.toSet();
+          _sorted = [...list]..sort();
+        });
+      }
+    }, onError: (_) {});
+  }
+
+  @override
+  void dispose() {
+    _status?.cancel();
+    _words.clear();
+    _words.dispose();
+    Vigil.instance.safetyStop().catchError((Object _) {});
+    super.dispose();
+  }
+
+  List<String> get _typed => _words.text
+      .toLowerCase()
+      .split(RegExp(r'\s+'))
+      .where((w) => w.isNotEmpty)
+      .toList();
+
+  List<String> get _unknown => [
+    for (final w in _typed)
+      if (_list.isNotEmpty && !_list.contains(w)) w,
+  ];
+
+  List<String> get _suggestions {
+    final text = _words.text;
+    if (text.isEmpty || text.endsWith(' ')) {
+      return const [];
+    }
+
+    final last = _typed.isEmpty ? '' : _typed.last;
+    if (last.length < 2 || _list.contains(last)) {
+      return const [];
+    }
+
+    return _sorted.where((w) => w.startsWith(last)).take(4).toList();
+  }
+
+  void _complete(String word) {
+    final text = _words.text;
+    final at = text.lastIndexOf(RegExp(r'\s')) + 1;
+
+    _words.text = '${text.substring(0, at)}$word ';
+    _words.selection = TextSelection.collapsed(offset: _words.text.length);
+  }
+
+  void _changed(Status status) {
+    final chat = status.chat;
+
+    if (!_started || chat == null || chat.safetyPeer != widget.peer) {
+      return;
+    }
+
+    if (chat.safetyState == _exchange) {
+      return;
+    }
+
+    setState(() => _exchange = chat.safetyState);
+
+    if (_exchange == 'done') {
+      _started = false;
+      _redo = false;
+      _words.clear();
+      _settle();
+    }
+  }
+
+  Future<void> _settle() async {
+    for (var idx = 0; idx < 10; idx++) {
+      await _load();
+
+      if (!mounted) {
+        return;
+      }
+
+      if (_state?.set ?? false) {
+        notify('Safety code set', warn: false);
+        return;
+      }
+
+      await Future<void>.delayed(const Duration(milliseconds: 500));
+    }
+  }
+
+  Future<void> _load({bool clear = false, bool? on}) async {
+    try {
+      final state = await Vigil.instance.safetyCode(
+        widget.peer,
+        clear: clear,
+        on: on,
+      );
+
+      if (!mounted) {
+        return;
+      }
+
+      setState(() => _state = state);
+
+      if (state.on && (!state.set || _redo) && _mine.isEmpty) {
+        await _begin();
+      }
+
+      if (!state.on) {
+        await _stop();
+      }
+    } on VigilError catch (e) {
+      notify(e.message);
+    }
+  }
+
+  Future<void> _begin() async {
+    try {
+      final mine = await Vigil.instance.safetyBegin(widget.peer);
+
+      if (mounted) {
+        setState(() {
+          _mine = mine;
+          _exchange = '';
+          _started = false;
+        });
+      }
+    } on VigilError catch (e) {
+      notify(e.message);
+    }
+  }
+
+  Future<void> _stop() async {
+    await Vigil.instance.safetyStop();
+
+    if (mounted) {
+      setState(() {
+        _mine = '';
+        _exchange = '';
+        _started = false;
+        _redo = false;
+      });
+    }
+  }
+
+  Future<void> _connect() async {
+    FocusManager.instance.primaryFocus?.unfocus();
+
+    try {
+      await Vigil.instance.safetyWords(widget.peer, _typed.join(' '));
+
+      if (mounted) {
+        setState(() {
+          _started = true;
+          _exchange = 'connecting';
+        });
+      }
+    } on VigilError catch (e) {
+      notify(e.message);
+    }
+  }
+
+  Future<void> _again() async {
+    setState(() {
+      _redo = true;
+      _mine = '';
+    });
+
+    _words.clear();
+    await _begin();
+  }
+
+  Future<void> _copy() async {
+    await Clipboard.setData(ClipboardData(text: _mine));
+    notify('Copied', warn: false);
+  }
+
+  Future<void> _leave() async {
+    final name = Vigil.instance.name(widget.peer);
+    final leave = await confirm(
+      title: 'Stop setting the safety code?',
+      text:
+          'Leaving this page stops setting the safety code with $name. Both '
+          'of you then have to start over with new words.',
+      action: 'Stop',
+      risky: true,
+    );
+
+    if (leave && mounted) {
+      Navigator.of(context).pop();
+    }
+  }
+
+  Widget _exchangeNotice(String name) {
+    if (_exchange == 'connecting') {
+      return Notice(
+        text:
+            'Waiting for $name. This stops after two minutes.',
+      );
+    }
+
+    return const Notice(
+      kind: NoticeKind.warn,
+      text:
+          'No safety code was set. Check the words and try again.',
+    );
+  }
+
+  List<Widget> _exchangeView(bool busy) {
+    final count = _typed.length;
+    final unknown = _unknown;
+
+    return [
+      Panel(
+        padding: const EdgeInsets.fromLTRB(16, 12, 4, 12),
+        child: Row(
+          children: [
+            Expanded(child: Text(_mine, style: _codeStyle)),
+            GlyphBtn(
+              GlyphKind.copy,
+              label: 'Copy your words',
+              onTap: _mine.isEmpty ? null : _copy,
+            ),
+          ],
+        ),
+      ),
+      Pre(
+        child: TextField(
+          controller: _words,
+          enabled: !busy,
+          minLines: 2,
+          maxLines: 3,
+          autocorrect: false,
+          enableSuggestions: false,
+          enableIMEPersonalizedLearning: false,
+          keyboardType: TextInputType.visiblePassword,
+          style: _codeStyle,
+          cursorColor: Palette.amber,
+          decoration: InputDecoration.collapsed(
+            hintText: 'Their words',
+            hintStyle: _codeStyle.copyWith(color: Palette.dim),
+          ),
+        ),
+      ),
+      if (_suggestions.isNotEmpty)
+        Wrap(
+          spacing: 8,
+          runSpacing: 8,
+          children: [
+            for (final w in _suggestions)
+              Btn(
+                label: w,
+                kind: BtnKind.secondary,
+                onTap: () => _complete(w),
+              ),
+          ],
+        ),
+      Text(
+        unknown.isNotEmpty
+            ? 'Not in the word list: ${unknown.join(', ')}'
+            : '$count of $_safetyWords words',
+        style: Styles.detail.copyWith(
+          color: unknown.isNotEmpty ? Palette.amber : null,
+        ),
+      ),
+    ];
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final vigil = Vigil.instance;
+    final state = _state;
+    final on = state?.on ?? vigil.safetyOn(widget.peer);
+    final set = state?.set ?? false;
+    final name = vigil.name(widget.peer);
+    final ready = _typed.length == _safetyWords && _unknown.isEmpty;
+    final busy = _started && _exchange == 'connecting';
+    final exchanging = on && (!set || _redo);
+    final shown = on && set && !_redo;
+    Widget? bottom;
+
+    if (exchanging) {
+      bottom = Btn(
+        label: 'Start',
+        expand: true,
+        busy: busy,
+        onTap: ready && _mine.isNotEmpty ? _connect : null,
+      );
+    }
+
+    if (shown) {
+      bottom = Btn(label: 'Renew', expand: true, onTap: _again);
+    }
+
+    return PopScope(
+      canPop: !busy,
+      onPopInvokedWithResult: (popped, _) {
+        if (!popped) {
+          _leave();
+        }
+      },
+      child: PushedPage(
+        rubric: name,
+        title: 'Safety code',
+        bottom: bottom,
+        children: [
+          if (!shown)
+            Text(
+              'Sanctum tunnels are always PQ-secure and end-to-end encrypted. '
+              'By using a safety code you add one additional layer of '
+              'security to your key exchange, as protection against your '
+              'organizer accidentally leaking your unique device '
+              'Key-Encryption-Key (KEK).'
+              '\n\n'
+              'When enabling this feature, a strong 256-bit secret only known '
+              'to you and $name is mixed in together with all other keys.',
+              style: Styles.body,
+            ),
+          Row(
+            children: [
+              Expanded(
+                child: Text('Use a safety code', style: Styles.cardTitle),
+              ),
+              Toggle(
+                on: on,
+                label: 'Use a safety code',
+                onTap: busy ? null : () => _load(on: !on),
+              ),
+            ],
+          ),
+          if (shown) ...[
+            Panel(
+              padding: const EdgeInsets.fromLTRB(16, 14, 16, 14),
+              child: Text(state?.code ?? '', style: _codeStyle),
+            ),
+            Text(_setAgo(state?.since ?? 0), style: Styles.detail),
+            Text(
+              'This code only identifies the safety code, it is not the '
+              'secret itself. Compare the code with $name.',
+              style: Styles.detail,
+            ),
+          ],
+          if (exchanging) ..._exchangeView(busy),
+          if (exchanging &&
+              (_exchange == 'connecting' || _exchange == 'failed'))
+            _exchangeNotice(name),
+        ],
+      ),
     );
   }
 }

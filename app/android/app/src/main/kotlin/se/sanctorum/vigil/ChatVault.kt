@@ -83,6 +83,7 @@ class ChatVault(context: Context) {
     private val inbox = File(dir, "inbox").apply { mkdirs() }
     private val avatars = File(dir, "avatars").apply { mkdirs() }
     private val names = File(dir, "names").apply { mkdirs() }
+    private val safety = File(dir, "safety").apply { mkdirs() }
     private val random = SecureRandom()
     private val open = mutableMapOf<String, Conversation>()
     private val deferred = mutableListOf<Pair<JSONObject, ByteArray?>>()
@@ -1280,6 +1281,84 @@ class ChatVault(context: Context) {
         }
 
         emit(JSONObject().put("op", "avatar").put("peer", Calls.hex(peer)), data)
+    }
+
+    @Synchronized
+    fun safetyTime(peer: Int): Long = File(safety, "%02x.box".format(peer)).lastModified()
+
+    @Synchronized
+    fun safetyCode(peer: Int): ByteArray? {
+        val file = File(safety, "%02x.box".format(peer))
+        if (!file.exists()) {
+            return null
+        }
+
+        val aad = safetyAad(peer)
+        val data = file.readBytes()
+        val key = try {
+            unwrap(outbox(), aad, data.copyOfRange(0, WRAPPED))
+        } catch (e: AEADBadTagException) {
+            wipe(file)
+            return null
+        }
+
+        return try {
+            Cipher.getInstance(GCM).run {
+                init(Cipher.DECRYPT_MODE, SecretKeySpec(key, "AES"), GCMParameterSpec(TAG, data, WRAPPED, NONCE))
+                updateAAD(aad)
+                doFinal(data, WRAPPED + NONCE, data.size - WRAPPED - NONCE)
+            }
+        } catch (e: AEADBadTagException) {
+            wipe(file)
+            null
+        } finally {
+            key.fill(0)
+        }
+    }
+
+    @Synchronized
+    fun safetyCode(peer: Int, plain: ByteArray?) {
+        val file = File(safety, "%02x.box".format(peer))
+
+        if (plain == null) {
+            wipe(file)
+            return
+        }
+
+        val aad = safetyAad(peer)
+        val key = ByteArray(32).also(random::nextBytes)
+        val nonce = ByteArray(NONCE).also(random::nextBytes)
+
+        try {
+            val sealed = Cipher.getInstance(GCM).run {
+                init(Cipher.ENCRYPT_MODE, SecretKeySpec(key, "AES"), GCMParameterSpec(TAG, nonce))
+                updateAAD(aad)
+                doFinal(plain)
+            }
+
+            write(file, wrap(outbox(), aad, key) + nonce + sealed)
+        } finally {
+            key.fill(0)
+        }
+    }
+
+    @Synchronized
+    fun safetyInputs(): Map<Int, ByteArray> {
+        val out = mutableMapOf<Int, ByteArray>()
+        val files = safety.listFiles { f -> f.name.matches(Regex("[0-9a-f]{2}\\.box")) } ?: emptyArray()
+
+        for (file in files) {
+            val peer = file.name.substring(0, 2).toInt(16)
+            val plain = safetyCode(peer) ?: continue
+
+            if (plain.size == INPUT) {
+                out[peer] = plain
+            } else {
+                plain.fill(0)
+            }
+        }
+
+        return out
     }
 
     @Synchronized
@@ -2597,6 +2676,8 @@ class ChatVault(context: Context) {
 
     private fun nameAad(peer: Int): ByteArray = NAME_AAD + byteArrayOf(peer.toByte())
 
+    private fun safetyAad(peer: Int): ByteArray = SAFETY_AAD + byteArrayOf(peer.toByte())
+
     private fun recordAad(chat: String, seq: Long): ByteArray {
         val label = label(chat)
 
@@ -2698,6 +2779,8 @@ class ChatVault(context: Context) {
         private const val AVATAR = "avatar.box"
         private const val AMBRY = "ambry.box"
         private const val LOST = "lost.box"
+        private const val WRAPPED = NONCE + 32 + 16
+        const val INPUT = 32
         private val CREATING = setOf("msg", "member", "topic")
         private const val FLAG_TRUNCATED = 1L
         private const val SEALED_HARDWARE: Byte = 1
@@ -2715,5 +2798,6 @@ class ChatVault(context: Context) {
         private val NAME_AAD = "VIGIL.CHAT.NAME".toByteArray()
         private val AMBRY_AAD = "VIGIL.CHAT.AMBRY".toByteArray()
         private val LOST_AAD = "VIGIL.CHAT.LOST".toByteArray()
+        private val SAFETY_AAD = "VIGIL.CHAT.SAFETY".toByteArray()
     }
 }

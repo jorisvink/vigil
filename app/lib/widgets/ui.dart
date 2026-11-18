@@ -645,10 +645,18 @@ class KeyList extends StatelessWidget {
 }
 
 class LinkRow {
-  const LinkRow(this.label, this.onTap, {this.detail});
+  const LinkRow(
+    this.label,
+    this.onTap, {
+    this.detail,
+    this.glyph,
+    this.tint,
+  });
 
   final String label;
   final String? detail;
+  final GlyphKind? glyph;
+  final Color? tint;
   final VoidCallback onTap;
 }
 
@@ -673,6 +681,15 @@ class LinkList extends StatelessWidget {
                 padding: const EdgeInsets.fromLTRB(16, 14, 10, 14),
                 child: Row(
                   children: [
+                    if (rows[i].glyph != null) ...[
+                      Glyph(
+                        rows[i].glyph!,
+                        color: pressed
+                            ? Palette.amber
+                            : rows[i].tint ?? Palette.fg2,
+                      ),
+                      const SizedBox(width: 14),
+                    ],
                     Expanded(
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,

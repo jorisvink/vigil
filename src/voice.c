@@ -143,6 +143,7 @@ struct voice_session {
 	u_int8_t		peer;
 	int			audio;
 	int			owned;
+	int			safety;
 	int			relay;
 
 	KYRKA			*ctx;
@@ -1162,6 +1163,8 @@ voice_session_setup(struct voice_session *s)
 	if (s->ctx == NULL)
 		fatal("failed to create voice context");
 
+	s->safety = vigil_kyrka_additional_input(s->ctx, s->peer);
+
 	memset(&kcfg, 0, sizeof(kcfg));
 
 	kcfg.udata = s;
@@ -1863,8 +1866,9 @@ voice_kyrka_event(KYRKA *ctx, union kyrka_event *evt, void *udata)
 
 	switch (evt->type) {
 	case KYRKA_EVENT_KEYS_INFO:
-		vigil_log(LOG_INFO, "[voice] %02x online tx=%08x rx=%08x",
-		    s->peer, evt->keys.tx_spi, evt->keys.rx_spi);
+		vigil_log(LOG_INFO, "[voice] %02x online tx=%08x rx=%08x%s",
+		    s->peer, evt->keys.tx_spi, evt->keys.rx_spi,
+		    s->safety ? " with safety code" : "");
 
 		s->last_rx = s->now;
 		s->next_notify = 0;

@@ -112,7 +112,7 @@ usage(void)
 {
 	fprintf(stderr, "usage: caller [-c peer | -a | -d | -r] [-n | -s] "
 	    "[-t secs] [-w secs] [-x secs] [-b secs] [-g secs] [-G secs] "
-	    "[-v] [-e] [-D datadir] "
+	    "[-v] [-e] [-D datadir] [-S peer:input] "
 	    "<config> <gospel>\n");
 	exit(1);
 }
@@ -125,6 +125,9 @@ main(int argc, char **argv)
 	u_int64_t	id, start;
 	char		summary[4096], status[1024];
 	u_int8_t	pkt[KYRKA_PACKET_DATA_LEN];
+	u_int8_t	ikm[VIGIL_ADDITIONAL_INPUT_LEN];
+	char		*ep;
+	long		peer;
 	int		ch, idx, answer, decline, heard, video, expect;
 	int		ring, quit, dial, talk, wait, seconds, dialed, rang;
 
@@ -142,7 +145,7 @@ main(int argc, char **argv)
 	video = 0;
 	expect = 0;
 
-	while ((ch = getopt(argc, argv, "ab:c:dD:eg:G:nrst:vw:x:")) != -1) {
+	while ((ch = getopt(argc, argv, "ab:c:dD:eg:G:nrsS:t:vw:x:")) != -1) {
 		switch (ch) {
 		case 'e':
 			expect = 1;
@@ -184,6 +187,21 @@ main(int argc, char **argv)
 			break;
 		case 'd':
 			decline = 1;
+			break;
+		case 'S':
+			peer = strtol(optarg, &ep, 16);
+			if (*ep != ':')
+				usage();
+			if (peer <= 0 || peer >= KYRKA_PEERS_PER_FLOCK)
+				usage();
+			if (strlen(ep + 1) != sizeof(ikm) * 2)
+				usage();
+			for (idx = 0; idx < (int)sizeof(ikm); idx++) {
+				if (sscanf(ep + 1 + idx * 2, "%2hhx",
+				    &ikm[idx]) != 1)
+					usage();
+			}
+			vigil_additional_input(peer, ikm, sizeof(ikm));
 			break;
 		case 't':
 			talk = atoi(optarg);

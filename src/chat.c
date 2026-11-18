@@ -52,6 +52,7 @@
 #define CHAT_COMMAND_CALL		6
 #define CHAT_COMMAND_SYNC		7
 #define CHAT_COMMAND_REQUEST		8
+#define CHAT_COMMAND_INPUT		9
 
 /* The events we have for the platform. */
 #define CHAT_EVENT_MESSAGE		1
@@ -68,6 +69,7 @@
 #define CHAT_EVENT_ECHO			12
 #define CHAT_EVENT_MIRROR		13
 #define CHAT_EVENT_DESKTOP		14
+#define CHAT_EVENT_SAFETY		15
 
 /* The kinds of desktop event, unsent and queued are for a desktop. */
 #define CHAT_DESKTOP_RESYNC		1
@@ -387,6 +389,7 @@ TAILQ_HEAD(chat_parcel_list, chat_parcel);
 struct chat_tunnel {
 	struct vigil_io		io;
 
+	int			safety;
 	KYRKA			*ctx;
 	struct chat_peer	*peer;
 	struct vigil_config	*cfg;
@@ -1041,6 +1044,7 @@ vigil_chat_cleanup(void)
 	}
 
 	chat_companion_free();
+	vigil_safety_cleanup();
 
 	if (vigil->gospel != NULL)
 		chat_liturgy_cleanup(&signaling);
@@ -1075,6 +1079,7 @@ vigil_chat_update(void)
 
 	local = vigil->gospel->spi & 0xff;
 
+	vigil_safety_update();
 	chat_liturgy_cathedral_check(&signaling);
 
 	for (idx = 1; idx < KYRKA_PEERS_PER_FLOCK; idx++) {
@@ -1105,8 +1110,10 @@ vigil_chat_rebind(void)
 	if (!running)
 		return;
 
-	if (vigil->gospel != NULL)
+	if (vigil->gospel != NULL) {
+		vigil_safety_rebind();
 		chat_liturgy_rebind(&signaling);
+	}
 
 	for (idx = 0; idx < KYRKA_PEERS_PER_FLOCK; idx++) {
 		if (peers[idx].tunnel != NULL)
@@ -1631,6 +1638,43 @@ vigil_chat_forget(u_int8_t peer)
 }
 
 /*
+ * Tell the platform the safety code exchange with the given peer gave
+ * us its input, the platform obtains the input with vigil_safety_get().
+ */
+void
+vigil_chat_safety(u_int8_t peer)
+{
+	PRECOND(peer > 0 && peer < KYRKA_PEERS_PER_FLOCK);
+
+	if (chat_event_queue(CHAT_EVENT_SAFETY, &peers[peer], 0, NULL, 0) == -1) {
+		vigil_log(LOG_NOTICE, "[chat] %02x no room to tell our "
+		    "platform about the safety code", peer);
+	}
+}
+
+/*
+ * Our additional kdf input for the given peer changed, tear down our
+ * tunnel with it.
+ */
+void
+vigil_chat_additional_input(u_int8_t peer)
+{
+	int		ret;
+
+	PRECOND(peer > 0 && peer < KYRKA_PEERS_PER_FLOCK);
+
+	if (!vigil_atomic_read(&accepting))
+		return;
+
+	ret = chat_command_queue(CHAT_COMMAND_INPUT,
+	    peer, 0, NULL, NULL, NULL, NULL, 0);
+	if (ret == -1) {
+		vigil_log(LOG_NOTICE,
+		    "[chat] %02x no room, tunnel keeps the old input", peer);
+	}
+}
+
+/*
  * Drop the message with the given ref we hold for the given peer.
  */
 int
@@ -1990,6 +2034,7 @@ vigil_chat_status(struct vigil_buf *buf)
 	vigil_buf_quote(buf, name);
 	vigil_buf_appendf(buf, ",\"signed\":");
 	vigil_buf_quote(buf, named ? vigil->gospel->instance : "");
+	vigil_safety_status(buf);
 	vigil_buf_appendf(buf, ",\"liturgies\":[");
 
 	vigil_status_liturgy(buf, "chat", signaling.group,
@@ -2458,6 +2503,9 @@ chat_tunnel_new(struct chat_peer *peer, struct vigil_cathedral *cathedral)
 	if (tun->ctx == NULL)
 		fatal("failed to create chat context");
 
+	if (peer != &companion)
+		tun->safety = vigil_kyrka_additional_input(tun->ctx, peer->id);
+
 	nyfe_random_bytes(&tun->local_uid, sizeof(tun->local_uid));
 
 	memset(&cfg, 0, sizeof(cfg));
@@ -2865,7 +2913,12 @@ chat_tunnel_event(KYRKA *ctx, union kyrka_event *evt, void *udata)
 		if (tun->online != 0)
 			break;
 
-		vigil_log(LOG_INFO, "[chat] %02x online", tun->peer->id);
+		if (tun->safety) {
+			vigil_log(LOG_INFO, "[chat] %02x online with safety code",
+			    tun->peer->id);
+		} else {
+			vigil_log(LOG_INFO, "[chat] %02x online", tun->peer->id);
+		}
 
 		tun->online = vigil->now;
 		tun->last_rx = vigil->now;
@@ -4662,7 +4715,8 @@ chat_command_queue(int type, u_int8_t peer, u_int64_t value,
 	    type == CHAT_COMMAND_DROP ||
 	    type == CHAT_COMMAND_STORED ||
 	    type == CHAT_COMMAND_CALL ||
-	    type == CHAT_COMMAND_SYNC);
+	    type == CHAT_COMMAND_SYNC ||
+	    type == CHAT_COMMAND_INPUT);
 	PRECOND(data != NULL || len == 0);
 	PRECOND(len <= VIGIL_CHAT_MESSAGE_MAX);
 
@@ -4962,6 +5016,10 @@ chat_commands_run(void)
 		case CHAT_COMMAND_DROP:
 			chat_outbox_drop(peer, cmd->value);
 			break;
+		case CHAT_COMMAND_INPUT:
+			if (peer->tunnel != NULL)
+				chat_tunnel_free(peer->tunnel);
+			break;
 		case CHAT_COMMAND_STORED:
 			chat_token_ack(cmd->value);
 			break;
@@ -5012,7 +5070,8 @@ chat_event_queue(int type, struct chat_peer *peer, u_int64_t value,
 	    type == CHAT_EVENT_DELIVERED ||
 	    type == CHAT_EVENT_AVATAR ||
 	    type == CHAT_EVENT_NAME ||
-	    type == CHAT_EVENT_AMBRY);
+	    type == CHAT_EVENT_AMBRY ||
+	    type == CHAT_EVENT_SAFETY);
 	PRECOND(peer != NULL);
 	PRECOND(data != NULL || len == 0);
 	PRECOND(len <= VIGIL_CHAT_MESSAGE_MAX);
@@ -5297,6 +5356,9 @@ chat_event_render(struct vigil_buf *buf, struct chat_event *evt, int first)
 	case CHAT_EVENT_AMBRY:
 		vigil_buf_appendf(buf, ",\"type\":\"ambry\""
 		    ",\"generation\":\"%08" PRIx64 "\"", evt->value);
+		break;
+	case CHAT_EVENT_SAFETY:
+		vigil_buf_appendf(buf, ",\"type\":\"safety\"");
 		break;
 	case CHAT_EVENT_ECHO:
 		chat_event_echo(buf, evt);

@@ -164,6 +164,7 @@ class VigilVpnService : VpnService() {
 
         synchronized(lock) {
             store.companionApply()
+            Chats.safetyApplyAll(this)
 
             val number = Vigil.runId()
 

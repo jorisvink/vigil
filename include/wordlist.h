@@ -1,9 +1,4 @@
 /*
- * The number of words in the word list.
- */
-#define VIGIL_WORD_COUNT	7776
-
-/*
  * The word list cephas uses, 7776 english words in total.
  * Each word is worth about 12.92 bits of entropy.
  */
