@@ -2914,10 +2914,12 @@ chat_tunnel_event(KYRKA *ctx, union kyrka_event *evt, void *udata)
 			break;
 
 		if (tun->safety) {
-			vigil_log(LOG_INFO, "[chat] %02x online with safety code",
+			vigil_log(LOG_INFO,
+			    "[chat] %02x online with safety code",
 			    tun->peer->id);
 		} else {
-			vigil_log(LOG_INFO, "[chat] %02x online", tun->peer->id);
+			vigil_log(LOG_INFO,
+			    "[chat] %02x online", tun->peer->id);
 		}
 
 		tun->online = vigil->now;
