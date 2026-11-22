@@ -70,6 +70,7 @@
 #define CHAT_EVENT_MIRROR		13
 #define CHAT_EVENT_DESKTOP		14
 #define CHAT_EVENT_SAFETY		15
+#define CHAT_EVENT_ASK			16
 
 /* The kinds of desktop event, unsent and queued are for a desktop. */
 #define CHAT_DESKTOP_RESYNC		1
@@ -448,6 +449,7 @@ struct chat_peer {
 	u_int64_t		active;
 	u_int64_t		pushed;
 	u_int64_t		avatar_held;
+	int			asked;
 	int			present;
 	int			faceless;
 	int			reported;
@@ -556,6 +558,7 @@ static void	chat_tunnel_rebind(struct chat_tunnel *);
 static int	chat_tunnel_ack(struct chat_tunnel *, u_int64_t);
 static void	chat_tunnel_check(struct chat_peer *);
 static int	chat_tunnel_online(struct chat_tunnel *);
+static int	chat_tunnel_accepted(struct chat_tunnel *);
 static void	chat_tunnel_event(KYRKA *, union kyrka_event *, void *);
 static void	chat_tunnel_state(struct chat_tunnel *,
 		    const char **, int *, int *);
@@ -582,6 +585,7 @@ static u_int8_t		chat_local(void);
 
 static void	chat_token_ack(u_int64_t);
 static int	chat_nick_valid(const char *);
+static void	chat_ask_check(struct chat_peer *);
 static void	chat_name_report(struct chat_peer *);
 static int	chat_signal_check(struct chat_peer *);
 static void	chat_utf8_normalize(u_int8_t *, size_t);
@@ -801,8 +805,10 @@ static u_int8_t				sent[KYRKA_PEERS_PER_FLOCK];
 /* All peers we can chat with, populated from discovery. */
 static struct chat_peer			peers[KYRKA_PEERS_PER_FLOCK];
 
-/* The peers whose chat is open and those we type to. */
+/* The peers we accept or ignore, whose chat is open and those we type to. */
 static volatile u_int8_t		opened[KYRKA_PEERS_PER_FLOCK];
+static volatile u_int8_t		ignored[KYRKA_PEERS_PER_FLOCK];
+static volatile u_int8_t		accepted[KYRKA_PEERS_PER_FLOCK];
 static volatile u_int8_t		typing[KYRKA_PEERS_PER_FLOCK];
 
 /* Protects our commands, events, parcels and blobs. */
@@ -1090,9 +1096,11 @@ vigil_chat_update(void)
 		    (vigil->now - peers[idx].pushed) >=
 		    VIGIL_CALL_PRESENT_EXPIRE) {
 			vigil_log(LOG_INFO, "[chat] %02x is gone", idx);
+			peers[idx].asked = 0;
 			peers[idx].present = 0;
 		}
 
+		chat_ask_check(&peers[idx]);
 		chat_tunnel_check(&peers[idx]);
 	}
 
@@ -1719,6 +1727,47 @@ vigil_chat_open(u_int8_t peer, int on)
 
 	vigil_atomic_write(&opened[peer], on);
 	vigil_wake_signal();
+}
+
+/*
+ * Accept the given peer or not, we ignore a peer we did not accept.
+ */
+void
+vigil_chat_accept(u_int8_t peer, int on)
+{
+	PRECOND(peer > 0 && peer < KYRKA_PEERS_PER_FLOCK);
+	PRECOND(on == 0 || on == 1);
+
+	vigil_atomic_write(&accepted[peer], on);
+	vigil_wake_signal();
+}
+
+/*
+ * Ignore the given peer or not. We never talk to a peer we ignore and never
+ * ask our platform about it, even if we accepted it.
+ */
+void
+vigil_chat_ignore(u_int8_t peer, int on)
+{
+	PRECOND(peer > 0 && peer < KYRKA_PEERS_PER_FLOCK);
+	PRECOND(on == 0 || on == 1);
+
+	vigil_atomic_write(&ignored[peer], on);
+	vigil_wake_signal();
+}
+
+/*
+ * Returns 1 if we accepted the given peer, may be called from any thread.
+ */
+int
+vigil_chat_accepted(u_int8_t peer)
+{
+	PRECOND(peer > 0 && peer < KYRKA_PEERS_PER_FLOCK);
+
+	if (vigil_atomic_read(&ignored[peer]))
+		return (0);
+
+	return (vigil_atomic_read(&accepted[peer]));
 }
 
 /*
@@ -2439,6 +2488,9 @@ chat_tunnel_check(struct chat_peer *peer)
 	if (chat_tunnel_online(tun) && chat_signal_check(peer))
 		want = 1;
 
+	if (!vigil_chat_accepted(peer->id))
+		want = 0;
+
 	if (want == 0) {
 		if (tun != NULL)
 			chat_tunnel_free(tun);
@@ -3024,6 +3076,9 @@ chat_heaven_input(struct kyrka_packet *pkt, u_int64_t seq, void *udata)
 		}
 		return;
 	}
+
+	if (!chat_tunnel_accepted(tun))
+		return;
 
 	if (pkt->length == sizeof(struct vigil_chat_chunk)) {
 		chat_chunk_recv(tun, kyrka_packet_data(pkt));
@@ -4422,6 +4477,9 @@ chat_signal_check(struct chat_peer *peer)
 	if (peer->id == 0)
 		return (0);
 
+	if (!vigil_chat_accepted(peer->id))
+		return (0);
+
 	if (chat_outbox_signal(peer))
 		return (1);
 
@@ -4435,6 +4493,47 @@ chat_signal_check(struct chat_peer *peer)
 		return (1);
 
 	return (0);
+}
+
+/*
+ * Returns 1 if the given tunnel goes to our companion or a peer we accepted.
+ */
+static int
+chat_tunnel_accepted(struct chat_tunnel *tun)
+{
+	PRECOND(tun != NULL);
+
+	if (tun->peer == &companion)
+		return (1);
+
+	return (vigil_chat_accepted(tun->peer->id));
+}
+
+/*
+ * Tell the platform that a peer we did not accept tries to reach us, once
+ * for each time the peer shows up or we stop accepting it.
+ */
+static void
+chat_ask_check(struct chat_peer *peer)
+{
+	PRECOND(peer != NULL);
+
+	if (vigil_atomic_read(&ignored[peer->id]) ||
+	    vigil_atomic_read(&accepted[peer->id])) {
+		peer->asked = 0;
+		return;
+	}
+
+	if (!peer->present || peer->asked)
+		return;
+
+	if (chat_event_queue(CHAT_EVENT_ASK, peer, 0, NULL, 0) == -1)
+		return;
+
+	vigil_log(LOG_INFO, "[chat] %02x tries to reach us, asking our "
+	    "platform to accept it", peer->id);
+
+	peer->asked = 1;
 }
 
 /*
@@ -5073,7 +5172,8 @@ chat_event_queue(int type, struct chat_peer *peer, u_int64_t value,
 	    type == CHAT_EVENT_AVATAR ||
 	    type == CHAT_EVENT_NAME ||
 	    type == CHAT_EVENT_AMBRY ||
-	    type == CHAT_EVENT_SAFETY);
+	    type == CHAT_EVENT_SAFETY ||
+	    type == CHAT_EVENT_ASK);
 	PRECOND(peer != NULL);
 	PRECOND(data != NULL || len == 0);
 	PRECOND(len <= VIGIL_CHAT_MESSAGE_MAX);
@@ -5361,6 +5461,9 @@ chat_event_render(struct vigil_buf *buf, struct chat_event *evt, int first)
 		break;
 	case CHAT_EVENT_SAFETY:
 		vigil_buf_appendf(buf, ",\"type\":\"safety\"");
+		break;
+	case CHAT_EVENT_ASK:
+		vigil_buf_appendf(buf, ",\"type\":\"ask\"");
 		break;
 	case CHAT_EVENT_ECHO:
 		chat_event_echo(buf, evt);

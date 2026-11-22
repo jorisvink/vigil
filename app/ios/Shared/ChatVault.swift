@@ -84,6 +84,8 @@ final class ChatVault {
     private static let queuedAad = Data("VIGIL.CHAT.QUEUED".utf8)
     private static let receiptsAad = Data("VIGIL.CHAT.RECEIPTS".utf8)
     private static let groupsAad = Data("VIGIL.CHAT.GROUPS".utf8)
+    private static let acceptedAad = Data("VIGIL.CHAT.ACCEPTED".utf8)
+    private static let ignoredAad = Data("VIGIL.CHAT.IGNORED".utf8)
     private static let groupExpire: Int64 = 3 * 24 * 60 * 60 * 1000
     private static let dataAad = Data("VIGIL.CHAT.DATA".utf8)
     private static let avatarAad = Data("VIGIL.CHAT.AVATAR".utf8)
@@ -255,6 +257,10 @@ final class ChatVault {
                 }
 
                 try outboxSave(list)
+            }
+
+            if !group {
+                try accept(chat, true)
             }
         }
     }
@@ -1202,6 +1208,7 @@ final class ChatVault {
                 list.append(entry)
                 try outboxSave(list)
             }
+            try accept(chat, true)
             return
         }
 
@@ -1253,6 +1260,142 @@ final class ChatVault {
         return try groups()[chat] as? [String: Any]
     }
 
+    static var accepts: Int {
+        return defaults.integer(forKey: "chatAccepts")
+    }
+
+    func accepted() throws -> Set<String> {
+        return try mutex.withLock {
+            let file = try folder(dir).appendingPathComponent("accepted.box")
+            guard FileManager.default.fileExists(atPath: file.path) else {
+                return try acceptedSave(acceptedFirst())
+            }
+
+            let plain = try openBox(Data(contentsOf: file), key: outboxKey(), aad: Self.acceptedAad)
+            return Set(try JSONSerialization.jsonObject(with: plain) as? [String] ?? [])
+        }
+    }
+
+    func accept(_ peer: String, _ on: Bool) throws {
+        try mutex.withLock {
+            try exclusive {
+                var all = try accepted()
+                let changed = on ? all.insert(peer).inserted : all.remove(peer) != nil
+
+                if changed {
+                    _ = try acceptedSave(all)
+                }
+            }
+        }
+    }
+
+    static var reachable: Bool {
+        return defaults.bool(forKey: "chatReachable")
+    }
+
+    func reach(_ on: Bool) throws {
+        try mutex.withLock {
+            if !on && Self.reachable {
+                try exclusive {
+                    _ = try acceptedSave(try accepted().union(try acceptedFirst()))
+                }
+            }
+
+            Self.defaults.set(on, forKey: "chatReachable")
+            Self.defaults.set(Self.accepts + 1, forKey: "chatAccepts")
+        }
+    }
+
+    func admits() throws -> Set<String> {
+        return try mutex.withLock {
+            if Self.reachable {
+                return Set((1..<0xff).map { Self.hex(UInt8($0)) }).subtracting(try ignored())
+            }
+
+            var out = try accepted()
+
+            for case let info as [String: Any] in try groups().values {
+                if let owner = info["owner"] as? String {
+                    out.insert(owner)
+                }
+
+                out.formUnion(Self.members(info))
+            }
+
+            for entry in try outboxList() {
+                if let peer = entry["peer"] as? String {
+                    out.insert(peer)
+                }
+            }
+
+            return out.subtracting(try ignored())
+        }
+    }
+
+    func ignored() throws -> Set<String> {
+        return try mutex.withLock {
+            let file = try folder(dir).appendingPathComponent("ignored.box")
+            guard FileManager.default.fileExists(atPath: file.path) else { return [] }
+
+            let plain = try openBox(Data(contentsOf: file), key: outboxKey(), aad: Self.ignoredAad)
+            return Set(try JSONSerialization.jsonObject(with: plain) as? [String] ?? [])
+        }
+    }
+
+    func ignore(_ peer: String, _ on: Bool) throws {
+        if on {
+            try accept(peer, false)
+        }
+
+        try mutex.withLock {
+            try exclusive {
+                var all = try ignored()
+
+                if on {
+                    all.insert(peer)
+                } else {
+                    all.remove(peer)
+                }
+
+                try write(try folder(dir).appendingPathComponent("ignored.box"),
+                          sealBox(JSONSerialization.data(withJSONObject: all.sorted()),
+                                  key: outboxKey(), aad: Self.ignoredAad))
+
+                Self.defaults.set(Self.accepts + 1, forKey: "chatAccepts")
+            }
+        }
+    }
+
+    private func acceptedFirst() throws -> Set<String> {
+        let names = (try? FileManager.default.contentsOfDirectory(atPath: folder(dir).path)) ?? []
+        var out = Set<String>()
+
+        for name in names where name.hasSuffix(".log") {
+            let id = String(name.dropLast(4))
+
+            if Self.chat(id) != nil, Self.group(id) == nil {
+                out.insert(id)
+            }
+        }
+
+        for entry in try outboxList() where entry["chat"] == nil {
+            if let peer = entry["peer"] as? String {
+                out.insert(peer)
+            }
+        }
+
+        return out
+    }
+
+    private func acceptedSave(_ peers: Set<String>) throws -> Set<String> {
+        try write(try folder(dir).appendingPathComponent("accepted.box"),
+                  sealBox(JSONSerialization.data(withJSONObject: peers.sorted()),
+                          key: outboxKey(), aad: Self.acceptedAad))
+
+        Self.defaults.set(Self.accepts + 1, forKey: "chatAccepts")
+        return peers
+    }
+
     func groupGone(_ chat: String) throws -> Bool {
         guard Self.group(chat) != nil else { return false }
 
@@ -1268,6 +1411,7 @@ final class ChatVault {
                 try write(try folder(dir).appendingPathComponent("groups.box"),
                           sealBox(JSONSerialization.data(withJSONObject: all),
                                   key: outboxKey(), aad: Self.groupsAad))
+                Self.defaults.set(Self.accepts + 1, forKey: "chatAccepts")
 
                 emit(["op": "group", "chat": chat, "info": info ?? NSNull()])
             }
@@ -2026,6 +2170,10 @@ final class ChatVault {
                 try outboxSave(list)
             }
 
+            if info == nil {
+                try accept(chat, true)
+            }
+
             return ref
         }
     }
@@ -2719,6 +2867,8 @@ final class ChatVault {
 
             if Self.group(chat) != nil {
                 try groupSave(chat, nil)
+            } else {
+                try accept(chat, false)
             }
         }
     }
@@ -2806,6 +2956,7 @@ final class ChatVault {
         try write(try folder(dir).appendingPathComponent("outbox.box"),
                   sealBox(JSONSerialization.data(withJSONObject: list),
                           key: outboxKey(), aad: Self.outboxAad))
+        Self.defaults.set(Self.accepts + 1, forKey: "chatAccepts")
     }
 
     private func append(_ chat: String, _ record: [String: Any]) throws {

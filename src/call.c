@@ -717,6 +717,10 @@ call_kyrka_event(KYRKA *ctx, union kyrka_event *evt, void *udata)
 			if (state == 0)
 				continue;
 
+			if (!vigil_chat_accepted(idx) &&
+			    !vigil_atomic_read(&wanted[idx]))
+				continue;
+
 			pushed[idx] = vigil->now;
 
 			if (vigil_atomic_read(&present[idx]) == state)

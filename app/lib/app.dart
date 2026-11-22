@@ -136,6 +136,21 @@ class _ShellState extends State<Shell> with WidgetsBindingObserver {
   Future<void> _openChat(String peer, String id) async {
     ChatTopic? topic;
 
+    var invite = false;
+
+    try {
+      final chats = await Vigil.instance.chats();
+
+      invite = chats.any((c) => c.peer == peer && c.request);
+    } on VigilError catch (_) {
+      invite = false;
+    }
+
+    if (invite) {
+      invitesWanted.value++;
+      return;
+    }
+
     if (id.isNotEmpty) {
       try {
         final topics = (await Vigil.instance.chat(peer)).topics;

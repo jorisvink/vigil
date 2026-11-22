@@ -395,6 +395,8 @@ int	vigil_chat_drop(u_int8_t, u_int64_t);
 int	vigil_chat_stored(u_int64_t);
 int	vigil_chat_nick(const char *);
 void	vigil_chat_open(u_int8_t, int);
+void	vigil_chat_accept(u_int8_t, int);
+void	vigil_chat_ignore(u_int8_t, int);
 void	vigil_chat_typing(u_int8_t, u_int64_t, int);
 size_t	vigil_chat_events(char *, size_t);
 void	vigil_chat_avatar(const void *, size_t);

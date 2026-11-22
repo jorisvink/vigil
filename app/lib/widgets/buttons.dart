@@ -52,7 +52,7 @@ class _PressableState extends State<Pressable> {
   }
 }
 
-enum BtnKind { primary, secondary, ghost }
+enum BtnKind { primary, secondary, ghost, good, bad }
 
 class Btn extends StatelessWidget {
   const Btn({
@@ -99,6 +99,22 @@ class Btn extends StatelessWidget {
             fill = pressed ? Palette.bg3 : Palette.bg2;
             stroke = pressed ? Palette.amber : Palette.line2;
             fg = enabled ? Palette.fg : Palette.dim;
+          case BtnKind.good:
+            fill = !enabled
+                ? Palette.bg3
+                : pressed
+                ? Palette.good2
+                : Palette.good;
+            stroke = fill;
+            fg = Palette.bg;
+          case BtnKind.bad:
+            fill = !enabled
+                ? Palette.bg3
+                : pressed
+                ? Palette.bad2
+                : Palette.bad;
+            stroke = fill;
+            fg = Palette.bg;
           case BtnKind.ghost:
             fill = const Color(0x00000000);
             stroke = fill;

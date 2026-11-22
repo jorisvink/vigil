@@ -97,6 +97,9 @@ static const char	*datadir = NULL;
 static int		attach = 0;
 static int		detach = 0;
 
+/* The peers we do not accept calls from. */
+static u_int8_t		refused[KYRKA_PEERS_PER_FLOCK];
+
 /* If we only signal or only run the voice. */
 static int			standalone = 0;
 static int			signal_only = 0;
@@ -112,7 +115,7 @@ usage(void)
 {
 	fprintf(stderr, "usage: caller [-c peer | -a | -d | -r] [-n | -s] "
 	    "[-t secs] [-w secs] [-x secs] [-b secs] [-g secs] [-G secs] "
-	    "[-v] [-e] [-D datadir] [-S peer:input] "
+	    "[-v] [-e] [-D datadir] [-S peer:input] [-u peer] "
 	    "<config> <gospel>\n");
 	exit(1);
 }
@@ -145,7 +148,7 @@ main(int argc, char **argv)
 	video = 0;
 	expect = 0;
 
-	while ((ch = getopt(argc, argv, "ab:c:dD:eg:G:nrsS:t:vw:x:")) != -1) {
+	while ((ch = getopt(argc, argv, "ab:c:dD:eg:G:nrsS:t:u:vw:x:")) != -1) {
 		switch (ch) {
 		case 'e':
 			expect = 1;
@@ -206,6 +209,14 @@ main(int argc, char **argv)
 		case 't':
 			talk = atoi(optarg);
 			break;
+		case 'u':
+			peer = strtol(optarg, &ep, 16);
+			if (*ep != '\0')
+				usage();
+			if (peer <= 0 || peer >= KYRKA_PEERS_PER_FLOCK)
+				usage();
+			refused[peer] = 1;
+			break;
 		case 'w':
 			wait = atoi(optarg);
 			break;
@@ -251,6 +262,9 @@ main(int argc, char **argv)
 
 	signal(SIGPIPE, SIG_IGN);
 	vigil_socket_nonblock(tun[1]);
+
+	for (idx = 1; idx < KYRKA_PEERS_PER_FLOCK; idx++)
+		vigil_chat_accept(idx, !refused[idx]);
 
 	id = vigil_run_id();
 

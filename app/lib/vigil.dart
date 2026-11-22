@@ -367,6 +367,7 @@ class ChatSummary {
 
   String get peer => json['peer'] as String? ?? '00';
   int get unread => json['unread'] as int? ?? 0;
+  bool get request => json['request'] as bool? ?? false;
   bool get star => json['star'] as bool? ?? false;
   bool get compact => json['compact'] as bool? ?? false;
   int get order => json['order'] as int? ?? -1;
@@ -1223,6 +1224,30 @@ class Vigil {
     await _invoke('chatDelete', peer);
     await refresh();
   }
+
+  Future<void> acceptChat(String peer, bool on) async {
+    await _invoke('chatAccept', {'peer': peer, 'on': on});
+    await refresh();
+  }
+
+  Future<void> ignoreChat(String peer, bool on) async {
+    await _invoke('chatIgnore', {'peer': peer, 'on': on});
+    await refresh();
+  }
+
+  Future<bool> reachable([bool? on]) async {
+    final value = await _invoke('reachable', on);
+
+    if (on != null) {
+      await refresh();
+    }
+
+    return value == 'true';
+  }
+
+  Future<List<String>> ignored() async =>
+      (jsonDecode(await _invoke('ignored', null)) as List<dynamic>)
+          .cast<String>();
 
   Future<void> gospel(bool on) async {
     await _invoke('gospel', on);

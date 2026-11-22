@@ -754,6 +754,7 @@ void	vigil_chat_update(void);
 void	vigil_chat_rebind(void);
 void	vigil_chat_cleanup(void);
 void	vigil_chat_safety(u_int8_t);
+int	vigil_chat_accepted(u_int8_t);
 void	vigil_chat_additional_input(u_int8_t);
 void	vigil_chat_status(struct vigil_buf *);
 void	vigil_chat_companion_voice(const u_int8_t *, size_t);

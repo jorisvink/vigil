@@ -97,6 +97,14 @@ class ChatVault(context: Context) {
     var mirror: ((JSONObject, ByteArray?) -> Boolean)? = null
     var linked: (() -> Boolean)? = null
 
+    @Volatile
+    var accepts = 0L
+        private set
+
+    @Volatile
+    var reachable = false
+        private set
+
     val hardware: Boolean
         get() = Build.VERSION.SDK_INT >= Build.VERSION_CODES.S
 
@@ -194,6 +202,7 @@ class ChatVault(context: Context) {
 
         if (group(chat) == null) {
             list.put(entry)
+            accept(chat, true)
         } else {
             message.put("to", JSONArray(to))
 
@@ -918,6 +927,7 @@ class ChatVault(context: Context) {
             list.put(entry)
             queued.put(entry)
             outboxSave(list)
+            accept(chat, true)
             return queued
         }
 
@@ -948,6 +958,7 @@ class ChatVault(context: Context) {
             list.put(entry)
             queued.put(entry)
             outboxSave(list)
+            accept(chat, true)
             return queued
         }
 
@@ -1081,6 +1092,140 @@ class ChatVault(context: Context) {
     fun groupInfo(chat: String): JSONObject? = groups().optJSONObject(chat)
 
     @Synchronized
+    fun accepted(): Set<String> {
+        val file = File(dir, ACCEPTED)
+        if (!file.exists()) {
+            return acceptedSave(acceptedFirst())
+        }
+
+        val plain = unwrap(outbox(), ACCEPTED_AAD, file.readBytes())
+
+        try {
+            val list = JSONArray(String(plain))
+            return (0 until list.length()).map { list.getString(it) }.toSet()
+        } finally {
+            plain.fill(0)
+        }
+    }
+
+    @Synchronized
+    fun accept(peer: String, on: Boolean) {
+        val all = accepted().toMutableSet()
+        val changed = if (on) all.add(peer) else all.remove(peer)
+
+        if (changed) {
+            acceptedSave(all)
+        }
+    }
+
+    @Synchronized
+    fun reach(on: Boolean) {
+        if (!on && reachable) {
+            acceptedSave(accepted() + acceptedFirst())
+        }
+
+        reachable = on
+        accepts++
+    }
+
+    @Synchronized
+    fun admits(): Set<String> {
+        if (reachable) {
+            return (1 until 0xff).map { "%02x".format(it) }.toSet() - ignored()
+        }
+
+        val out = accepted().toMutableSet()
+        val all = groups()
+
+        for (chat in all.keys()) {
+            val info = all.getJSONObject(chat)
+
+            out.add(info.getString("owner"))
+            out.addAll(members(info))
+        }
+
+        val list = outboxList()
+
+        for (i in 0 until list.length()) {
+            out.add(list.getJSONObject(i).getString("peer"))
+        }
+
+        return out - ignored()
+    }
+
+    @Synchronized
+    fun ignored(): Set<String> {
+        val file = File(dir, IGNORED)
+        if (!file.exists()) {
+            return emptySet()
+        }
+
+        val plain = unwrap(outbox(), IGNORED_AAD, file.readBytes())
+
+        try {
+            val list = JSONArray(String(plain))
+            return (0 until list.length()).map { list.getString(it) }.toSet()
+        } finally {
+            plain.fill(0)
+        }
+    }
+
+    @Synchronized
+    fun ignore(peer: String, on: Boolean) {
+        val all = ignored().toMutableSet()
+
+        if (on) {
+            accept(peer, false)
+            all.add(peer)
+        } else {
+            all.remove(peer)
+        }
+
+        val plain = JSONArray(all.sorted()).toString().toByteArray()
+
+        try {
+            write(File(dir, IGNORED), wrap(outbox(), IGNORED_AAD, plain))
+        } finally {
+            plain.fill(0)
+        }
+
+        accepts++
+    }
+
+    private fun acceptedFirst(): Set<String> {
+        val out = mutableSetOf<String>()
+        val files = dir.listFiles { f -> f.name.matches(Regex("[0-9a-f]{2}\\$KEY")) } ?: emptyArray()
+        val list = outboxList()
+
+        for (file in files) {
+            out.add(file.name.removeSuffix(KEY))
+        }
+
+        for (i in 0 until list.length()) {
+            val entry = list.getJSONObject(i)
+
+            if (!entry.has("chat")) {
+                out.add(entry.getString("peer"))
+            }
+        }
+
+        return out
+    }
+
+    private fun acceptedSave(peers: Set<String>): Set<String> {
+        val plain = JSONArray(peers.sorted()).toString().toByteArray()
+
+        try {
+            write(File(dir, ACCEPTED), wrap(outbox(), ACCEPTED_AAD, plain))
+        } finally {
+            plain.fill(0)
+        }
+
+        accepts++
+        return peers
+    }
+
+    @Synchronized
     fun groupGone(chat: String): Boolean {
         if (group(chat) == null) {
             return false
@@ -1106,6 +1251,8 @@ class ChatVault(context: Context) {
         } finally {
             plain.fill(0)
         }
+
+        accepts++
 
         emit(JSONObject().put("op", "group").put("chat", chat).put("info", info ?: JSONObject.NULL))
     }
@@ -1610,6 +1757,8 @@ class ChatVault(context: Context) {
 
         if (group(chat) != null) {
             groupSave(chat, null)
+        } else {
+            accept(chat, false)
         }
     }
 
@@ -2253,6 +2402,8 @@ class ChatVault(context: Context) {
         } finally {
             plain.fill(0)
         }
+
+        accepts++
     }
 
     private fun append(chat: String, record: JSONObject) {
@@ -2773,6 +2924,8 @@ class ChatVault(context: Context) {
         private const val OUTBOX = "outbox.box"
         private const val RECEIPTS = "receipts.box"
         private const val GROUPS = "groups.box"
+        private const val ACCEPTED = "accepted.box"
+        private const val IGNORED = "ignored.box"
         private const val ROSTER = 32
         private const val BATCH_MAX = 12 * 1024
         private const val GROUP_EXPIRE = 3 * 24 * 60 * 60 * 1000L
@@ -2794,6 +2947,8 @@ class ChatVault(context: Context) {
         private val OUTBOX_AAD = "VIGIL.CHAT.OUTBOX".toByteArray()
         private val RECEIPTS_AAD = "VIGIL.CHAT.RECEIPTS".toByteArray()
         private val GROUPS_AAD = "VIGIL.CHAT.GROUPS".toByteArray()
+        private val ACCEPTED_AAD = "VIGIL.CHAT.ACCEPTED".toByteArray()
+        private val IGNORED_AAD = "VIGIL.CHAT.IGNORED".toByteArray()
         private val AVATAR_AAD = "VIGIL.CHAT.AVATAR".toByteArray()
         private val NAME_AAD = "VIGIL.CHAT.NAME".toByteArray()
         private val AMBRY_AAD = "VIGIL.CHAT.AMBRY".toByteArray()

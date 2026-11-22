@@ -84,6 +84,22 @@ acknowledgement and a heartbeat all look the same to someone watching
 the network. Messages can be up to 512 bytes. Images and files are split
 into chunks and can be up to 4 MB.
 
+A device you have no chat with cannot reach you until you accept it. When it
+tries, it shows up as an invite under Peers, where you accept, decline or
+ignore it. Until you accept, its messages and calls are ignored and stay on
+its side. Declining removes the invite, it shows up again the next time that
+device tries. A group invite
+only arrives once you accept the device that sent it. Everyone in a group
+you are in counts as accepted.
+
+With "Reachable by anyone" turned on under Peers, every device can message
+and call you without an invite, except the ones you ignore. Turning it off
+again keeps every device you have a chat with as accepted.
+
+Ignoring a device instead blocks it for good, it can not message, call or
+invite you and never asks again. The Peers sheet lists the devices you
+ignore, removing one there lets it ask again.
+
 Each device also sends a nickname in its heartbeats. The nickname is
 chosen by the sender and is not checked by anyone. The device id is what
 identifies the sender. You can give peers your own names in the app.

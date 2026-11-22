@@ -14,6 +14,9 @@ abstract final class Palette {
   static const amber2 = Color(0xfff2bb5e);
   static const amberDim = Color(0xff5a4220);
   static const good = Color(0xff8fbf8a);
+  static const good2 = Color(0xffa8d2a3);
+  static const bad = Color(0xffd9604c);
+  static const bad2 = Color(0xffe67d6b);
   static const pre = Color(0xffd9cdb9);
   static const mine = Color(0xffd6b98d);
 

@@ -21,6 +21,8 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
     private var safetyPeer: UInt8 = 0
     private var chatAround = Set<String>()
     private var chatWaiting = Set<UInt64>()
+    private var chatAsking = Set<String>()
+    private var chatAccepts = -1
     private var receipts = [(String, Int64, String)]()
     private var local = ""
     private var paths: NWPathMonitor?
@@ -320,6 +322,12 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             if words.count == 3, let peer = UInt8(words[1], radix: 16), peer > 0, peer < 0xff {
                 vigil_chat_open(peer, words[2] == "1" ? 1 : 0)
             }
+        case "chat-answer":
+            if words.count == 2, chatAsking.remove(String(words[1])) != nil {
+                askingSave()
+            }
+
+            admit()
         case "chat-drop":
             if words.count == 3, let peer = UInt8(words[1], radix: 16), let ref = UInt64(words[2], radix: 16) {
                 drop([(ChatVault.hex(peer), Int64(bitPattern: ref))])
@@ -371,7 +379,10 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
 
         if session != chatSession {
             chatResubmit = 0
+            chatAccepts = -1
             chatWaiting.removeAll()
+            chatAsking.removeAll()
+            askingSave()
             if vigil_chat_nick(defaults.string(forKey: "chatNick") ?? "") == -1 {
                 NSLog("vigil: our nickname was refused")
             }
@@ -408,6 +419,8 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         } catch {
             NSLog("vigil: failed to sweep the group outbox: \(error)")
         }
+
+        admit()
 
         var buf = [CChar](repeating: 0, count: Int(VIGIL_CHAT_EVENTS_MAX))
         let len = vigil_chat_events(&buf, buf.count)
@@ -491,6 +504,18 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
                         unseen[chat, default: 0] += 1
                         fresh[chat, default: 0] += 1
                         notifyChat(chat, member, "", "", text, topic: "", badge: unseen.values.reduce(0, +))
+                    }
+                case "ask":
+                    guard try !vault.admits().contains(hex), try !vault.ignored().contains(hex),
+                          chatAsking.insert(hex).inserted else { continue }
+
+                    askingSave()
+
+                    if defaults.string(forKey: "chatOpen") != hex, ChatVault.muted(hex) == 0 {
+                        unseen[hex, default: 0] += 1
+                        fresh[hex, default: 0] += 1
+                        notifyChat(hex, peer, "", "", "Is trying to reach you, accept or decline under Peers",
+                                   topic: "", badge: unseen.values.reduce(0, +))
                     }
                 case "safety":
                     safetyStore(peer)
@@ -1236,6 +1261,32 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
         }
 
         return ChatVault.name(peer)
+    }
+
+    private func admit() {
+        guard ChatVault.accepts != chatAccepts else { return }
+
+        guard let admits = try? ChatVault.shared.admits(),
+              let ignored = try? ChatVault.shared.ignored() else { return }
+
+        chatAccepts = ChatVault.accepts
+
+        for peer in UInt8(1)..<UInt8(0xff) {
+            vigil_chat_ignore(peer, ignored.contains(ChatVault.hex(peer)) ? 1 : 0)
+            vigil_chat_accept(peer, admits.contains(ChatVault.hex(peer)) ? 1 : 0)
+        }
+
+        if !chatAsking.isDisjoint(with: admits.union(ignored)) {
+            chatAsking.subtract(admits.union(ignored))
+            askingSave()
+        }
+    }
+
+    private func askingSave() {
+        let defaults = ChatVault.defaults
+
+        defaults.set(chatAsking.sorted(), forKey: "chatAsking")
+        defaults.set(defaults.integer(forKey: "chatVersion") + 1, forKey: "chatVersion")
     }
 
     private func notifyChat(_ chat: String, _ peer: UInt8, _ nick: String, _ signed: String, _ text: String,

@@ -75,6 +75,12 @@ object Vigil {
     external fun chatOpen(peer: Int, on: Boolean)
 
     @JvmStatic
+    external fun chatAccept(peer: Int, on: Boolean)
+
+    @JvmStatic
+    external fun chatIgnore(peer: Int, on: Boolean)
+
+    @JvmStatic
     external fun chatTyping(peer: Int, topic: Long, on: Boolean)
 
     @JvmStatic

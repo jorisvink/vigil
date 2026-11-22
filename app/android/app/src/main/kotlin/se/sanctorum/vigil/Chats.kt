@@ -32,6 +32,8 @@ object Chats {
     private val receipts = mutableListOf<Receipt>()
     private val waiting = mutableSetOf<Long>()
     private val around = mutableSetOf<String>()
+    private val asking = mutableSetOf<String>()
+    private var accepts = -1L
 
     @Volatile
     var version = 0L
@@ -60,6 +62,7 @@ object Chats {
 
             it.mirror = ::mirror
             it.linked = store::linked
+            it.reach(prefs(context.applicationContext).getBoolean("reachable", false))
             vault = it
         }
 
@@ -94,6 +97,7 @@ object Chats {
 
         if (chat.optLong("session") != session) {
             resubmit = 0L
+            accepts = -1L
             waiting.clear()
 
             try {
@@ -151,6 +155,12 @@ object Chats {
             }
         } catch (e: Exception) {
             Log.w(TAG, "failed to sweep the group outbox", e)
+        }
+
+        try {
+            admit(vault)
+        } catch (e: Exception) {
+            Log.w(TAG, "failed to hand over the peers we accepted", e)
         }
 
         val events = JSONArray(String(Vigil.chatEvents(), Charsets.UTF_8))
@@ -233,6 +243,15 @@ object Chats {
                     "name" -> {
                         vault.peerName(peer, event.optString("nick"), event.optString("signed"))
                         namesChanged()
+                    }
+                    "ask" -> {
+                        if (asked(vault, Calls.hex(peer))) {
+                            changed()
+                            announce(
+                                service, Calls.hex(peer), peer,
+                                "Is trying to reach you, accept or decline under Peers"
+                            )
+                        }
                     }
                     "avatar" -> {
                         val token = event.getLong("token")
@@ -881,8 +900,43 @@ object Chats {
         changed()
     }
 
+    fun accept(context: Context, chat: String, on: Boolean) {
+        val vault = vault(context)
+
+        synchronized(this) {
+            asking.remove(chat)
+        }
+
+        if (on) {
+            vault.accept(chat, true)
+            admit(vault)
+        }
+
+        seen(context, chat)
+        changed()
+    }
+
+    fun ignore(context: Context, chat: String, on: Boolean) {
+        val vault = vault(context)
+
+        synchronized(this) {
+            asking.remove(chat)
+        }
+
+        vault.ignore(chat, on)
+        admit(vault)
+        seen(context, chat)
+        changed()
+    }
+
     fun delete(context: Context, chat: String) {
         val vault = vault(context)
+
+        if (synchronized(this) { asking.remove(chat) }) {
+            seen(context, chat)
+            changed()
+            return
+        }
 
         if (ChatVault.group(chat) == null) {
             check(Vigil.chatForget(chat.toInt(16))) { "Vigil is busy, try deleting the chat again." }
@@ -1340,6 +1394,19 @@ object Chats {
 
     fun preview(context: Context): Boolean = prefs(context).getBoolean("preview", false)
 
+    fun reachable(context: Context, on: Boolean?): Boolean {
+        val vault = vault(context)
+
+        if (on != null) {
+            prefs(context).edit().putBoolean("reachable", on).apply()
+            vault.reach(on)
+            admit(vault)
+            changed()
+        }
+
+        return vault.reachable
+    }
+
     fun settings(context: Context, nick: String?, preview: Boolean?): JSONObject {
         if (nick != null) {
             if (!Vigil.chatNick(nick)) {
@@ -1431,6 +1498,16 @@ object Chats {
         val stars = stars(context)
         val compacts = compacts(context)
         val order = order(context)
+        val listed = (0 until chats.length()).map { chats.getJSONObject(it).getString("peer") }.toSet()
+
+        synchronized(this) {
+            for (id in asking - listed) {
+                chats.put(
+                    JSONObject().put("peer", id).put("unread", 0).put("last", JSONObject.NULL)
+                        .put("topics", JSONArray()).put("request", true)
+                )
+            }
+        }
 
         for (idx in 0 until chats.length()) {
             val chat = chats.getJSONObject(idx)
@@ -1454,6 +1531,43 @@ object Chats {
         val saved = JSONArray(prefs(context).getString("order", "[]") ?: "[]")
 
         return MutableList(saved.length()) { saved.getString(it) }
+    }
+
+    @Synchronized
+    private fun admit(vault: ChatVault) {
+        if (vault.accepts == accepts) {
+            return
+        }
+
+        accepts = vault.accepts
+
+        val admits = vault.admits()
+        val ignored = vault.ignored()
+
+        for (peer in 1 until 0xff) {
+            Vigil.chatIgnore(peer, Calls.hex(peer) in ignored)
+            Vigil.chatAccept(peer, Calls.hex(peer) in admits)
+        }
+
+        synchronized(this) {
+            if (asking.removeAll(admits + ignored)) {
+                changed()
+            }
+        }
+    }
+
+    private fun asked(vault: ChatVault, id: String): Boolean {
+        if (id in vault.admits()) {
+            return false
+        }
+
+        if (id in vault.ignored()) {
+            return false
+        }
+
+        synchronized(this) {
+            return asking.add(id)
+        }
     }
 
     private fun announce(service: VigilVpnService, chat: String, peer: Int, text: String) {

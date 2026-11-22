@@ -158,6 +158,17 @@ static int		group_wanted = 0;
 /* Who we keep a chat open with. */
 static long		open_peer = 0;
 
+/*
+ * The peers we do not accept, after how many seconds we do and after how
+ * many seconds we refuse them again.
+ */
+static int		accept_after = 0;
+static int		refuse_after = 0;
+static u_int8_t		refused[KYRKA_PEERS_PER_FLOCK];
+
+/* The peers we ignore. */
+static u_int8_t		ignoring[KYRKA_PEERS_PER_FLOCK];
+
 /* The message our messages reply to, if any. */
 static long		reply_author = 0;
 static u_int64_t	reply_hash = 0;
@@ -185,7 +196,8 @@ usage(void)
 	    "[-o dir] [-t peer] [-T] [-O peer] [-e count] [-x secs] "
 	    "[-l count] [-r author:hash] [-c topic:name] [-C peer:topic] "
 	    "[-P file] [-R peer:hash] [-M companion] [-D datadir] "
-	    "[-S peer:input] [-W peer:own:theirs] <gospel>\n");
+	    "[-S peer:input] [-W peer:own:theirs] [-u peer] [-U secs] "
+	    "[-X secs] [-y peer] <gospel>\n");
 	exit(1);
 }
 
@@ -210,7 +222,8 @@ main(int argc, char **argv)
 	delivered = 0;
 
 	while ((ch = getopt(argc, argv,
-	    "a:A:c:C:D:e:f:F:g:G:i:I:j:K:l:Lm:M:n:o:O:P:r:R:S:t:TW:x:")) != -1) {
+	    "a:A:c:C:D:e:f:F:g:G:i:I:j:K:l:Lm:M:n:o:O:P:r:R:S:t:T"
+	    "u:U:W:x:X:y:")) != -1) {
 		switch (ch) {
 		case 'M':
 			gospel_len = chatter_config_read(optarg,
@@ -334,6 +347,32 @@ main(int argc, char **argv)
 			break;
 		case 'L':
 			group_leave = 1;
+			break;
+		case 'u':
+			peer = strtol(optarg, &ep, 16);
+			if (*ep != '\0')
+				usage();
+			if (peer <= 0 || peer >= KYRKA_PEERS_PER_FLOCK)
+				usage();
+			refused[peer] = 1;
+			break;
+		case 'y':
+			peer = strtol(optarg, &ep, 16);
+			if (*ep != '\0')
+				usage();
+			if (peer <= 0 || peer >= KYRKA_PEERS_PER_FLOCK)
+				usage();
+			ignoring[peer] = 1;
+			break;
+		case 'U':
+			accept_after = atoi(optarg);
+			if (accept_after <= 0)
+				usage();
+			break;
+		case 'X':
+			refuse_after = atoi(optarg);
+			if (refuse_after <= 0)
+				usage();
 			break;
 		case 'm':
 			if (message_count == CHATTER_MESSAGES_MAX)
@@ -496,6 +535,11 @@ main(int argc, char **argv)
 
 	signal(SIGPIPE, SIG_IGN);
 
+	for (idx = 1; idx < KYRKA_PEERS_PER_FLOCK; idx++) {
+		vigil_chat_accept(idx, !refused[idx]);
+		vigil_chat_ignore(idx, ignoring[idx]);
+	}
+
 	id = vigil_run_id();
 
 	if (pthread_create(&core, NULL, chatter_core_run, &id) != 0)
@@ -509,6 +553,22 @@ main(int argc, char **argv)
 
 	while ((vigil_time_ms() - start) < (u_int64_t)quit * 1000) {
 		(void)poll(NULL, 0, 500);
+
+		if (accept_after != 0 &&
+		    vigil_time_ms() - start >= (u_int64_t)accept_after * 1000) {
+			printf("chatter: accepting the peers we refused\n");
+			for (idx = 1; idx < KYRKA_PEERS_PER_FLOCK; idx++)
+				vigil_chat_accept(idx, 1);
+			accept_after = 0;
+		}
+
+		if (refuse_after != 0 &&
+		    vigil_time_ms() - start >= (u_int64_t)refuse_after * 1000) {
+			printf("chatter: refusing those peers again\n");
+			for (idx = 1; idx < KYRKA_PEERS_PER_FLOCK; idx++)
+				vigil_chat_accept(idx, !refused[idx]);
+			refuse_after = 0;
+		}
 
 		if (vigil_status(p, VIGIL_STATUS_MAX) > 0 &&
 		    (ep = strstr(p, CHATTER_SESSION)) != NULL) {
@@ -964,6 +1024,7 @@ chatter_group_send(int *wanted)
 static void
 chatter_group_event(const char *p)
 {
+	int		idx;
 	long		peer;
 	u_int64_t	id;
 	char		*ep;
@@ -1020,6 +1081,12 @@ chatter_group_event(const char *p)
 	}
 
 	group_known = 1;
+	vigil_chat_accept(owner, 1);
+
+	for (idx = 1; idx < KYRKA_PEERS_PER_FLOCK; idx++) {
+		if (members[idx / 8] & (1 << (idx % 8)))
+			vigil_chat_accept(idx, 1);
+	}
 
 	field = chatter_field(p, end, "\"serial\":");
 	if (field != NULL)

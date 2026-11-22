@@ -209,6 +209,42 @@ p2p path must work in         30 s                  10 s
 heartbeats after moving       every 1 s for 10 s    -
 ```
 
+## Accepting peers
+
+The platform tells the core which peers it accepts with
+`vigil_chat_accept(peer, on)` and which it ignores with
+`vigil_chat_ignore(peer, on)`. The core accepts nobody until then.
+
+We set up no tunnel with a peer we did not accept and do not signal it. The
+platform gets an "ask" event once each time that peer shows up or we stop
+accepting it. We never accept its calls or start a safety code exchange
+with it. Whatever it sent stays on its outbox
+and arrives once we accept it. A peer is gone 9 s after the cathedral last
+pushed it, the next time it shows up the platform gets a new "ask".
+
+The platform accepts:
+
+- every peer it has a one-to-one chat with,
+- the owner and every member of a group it holds,
+- a peer it holds anything on its outbox for, until that is delivered,
+- a peer the user accepts after an "ask",
+- every peer while the user is reachable by anyone.
+
+Turning reachable by anyone off accepts every peer the platform has a
+one-to-one chat with or holds anything on its outbox for.
+
+A group invite is a roster like any other message, so it only arrives once
+we accept its owner. Until then the members of that group are peers we did
+not accept either, each one that has something for us asks on its own.
+
+Deleting a one-to-one chat takes the peer off that list, unless it is in
+one of our groups. Declining an "ask" only drops the request, the peer asks
+again the next time it shows up.
+
+A peer the user ignores is treated as a peer we did not accept, except that
+the platform never gets an "ask" for it. It stays ignored until the user removes it from the list of
+ignored peers, even when it is in one of our groups.
+
 ## Sending
 
 ```mermaid
@@ -450,6 +486,8 @@ vigil_chat_stored(token)                    ACK the message to the sender
 vigil_chat_forget(peer)                     drop the outbox of the peer
 vigil_chat_drop(peer, ref)                  drop one message of the outbox
 vigil_chat_open(peer, on)                   keep signaling the peer
+vigil_chat_accept(peer, on)                 accept the peer or not
+vigil_chat_ignore(peer, on)                 ignore the peer or not
 vigil_chat_typing(peer, topic, on)          typing in a one-to-one chat,
                                             in a topic if not 0
 vigil_chat_group_typing(owner, group,       typing in a group and topic,
@@ -482,6 +520,8 @@ leave        token                     a member left a group we own
 retract      token, hash, topic if     the peer took back data it sent
              in a topic
 name         nick, signed              who the peer is
+ask                                    a peer we did not accept tries
+                                       to reach us
 data         see parcel.md
 avatar       see parcel.md
 ambry        generation                the ambry generation of a tunnel

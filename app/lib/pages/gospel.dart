@@ -21,6 +21,8 @@ class GospelPage extends StatefulWidget {
   State<GospelPage> createState() => _GospelPageState();
 }
 
+final invitesWanted = ValueNotifier<int>(0);
+
 class _GospelPageState extends State<GospelPage> with WidgetsBindingObserver {
   StreamSubscription<Status>? _updates;
   List<ChatSummary>? _chats;
@@ -28,6 +30,7 @@ class _GospelPageState extends State<GospelPage> with WidgetsBindingObserver {
   int _version = -1;
   bool _busy = false;
   bool _unreadOnly = false;
+  bool _peersOpen = false;
 
   @override
   void initState() {
@@ -40,12 +43,14 @@ class _GospelPageState extends State<GospelPage> with WidgetsBindingObserver {
       }
     });
 
+    invitesWanted.addListener(_showPeers);
     _load();
   }
 
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    invitesWanted.removeListener(_showPeers);
     _updates?.cancel();
     super.dispose();
   }
@@ -99,16 +104,28 @@ class _GospelPageState extends State<GospelPage> with WidgetsBindingObserver {
   Future<void> _showPeers() async {
     final chats = [
       for (final c in _chats ?? const <ChatSummary>[])
-        if (!isGroup(c.peer)) c.peer,
+        if (!isGroup(c.peer) && !c.request) c.peer,
     ];
-    final pick = await sheet<String>(
-      context,
-      (context) => _PeerSheet(chats: chats),
+    final invites = [
+      for (final c in _chats ?? const <ChatSummary>[])
+        if (c.request) c.peer,
+    ]..sort();
+    if (_peersOpen) {
+      return;
+    }
+
+    _peersOpen = true;
+
+    final pick = await push<String>(
+      _PeersPage(chats: chats, invites: invites),
     );
 
-    if (pick == _PeerSheet.group) {
+    _peersOpen = false;
+
+
+    if (pick == _PeersPage.group) {
       await newGroup(knownPeers(Vigil.instance.status, chats));
-    } else if (pick == _PeerSheet.kek) {
+    } else if (pick == _PeersPage.kek) {
       await chatById();
     }
   }
@@ -154,7 +171,12 @@ class _GospelPageState extends State<GospelPage> with WidgetsBindingObserver {
                   label: 'Chat settings',
                   onTap: chatSettings,
                 ),
-                GlyphBtn(GlyphKind.person, label: 'Peers', onTap: _showPeers),
+                _PeersBtn(
+                  invites: (_chats ?? const <ChatSummary>[]).any(
+                    (c) => c.request,
+                  ),
+                  onTap: _showPeers,
+                ),
               ],
             ],
             children: [
@@ -204,13 +226,13 @@ class _GospelPageState extends State<GospelPage> with WidgetsBindingObserver {
   }
 
   bool _quiet(Status status) {
-    final all = _list(status, _chats);
+    final all = _list(status, _chats).where((c) => !c.request).toList();
 
     return _unreadOnly && all.isNotEmpty && !all.any(_unread);
   }
 
   List<Widget> _chatList(Status status) {
-    final all = _list(status, _chats);
+    final all = _list(status, _chats).where((c) => !c.request).toList();
     final chats = all.where((c) => !_unreadOnly || _unread(c)).toList()
       ..sort(_order);
     final reorder = !_unreadOnly && chats.length > 1;
@@ -766,29 +788,105 @@ List<String> knownPeers(Status status, List<String> chats) {
   }.where((p) => p != own).toList()..sort();
 }
 
-class _PeerSheet extends StatefulWidget {
-  const _PeerSheet({required this.chats});
+class _PeersPage extends StatefulWidget {
+  const _PeersPage({required this.chats, required this.invites});
 
   static const group = 'group';
   static const kek = 'kek';
 
   final List<String> chats;
+  final List<String> invites;
 
   @override
-  State<_PeerSheet> createState() => _PeerSheetState();
+  State<_PeersPage> createState() => _PeersPageState();
 }
 
-class _PeerSheetState extends State<_PeerSheet> {
+class _PeersPageState extends State<_PeersPage> {
   final _filter = TextEditingController();
+  final _answered = <String>{};
+  StreamSubscription<Status>? _updates;
+  late List<String> _invites = widget.invites;
+  int _version = -1;
+  bool? _reachable;
+  String? _busy;
+
+  Future<void> _reach(bool on) async {
+    try {
+      final reachable = await Vigil.instance.reachable(on);
+
+      if (mounted) {
+        setState(() => _reachable = reachable);
+      }
+    } on VigilError catch (e) {
+      notify(e.message);
+    }
+  }
+
+  Future<void> _reload() async {
+    try {
+      final chats = await Vigil.instance.chats();
+
+      if (mounted) {
+        setState(() {
+          _invites = [
+            for (final c in chats)
+              if (c.request) c.peer,
+          ]..sort();
+          _answered.retainAll(_invites);
+        });
+      }
+    } on VigilError catch (_) {
+      return;
+    }
+  }
+
+  Future<void> _answer(String peer, String action) async {
+    setState(() => _busy = peer);
+
+    try {
+      if (action == 'ignore') {
+        await Vigil.instance.ignoreChat(peer, true);
+      } else {
+        await Vigil.instance.acceptChat(peer, action == 'accept');
+      }
+
+      _answered.add(peer);
+    } on VigilError catch (e) {
+      notify(e.message);
+    }
+
+    if (mounted) {
+      setState(() => _busy = null);
+    }
+  }
 
   @override
   void initState() {
     super.initState();
     _filter.addListener(() => setState(() {}));
+
+    _updates = Vigil.instance.statuses.listen((status) {
+      if (status.chats.version != _version) {
+        _version = status.chats.version;
+        _reload();
+      }
+    });
+
+    unawaited(
+      Vigil.instance
+          .reachable()
+          .then((on) {
+            if (mounted) {
+              setState(() => _reachable = on);
+            }
+          })
+          .catchError((Object _) {}),
+    );
   }
 
   @override
   void dispose() {
+    _updates?.cancel();
     _filter.dispose();
     super.dispose();
   }
@@ -828,26 +926,79 @@ class _PeerSheetState extends State<_PeerSheet> {
         final calls = status.call?.peers ?? const <String>[];
         final peers = _peers(status);
 
-        return Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
+        final waiting = [
+          for (final id in _invites)
+            if (!_answered.contains(id)) id,
+        ];
+
+        return PushedPage(
+          rubric: '${calls.length} online',
+          title: 'Peers',
           children: [
-            Row(
-              children: [
-                Expanded(child: sheetTitle('Peers')),
-                Text('${calls.length} online', style: Styles.rubric),
-              ],
-            ),
-            const SizedBox(height: 16),
+            if (_reachable != null)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 8),
+                child: Panel(
+                  padding: const EdgeInsets.fromLTRB(16, 10, 8, 10),
+                  child: Row(
+                    children: [
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              'Reachable by anyone',
+                              style: Styles.cardTitle,
+                            ),
+                            Text(
+                              _reachable!
+                                  ? 'Anyone in your flock can message and '
+                                        'call you'
+                                  : 'Peers you did not accept show up as '
+                                        'invites',
+                              style: Styles.detail,
+                            ),
+                          ],
+                        ),
+                      ),
+                      Toggle(
+                        on: _reachable!,
+                        label: 'Reachable by anyone',
+                        onTap: () => _reach(!_reachable!),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            if (waiting.isNotEmpty) ...[
+              const GroupLabel('Invites'),
+              const SizedBox(height: 10),
+              for (final id in waiting)
+                _Invite(
+                  peer: id,
+                  busy: _busy == id,
+                  onAnswer: (action) => _answer(id, action),
+                ),
+              const SizedBox(height: 8),
+            ],
             _Action(
               title: 'New group',
               text: 'Pick who will join the group, you become the owner',
-              onTap: () => Navigator.of(context).pop(_PeerSheet.group),
+              onTap: () => Navigator.of(context).pop(_PeersPage.group),
             ),
             _Action(
               title: 'Chat by KEK ID',
               text: 'Anyone in your flock, messages wait until they are online',
-              onTap: () => Navigator.of(context).pop(_PeerSheet.kek),
+              onTap: () => Navigator.of(context).pop(_PeersPage.kek),
+            ),
+            _Action(
+              title: 'Ignored peers',
+              text: 'All peers you have ignored.',
+              glyph: GlyphKind.chevron,
+              onTap: () => sheet<void>(
+                context,
+                (context) => const _IgnoredSheet(),
+              ),
             ),
             const SizedBox(height: 4),
             Pre(
@@ -863,36 +1014,24 @@ class _PeerSheetState extends State<_PeerSheet> {
               ),
             ),
             const SizedBox(height: 12),
-            ConstrainedBox(
-              constraints: BoxConstraints(
-                maxHeight: MediaQuery.sizeOf(context).height * 0.5,
+            if (peers.isEmpty)
+              const Padding(
+                padding: EdgeInsets.symmetric(vertical: 8),
+                child: Text(
+                  'No peer matches, peers show up here once they are '
+                  'around or once you named them.',
+                  style: Styles.body,
+                ),
               ),
-              child: peers.isEmpty
-                  ? const Padding(
-                      padding: EdgeInsets.symmetric(vertical: 8),
-                      child: Text(
-                        'No peer matches, peers show up here once they are '
-                        'around or once you named them.',
-                        style: Styles.body,
-                      ),
-                    )
-                  : ListView(
-                      shrinkWrap: true,
-                      padding: EdgeInsets.zero,
-                      children: [
-                        for (final id in peers)
-                          Padding(
-                            padding: const EdgeInsets.only(bottom: 8),
-                            child: _PeerRow(
-                              peer: id,
-                              status: status,
-                              callable:
-                                  calls.contains(id) && status.phone == null,
-                            ),
-                          ),
-                      ],
-                    ),
-            ),
+            for (final id in peers)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 8),
+                child: _PeerRow(
+                  peer: id,
+                  status: status,
+                  callable: calls.contains(id) && status.phone == null,
+                ),
+              ),
           ],
         );
       },
@@ -971,11 +1110,17 @@ class _PeerRow extends StatelessWidget {
 }
 
 class _Action extends StatelessWidget {
-  const _Action({required this.title, required this.text, required this.onTap});
+  const _Action({
+    required this.title,
+    required this.text,
+    required this.onTap,
+    this.glyph = GlyphKind.plus,
+  });
 
   final String title;
   final String text;
   final VoidCallback onTap;
+  final GlyphKind glyph;
 
   @override
   Widget build(BuildContext context) {
@@ -995,10 +1140,215 @@ class _Action extends StatelessWidget {
                 ],
               ),
             ),
-            const Glyph(GlyphKind.plus, color: Palette.amber),
+            Glyph(glyph, color: Palette.amber),
           ],
         ),
       ),
+    );
+  }
+}
+
+class _PeersBtn extends StatelessWidget {
+  const _PeersBtn({required this.invites, required this.onTap});
+
+  final bool invites;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return Pressable(
+      onTap: onTap,
+      label: invites ? 'Peers, invites waiting' : 'Peers',
+      builder: (context, pressed) => SizedBox(
+        width: 44,
+        height: 44,
+        child: Center(
+          child: Stack(
+            clipBehavior: Clip.none,
+            children: [
+              Glyph(
+                GlyphKind.person,
+                color: pressed ? Palette.amber : Palette.fg2,
+              ),
+              if (invites)
+                const Positioned(
+                  right: -2,
+                  top: -1,
+                  child: StateDot(Liveness.pending, size: 6),
+                ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _Invite extends StatelessWidget {
+  const _Invite({
+    required this.peer,
+    required this.busy,
+    required this.onAnswer,
+  });
+
+  final String peer;
+  final bool busy;
+  final ValueChanged<String> onAnswer;
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 8),
+      child: Panel(
+        accent: true,
+        padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Avatar(peer),
+                Expanded(child: PeerName(peer, style: Styles.cardTitle)),
+              ],
+            ),
+            const SizedBox(height: 10),
+            Row(
+              children: [
+                Expanded(
+                  child: Btn(
+                    label: 'ACCEPT',
+                    kind: BtnKind.good,
+                    expand: true,
+                    busy: busy,
+                    onTap: () => onAnswer('accept'),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Btn(
+                    label: 'DECLINE',
+                    kind: BtnKind.bad,
+                    expand: true,
+                    busy: busy,
+                    onTap: () => onAnswer('decline'),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Btn(
+                    label: 'IGNORE',
+                    kind: BtnKind.secondary,
+                    expand: true,
+                    busy: busy,
+                    onTap: () => onAnswer('ignore'),
+                  ),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _IgnoredSheet extends StatefulWidget {
+  const _IgnoredSheet();
+
+  @override
+  State<_IgnoredSheet> createState() => _IgnoredSheetState();
+}
+
+class _IgnoredSheetState extends State<_IgnoredSheet> {
+  List<String>? _peers;
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  Future<void> _load() async {
+    try {
+      final peers = await Vigil.instance.ignored();
+
+      if (mounted) {
+        setState(() => _peers = peers);
+      }
+    } on VigilError catch (e) {
+      notify(e.message);
+    }
+  }
+
+  Future<void> _remove(String peer) async {
+    try {
+      await Vigil.instance.ignoreChat(peer, false);
+    } on VigilError catch (e) {
+      notify(e.message);
+    }
+
+    await _load();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final vigil = Vigil.instance;
+    final peers = _peers;
+
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        sheetTitle('Ignored peers'),
+        const SizedBox(height: 16),
+        if (peers != null && peers.isEmpty)
+          const Padding(
+            padding: EdgeInsets.symmetric(vertical: 8),
+            child: Text(
+              'You are not ignoring anyone.',
+              style: Styles.body,
+            ),
+          ),
+        if (peers != null && peers.isNotEmpty)
+          ConstrainedBox(
+            constraints: BoxConstraints(
+              maxHeight: MediaQuery.sizeOf(context).height * 0.5,
+            ),
+            child: ListView(
+              shrinkWrap: true,
+              padding: EdgeInsets.zero,
+              children: [
+                for (final id in peers)
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: 8),
+                    child: Panel(
+                      padding: const EdgeInsets.fromLTRB(16, 6, 8, 6),
+                      child: Row(
+                        children: [
+                          Avatar(id),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                PeerName(id, style: Styles.cardTitle),
+                                if (vigil.name(id) != 'Peer $id')
+                                  Text('Peer $id', style: Styles.detail),
+                              ],
+                            ),
+                          ),
+                          Btn(
+                            label: 'Remove',
+                            kind: BtnKind.ghost,
+                            onTap: () => _remove(id),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+              ],
+            ),
+          ),
+      ],
     );
   }
 }

@@ -271,7 +271,8 @@ vigil_safety_code(const u_int8_t *input, size_t len, char *out, size_t outlen)
 
 /*
  * Start an exchange with the given peer from our half and theirs, any
- * exchange that is going on is stopped. Returns -1 if both are the same.
+ * exchange that is going on is stopped. Returns -1 if both are the same
+ * or if we did not accept the peer.
  */
 int
 vigil_safety_start(u_int8_t peer, const u_int8_t *own, const u_int8_t *theirs,
@@ -283,6 +284,9 @@ vigil_safety_start(u_int8_t peer, const u_int8_t *own, const u_int8_t *theirs,
 	PRECOND(len == VIGIL_SAFETY_HALF_LEN);
 
 	if (nyfe_mem_cmp(own, theirs, len) == 0)
+		return (-1);
+
+	if (!vigil_chat_accepted(peer))
 		return (-1);
 
 	vigil_lock(&safety_lock);

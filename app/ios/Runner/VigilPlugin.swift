@@ -335,6 +335,18 @@ final class VigilPlugin: NSObject, FlutterPlugin, UIDocumentPickerDelegate,
             } catch {
                 result(FlutterError(code: "failed", message: "\(error)", details: nil))
             }
+        case "ignored":
+            result(Self.reply { json(try ChatVault.shared.ignored().sorted()) })
+        case "reachable":
+            result(Self.reply {
+                if let on = call.arguments as? Bool {
+                    try ChatVault.shared.reach(on)
+                    VigilCall.shared.send?("chat-answer -")
+                    version += 1
+                }
+
+                return ChatVault.reachable ? "true" : "false"
+            })
         case "chats", "chat":
             reader.async {
                 let reply = Self.reply { try self.chat(call) }
@@ -343,7 +355,7 @@ final class VigilPlugin: NSObject, FlutterPlugin, UIDocumentPickerDelegate,
         case "chatSend", "chatImageSend", "chatRead", "chatOpen", "chatTyping",
              "chatImageData", "chatDelete", "chatSettings", "chatFavorite",
              "chatPin", "chatMute", "chatTopic", "groupCreate", "groupEdit", "groupLeave",
-             "chatStar", "chatCompact", "chatOrder", "chatRetract":
+             "chatStar", "chatCompact", "chatOrder", "chatRetract", "chatAccept", "chatIgnore":
             result(Self.reply { try chat(call) })
         case "safetyCode":
             result(Self.reply { try safetyCode(call) })
@@ -1418,6 +1430,16 @@ final class VigilPlugin: NSObject, FlutterPlugin, UIDocumentPickerDelegate,
         safetyFor = 0
     }
 
+    private static func asking() -> Set<String> {
+        return Set(ChatVault.defaults.stringArray(forKey: "chatAsking") ?? [])
+    }
+
+    private static func requests(_ listed: Set<String>) -> [[String: Any]] {
+        return asking().subtracting(listed).sorted().map {
+            ["peer": $0, "unread": 0, "last": NSNull(), "topics": [Any](), "request": true]
+        }
+    }
+
     private static func safetyPeer(_ hex: String) throws -> UInt8 {
         guard hex.count == 2, let peer = UInt8(hex, radix: 16), peer > 0, peer < 0xff else {
             throw ChatVault.Failure(description: "There is no peer \(hex).")
@@ -1464,7 +1486,11 @@ final class VigilPlugin: NSObject, FlutterPlugin, UIDocumentPickerDelegate,
                 try vault.topicsFill(local)
             }
 
-            let list = try vault.conversations()
+            var list = try vault.conversations()
+            let listed = Set(list.compactMap { $0["peer"] as? String })
+
+            list += Self.requests(listed)
+
             let known = Set(list.compactMap { $0["peer"] as? String })
 
             for chat in before.keys where !known.contains(chat) {
@@ -1477,6 +1503,7 @@ final class VigilPlugin: NSObject, FlutterPlugin, UIDocumentPickerDelegate,
             let stamp = (args["stamp"] as? NSNumber)?.int64Value ?? 0
 
             try vault.merge()
+
             return json(try vault.messages(hex, epoch: epoch, stamp: stamp))
         case "chatSend":
             let text = args["text"] as? String ?? ""
@@ -1625,7 +1652,37 @@ final class VigilPlugin: NSObject, FlutterPlugin, UIDocumentPickerDelegate,
             ChatVault.compact(hex, on: args["on"] as? Bool ?? false)
             version += 1
             return ""
+        case "chatAccept":
+            guard group == nil else {
+                throw ChatVault.Failure(description: "A group is not a request.")
+            }
+
+            if args["on"] as? Bool == true {
+                try vault.accept(hex, true)
+            }
+
+            VigilCall.shared.send?("chat-answer \(hex)")
+            ChatVault.seen(hex)
+            version += 1
+            return ""
+        case "chatIgnore":
+            guard group == nil else {
+                throw ChatVault.Failure(description: "A group can not be ignored.")
+            }
+
+            try vault.ignore(hex, args["on"] as? Bool == true)
+            VigilCall.shared.send?("chat-answer \(hex)")
+            ChatVault.seen(hex)
+            version += 1
+            return ""
         case "chatDelete":
+            if group == nil, Self.asking().contains(hex) {
+                VigilCall.shared.send?("chat-answer \(hex)")
+                ChatVault.seen(hex)
+                version += 1
+                return ""
+            }
+
             let local = try group == nil ? "" : Self.local()
 
             Self.drop(try vault.deleteChat(hex, local: local))

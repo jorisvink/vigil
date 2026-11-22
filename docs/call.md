@@ -61,6 +61,10 @@ stops all signaling.
 We update both liturgies every 3 s. When the peer we call changes, the
 update goes out right away, but no sooner than 1.5 s after the last one.
 
+We ignore a call from a peer we did not accept with `vigil_chat_accept()`,
+unless we call that peer ourselves, see [chat.md](chat.md). Nothing rings
+and the caller gives up as if we were away.
+
 A peer that calls us is reported until the cathedral has not pushed that peer
 to us for 9 s. When a call ends, `vigil_call_done(peer)` remembers the
 call id of that peer, so the same call does not ring again while the

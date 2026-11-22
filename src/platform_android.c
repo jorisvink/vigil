@@ -89,6 +89,10 @@ static jboolean		android_chat_companion_sync(JNIEnv *, jclass,
 static jboolean		android_chat_companion_resync(JNIEnv *, jclass,
 			    jboolean);
 static void		android_chat_open(JNIEnv *, jclass, jint, jboolean);
+static void		android_chat_accept(JNIEnv *, jclass, jint,
+			    jboolean);
+static void		android_chat_ignore(JNIEnv *, jclass, jint,
+			    jboolean);
 static void		android_chat_typing(JNIEnv *, jclass, jint, jlong,
 			    jboolean);
 static void		android_chat_group_typing(JNIEnv *, jclass, jint,
@@ -143,6 +147,8 @@ static JNINativeMethod	methods[] = {
 	{ "chatDrop", "(IJ)Z", (void *)android_chat_drop },
 	{ "chatStored", "(J)Z", (void *)android_chat_stored },
 	{ "chatOpen", "(IZ)V", (void *)android_chat_open },
+	{ "chatAccept", "(IZ)V", (void *)android_chat_accept },
+	{ "chatIgnore", "(IZ)V", (void *)android_chat_ignore },
 	{ "chatTyping", "(IJZ)V", (void *)android_chat_typing },
 	{ "chatNick", "(Ljava/lang/String;)Z", (void *)android_chat_nick },
 	{ "chatAvatar", "([B)Z", (void *)android_chat_avatar },
@@ -743,6 +749,26 @@ android_chat_open(JNIEnv *env, jclass cls, jint peer, jboolean on)
 {
 	if (peer > 0 && peer < KYRKA_PEERS_PER_FLOCK)
 		vigil_chat_open(peer, on == JNI_TRUE);
+}
+
+/*
+ * Vigil.chatAccept(), accepts the given peer or not.
+ */
+static void
+android_chat_accept(JNIEnv *env, jclass cls, jint peer, jboolean on)
+{
+	if (peer > 0 && peer < KYRKA_PEERS_PER_FLOCK)
+		vigil_chat_accept(peer, on == JNI_TRUE);
+}
+
+/*
+ * Vigil.chatIgnore(), ignores the given peer or not.
+ */
+static void
+android_chat_ignore(JNIEnv *env, jclass cls, jint peer, jboolean on)
+{
+	if (peer > 0 && peer < KYRKA_PEERS_PER_FLOCK)
+		vigil_chat_ignore(peer, on == JNI_TRUE);
 }
 
 /*

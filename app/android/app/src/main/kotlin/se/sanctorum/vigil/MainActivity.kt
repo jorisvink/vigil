@@ -525,6 +525,34 @@ class MainActivity : FlutterActivity() {
                     Chats.typing(this, id, call.argument<Boolean>("on")!!, topic(id, call.argument<String>("topic")))
                     result.success("")
                 }
+                "chatAccept" -> {
+                    val id = chat(call.argument<String>("peer")!!)
+                    val on = call.argument<Boolean>("on")!!
+
+                    background(result) {
+                        Chats.accept(this, id, on)
+                        ""
+                    }
+                }
+                "chatIgnore" -> {
+                    val id = chat(call.argument<String>("peer")!!)
+                    val on = call.argument<Boolean>("on")!!
+
+                    background(result) {
+                        Chats.ignore(this, id, on)
+                        ""
+                    }
+                }
+                "reachable" -> {
+                    val on = call.arguments as Boolean?
+
+                    background(result) {
+                        Chats.reachable(this, on).toString()
+                    }
+                }
+                "ignored" -> background(result) {
+                    JSONArray(Chats.vault(this).ignored().sorted()).toString()
+                }
                 "chatDelete" -> {
                     val id = chat(call.arguments as String)
 
