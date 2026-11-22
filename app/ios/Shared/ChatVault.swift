@@ -1290,7 +1290,7 @@ final class ChatVault {
     }
 
     static var reachable: Bool {
-        return defaults.bool(forKey: "chatReachable")
+        return defaults.object(forKey: "chatReachable") as? Bool ?? true
     }
 
     func reach(_ on: Bool) throws {

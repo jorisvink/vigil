@@ -62,7 +62,7 @@ object Chats {
 
             it.mirror = ::mirror
             it.linked = store::linked
-            it.reach(prefs(context.applicationContext).getBoolean("reachable", false))
+            it.reach(prefs(context.applicationContext).getBoolean("reachable", true))
             vault = it
         }
 

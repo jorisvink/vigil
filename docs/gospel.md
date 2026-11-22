@@ -92,9 +92,9 @@ device tries. A group invite
 only arrives once you accept the device that sent it. Everyone in a group
 you are in counts as accepted.
 
-With "Reachable by anyone" turned on under Peers, every device can message
-and call you without an invite, except the ones you ignore. Turning it off
-again keeps every device you have a chat with as accepted.
+"Reachable by anyone" under Peers is on by default. While it is on, every
+device can message and call you without an invite, except the ones you
+ignore. Turning it off keeps every device you have a chat with as accepted.
 
 Ignoring a device instead blocks it for good, it can not message, call or
 invite you and never asks again. The Peers sheet lists the devices you
