@@ -164,7 +164,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
                 self.watchCalls()
                 self.watchNetwork()
 
-                self.probe = WakeProbe.configured()
+                self.probe = WakeProbe.configured(self)
                 self.probe?.start()
             }
 
@@ -208,6 +208,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
 
     override func wake() {
         NSLog("vigil: the system woke up")
+        vigil_ios_anchor_check()
         vigil_poke()
     }
 
@@ -1384,6 +1385,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             }
 
             self.network = network
+            vigil_ios_anchor_check()
         }
 
         monitor.start(queue: .main)
