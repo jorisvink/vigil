@@ -398,9 +398,9 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             defaults.set(own, forKey: "chatSelves")
         }
 
-        let fresh = Set(running.filter { sessions[$0.key] != $0.value }.keys)
+        let restarted = Set(running.filter { sessions[$0.key] != $0.value }.keys)
 
-        if session != chatSession || !fresh.isEmpty {
+        if session != chatSession || !restarted.isEmpty {
             chatResubmit = 0
             chatAccepts = -1
             chatWaiting.removeAll()
@@ -416,7 +416,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
                 _ = try? vault.expire()
             }
 
-            if submitOutbox(flocks: fresh) {
+            if submitOutbox(flocks: restarted) {
                 chatSession = session
                 sessions = running
             }
