@@ -80,6 +80,7 @@ struct safety_shared {
 	int		state;
 	int		fresh;
 	int		request;
+	u_int64_t	flock;
 	u_int8_t	peer;
 	u_int8_t	own[VIGIL_SAFETY_HALF_LEN];
 	u_int8_t	theirs[VIGIL_SAFETY_HALF_LEN];
@@ -92,6 +93,8 @@ struct safety_shared {
 struct safety_tunnel {
 	struct vigil_io		io;
 	KYRKA			*ctx;
+	u_int8_t		slot;
+	u_int64_t		flock;
 	u_int8_t		peer;
 	int			got;
 	int			done;
@@ -113,15 +116,15 @@ static int	safety_send(int);
 static void	safety_done(void);
 static void	safety_check(void);
 static void	safety_read(void *);
-static void	safety_state(u_int8_t, int);
 static void	safety_output(struct kyrka_packet *);
-static void	safety_secret(u_int8_t, const u_int8_t *, const u_int8_t *,
-		    u_int8_t *, size_t);
+static void	safety_state(u_int64_t, u_int8_t, int);
+static void	safety_secret(u_int8_t, u_int8_t, const u_int8_t *,
+		    const u_int8_t *, u_int8_t *, size_t);
 
 static void	safety_tunnel_free(void);
 static void	safety_tunnel_manage(void);
 static void	safety_cathedral_check(void);
-static void	safety_tunnel_new(u_int8_t, const u_int8_t *,
+static void	safety_tunnel_new(u_int8_t, u_int8_t, const u_int8_t *,
 		    const u_int8_t *);
 
 static void	safety_event(KYRKA *, union kyrka_event *, void *);
@@ -270,14 +273,18 @@ vigil_safety_code(const u_int8_t *input, size_t len, char *out, size_t outlen)
 }
 
 /*
- * Start an exchange with the given peer from our half and theirs, any
- * exchange that is going on is stopped. Returns -1 if both are the same
- * or if we did not accept the peer.
+ * Start an exchange with the given peer in the given flock from our half
+ * and theirs, any exchange that is going on is stopped. Returns -1 if both
+ * are the same, if we run no Gospel for the flock or if we did not accept
+ * the peer.
  */
 int
-vigil_safety_start(u_int8_t peer, const u_int8_t *own, const u_int8_t *theirs,
-    size_t len)
+vigil_safety_start(u_int64_t flock, u_int8_t peer, const u_int8_t *own,
+    const u_int8_t *theirs, size_t len)
 {
+	int		accepted;
+	u_int8_t	slot;
+
 	PRECOND(peer > 0 && peer < KYRKA_PEERS_PER_FLOCK);
 	PRECOND(own != NULL);
 	PRECOND(theirs != NULL);
@@ -286,7 +293,13 @@ vigil_safety_start(u_int8_t peer, const u_int8_t *own, const u_int8_t *theirs,
 	if (nyfe_mem_cmp(own, theirs, len) == 0)
 		return (-1);
 
-	if (!vigil_chat_accepted(peer))
+	if (vigil_gospel_slot(flock, &slot) == -1)
+		return (-1);
+
+	accepted = vigil_chat_accepted(slot, peer);
+	vigil_gospel_release();
+
+	if (!accepted)
 		return (-1);
 
 	vigil_lock(&safety_lock);
@@ -294,6 +307,7 @@ vigil_safety_start(u_int8_t peer, const u_int8_t *own, const u_int8_t *theirs,
 	nyfe_mem_zero(&shared, sizeof(shared));
 
 	shared.peer = peer;
+	shared.flock = flock;
 	shared.state = SAFETY_STATE_CONNECTING;
 	shared.request = SAFETY_REQUEST_START;
 
@@ -306,11 +320,11 @@ vigil_safety_start(u_int8_t peer, const u_int8_t *own, const u_int8_t *theirs,
 }
 
 /*
- * Copy the input the exchange with the given peer gave us into out, once.
- * Returns -1 if there is none.
+ * Copy the input the exchange with the given peer in the given flock gave
+ * us into out, once. Returns -1 if there is none.
  */
 int
-vigil_safety_get(u_int8_t peer, u_int8_t *out, size_t len)
+vigil_safety_get(u_int64_t flock, u_int8_t peer, u_int8_t *out, size_t len)
 {
 	int		ret;
 
@@ -320,7 +334,7 @@ vigil_safety_get(u_int8_t peer, u_int8_t *out, size_t len)
 	ret = -1;
 	vigil_lock(&safety_lock);
 
-	if (shared.state == SAFETY_STATE_DONE &&
+	if (shared.state == SAFETY_STATE_DONE && shared.flock == flock &&
 	    shared.peer == peer && shared.fresh) {
 		memcpy(out, shared.input, len);
 		nyfe_mem_zero(shared.input, sizeof(shared.input));
@@ -352,16 +366,17 @@ vigil_safety_stop(void)
 void
 vigil_safety_update(void)
 {
-	int		request;
+	u_int64_t	flock;
 	u_int8_t	peer;
+	int		request;
+	u_int8_t	slot;
 	u_int8_t	own[VIGIL_SAFETY_HALF_LEN];
 	u_int8_t	theirs[VIGIL_SAFETY_HALF_LEN];
-
-	PRECOND(vigil->gospel != NULL);
 
 	vigil_lock(&safety_lock);
 
 	peer = shared.peer;
+	flock = shared.flock;
 	request = shared.request;
 	shared.request = SAFETY_REQUEST_NONE;
 
@@ -378,7 +393,11 @@ vigil_safety_update(void)
 		safety_tunnel_free();
 
 	if (request == SAFETY_REQUEST_START) {
-		safety_tunnel_new(peer, own, theirs);
+		if (vigil_gospel_find(flock, &slot) == -1)
+			safety_state(flock, peer, SAFETY_STATE_FAILED);
+		else
+			safety_tunnel_new(slot, peer, own, theirs);
+
 		nyfe_mem_zero(own, sizeof(own));
 		nyfe_mem_zero(theirs, sizeof(theirs));
 	}
@@ -417,20 +436,36 @@ vigil_safety_rebind(void)
 void
 vigil_safety_cleanup(void)
 {
+	u_int64_t	flock;
 	u_int8_t	peer;
 
 	if (tunnel == NULL)
 		return;
 
 	peer = tunnel->peer;
+	flock = tunnel->flock;
 	safety_tunnel_free();
 
 	vigil_lock(&safety_lock);
 
-	if (shared.peer == peer && shared.state == SAFETY_STATE_CONNECTING)
+	if (shared.flock == flock && shared.peer == peer &&
+	    shared.state == SAFETY_STATE_CONNECTING)
 		shared.state = SAFETY_STATE_FAILED;
 
 	vigil_unlock(&safety_lock);
+}
+
+/*
+ * The Gospel configuration in the given slot goes away, so does an
+ * exchange that runs over it.
+ */
+void
+vigil_safety_detach(u_int8_t slot)
+{
+	PRECOND(slot < VIGIL_GOSPEL_MAX);
+
+	if (tunnel != NULL && tunnel->slot == slot)
+		vigil_safety_cleanup();
 }
 
 /*
@@ -454,6 +489,7 @@ void
 vigil_safety_status(struct vigil_buf *buf)
 {
 	int		state;
+	u_int64_t	flock;
 	u_int8_t	peer;
 	const char	*name;
 
@@ -461,6 +497,7 @@ vigil_safety_status(struct vigil_buf *buf)
 
 	vigil_lock(&safety_lock);
 	peer = shared.peer;
+	flock = shared.flock;
 	state = shared.state;
 	vigil_unlock(&safety_lock);
 
@@ -479,30 +516,36 @@ vigil_safety_status(struct vigil_buf *buf)
 	}
 
 	vigil_buf_appendf(buf,
-	    ",\"safety\":{\"peer\":\"%02x\",\"state\":\"%s\"}", peer, name);
+	    ",\"safety\":{\"peer\":\"%" PRIx64 "-%02x\",\"state\":\"%s\"}",
+	    flock, peer, name);
 }
 
 /*
- * Set up the tunnel to the given peer from both halves.
+ * Set up the tunnel to the given peer in the given slot from both halves.
  */
 static void
-safety_tunnel_new(u_int8_t peer, const u_int8_t *own, const u_int8_t *theirs)
+safety_tunnel_new(u_int8_t slot, u_int8_t peer, const u_int8_t *own,
+    const u_int8_t *theirs)
 {
 	struct kyrka_cathedral_cfg	cfg;
 	u_int8_t			local;
+	u_int64_t			flock;
 	struct vigil_config		*gospel;
 	u_int8_t			secret[VIGIL_KEY_LENGTH];
 
+	PRECOND(slot < VIGIL_GOSPEL_MAX);
 	PRECOND(peer > 0 && peer < KYRKA_PEERS_PER_FLOCK);
 	PRECOND(own != NULL);
 	PRECOND(theirs != NULL);
 	PRECOND(tunnel == NULL);
+	PRECOND(vigil->gospels[slot] != NULL);
 
-	gospel = vigil->gospel;
+	gospel = vigil->gospels[slot];
 	local = gospel->spi & 0xff;
+	flock = gospel->cathedral_flock;
 
 	if (peer == local) {
-		safety_state(peer, SAFETY_STATE_FAILED);
+		safety_state(flock, peer, SAFETY_STATE_FAILED);
 		return;
 	}
 
@@ -510,22 +553,24 @@ safety_tunnel_new(u_int8_t peer, const u_int8_t *own, const u_int8_t *theirs)
 		fatal("calloc: failed to allocate safety tunnel");
 
 	tunnel->io.fd = -1;
+	tunnel->slot = slot;
 	tunnel->peer = peer;
+	tunnel->flock = flock;
 	tunnel->first = local < peer;
 	tunnel->io.handle = safety_read;
 	tunnel->expire = vigil->now + SAFETY_TIMEOUT;
 
-	if (vigil_call_cathedral_pick(&tunnel->cathedral) == -1) {
+	if (vigil_call_cathedral_pick(slot, &tunnel->cathedral) == -1) {
 		vigil_log(LOG_NOTICE, "[safety] %02x no cathedral", peer);
 		safety_tunnel_free();
-		safety_state(peer, SAFETY_STATE_FAILED);
+		safety_state(flock, peer, SAFETY_STATE_FAILED);
 		return;
 	}
 
 	tunnel->io.fd = vigil_socket_udp();
 	if (tunnel->io.fd == -1) {
 		safety_tunnel_free();
-		safety_state(peer, SAFETY_STATE_FAILED);
+		safety_state(flock, peer, SAFETY_STATE_FAILED);
 		return;
 	}
 
@@ -536,7 +581,7 @@ safety_tunnel_new(u_int8_t peer, const u_int8_t *own, const u_int8_t *theirs)
 		fatal("failed to create safety context");
 
 	nyfe_zeroize_register(secret, sizeof(secret));
-	safety_secret(peer, own, theirs, secret, sizeof(secret));
+	safety_secret(slot, peer, own, theirs, secret, sizeof(secret));
 
 	if (kyrka_secret_load(tunnel->ctx, secret, sizeof(secret)) == -1)
 		fatal("kyrka_secret_load: %d", kyrka_last_error(tunnel->ctx));
@@ -602,12 +647,14 @@ safety_tunnel_free(void)
 static void
 safety_tunnel_manage(void)
 {
+	u_int64_t	flock;
 	u_int8_t	peer;
 
 	PRECOND(tunnel != NULL);
 
 	if (vigil->now >= tunnel->expire) {
 		peer = tunnel->peer;
+		flock = tunnel->flock;
 
 		if (tunnel->done == 0) {
 			vigil_log(LOG_INFO, "[safety] %02x no tunnel came up "
@@ -618,7 +665,7 @@ safety_tunnel_manage(void)
 
 		vigil_lock(&safety_lock);
 
-		if (shared.peer == peer &&
+		if (shared.flock == flock && shared.peer == peer &&
 		    shared.state == SAFETY_STATE_CONNECTING)
 			shared.state = SAFETY_STATE_FAILED;
 
@@ -672,7 +719,7 @@ safety_cathedral_check(void)
 	if ((vigil->now - tunnel->cathedral.last) <= tunnel->cathedral.timeout)
 		return;
 
-	if (vigil_call_cathedral_pick(&tunnel->cathedral) == -1) {
+	if (vigil_call_cathedral_pick(tunnel->slot, &tunnel->cathedral) == -1) {
 		tunnel->cathedral.last = vigil->now;
 		return;
 	}
@@ -779,7 +826,7 @@ safety_done(void)
 
 	vigil_lock(&safety_lock);
 
-	if (shared.peer == tunnel->peer &&
+	if (shared.flock == tunnel->flock && shared.peer == tunnel->peer &&
 	    shared.state != SAFETY_STATE_NONE) {
 		shared.fresh = 1;
 		shared.state = SAFETY_STATE_DONE;
@@ -793,45 +840,47 @@ safety_done(void)
 	nyfe_mem_zero(tunnel->theirs, sizeof(tunnel->theirs));
 
 	tunnel->expire = vigil->now;
-	vigil_chat_safety(tunnel->peer);
+	vigil_chat_safety(tunnel->slot, tunnel->peer);
 }
 
 /*
- * Set the state of the exchange with the given peer.
+ * Set the state of the exchange with the given peer in the given flock.
  */
 static void
-safety_state(u_int8_t peer, int state)
+safety_state(u_int64_t flock, u_int8_t peer, int state)
 {
 	vigil_lock(&safety_lock);
 
-	if (shared.peer == peer)
+	if (shared.flock == flock && shared.peer == peer)
 		shared.state = state;
 
 	vigil_unlock(&safety_lock);
 }
 
 /*
- * Derive the secret for our tunnel to the given peer from both halves,
- * see the top of this file.
+ * Derive the secret for our tunnel to the given peer in the given slot from
+ * both halves, see the top of this file.
  */
 static void
-safety_secret(u_int8_t peer, const u_int8_t *own, const u_int8_t *theirs,
-    u_int8_t *secret, size_t len)
+safety_secret(u_int8_t slot, u_int8_t peer, const u_int8_t *own,
+    const u_int8_t *theirs, u_int8_t *secret, size_t len)
 {
 	struct nyfe_kmac256	kdf;
 	u_int64_t		flock;
 	u_int8_t		ilen, low, high;
 	u_int8_t		key[VIGIL_SAFETY_HALF_LEN * 2];
 
+	PRECOND(slot < VIGIL_GOSPEL_MAX);
 	PRECOND(own != NULL);
 	PRECOND(theirs != NULL);
 	PRECOND(secret != NULL);
 	PRECOND(len == VIGIL_KEY_LENGTH);
+	PRECOND(vigil->gospels[slot] != NULL);
 
 	nyfe_zeroize_register(key, sizeof(key));
 	nyfe_zeroize_register(&kdf, sizeof(kdf));
 
-	low = vigil->gospel->spi & 0xff;
+	low = vigil->gospels[slot]->spi & 0xff;
 	high = peer;
 
 	if (low < high) {
@@ -846,7 +895,7 @@ safety_secret(u_int8_t peer, const u_int8_t *own, const u_int8_t *theirs,
 		    own, VIGIL_SAFETY_HALF_LEN);
 	}
 
-	flock = htobe64(vigil->gospel->cathedral_flock);
+	flock = htobe64(vigil->gospels[slot]->cathedral_flock);
 
 	nyfe_kmac256_init(&kdf, key, sizeof(key),
 	    SAFETY_KDF_LABEL, sizeof(SAFETY_KDF_LABEL) - 1);

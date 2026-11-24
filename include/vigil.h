@@ -306,14 +306,15 @@ struct vigil_chat_chunk {
 
 /*
  * A request from the desktop of a phone. A send carries text or data for
- * peer, or for every peer set in members when group is set. Kind is 0 for
- * text, else the kind of the data, the text or data follows. A call has
- * the call op in kind. An ask has ask bytes of JSON for the platform of
- * the phone, the data of the ask may follow the JSON.
+ * peer in flock, or for every peer in flock set in members when group is
+ * set. Kind is 0 for text, else the kind of the data, the text or data
+ * follows. A call has the call op in kind. An ask has ask bytes of JSON for
+ * the platform of the phone, the data of the ask may follow the JSON.
  */
 struct vigil_chat_request {
 	u_int8_t		op;
 	u_int64_t		ref;
+	u_int64_t		flock;
 	u_int8_t		peer;
 	u_int8_t		kind;
 	u_int8_t		author;
@@ -340,22 +341,26 @@ struct vigil_companion_typed {
 
 /*
  * The state a phone appends to each heartbeat to its desktop, its sync
- * version, a bit for every peer, the call the phone runs, the last call
- * that ended and the last seq in its journal. The magic and version always
- * come first.
+ * version, a bit for every peer in one of its flocks, the call the phone
+ * runs, the last call that ended and the last seq in its journal. The
+ * phone takes turns with its flocks. The magic and version always come
+ * first.
  */
 struct vigil_companion_phone {
 	u_int16_t			magic;
 	u_int16_t			version;
+	u_int64_t			flock;
 	u_int8_t			present[VIGIL_CHAT_GROUP_ROSTER];
 	u_int8_t			online[VIGIL_CHAT_GROUP_ROSTER];
 	u_int8_t			typing[VIGIL_CHAT_GROUP_ROSTER];
 	u_int8_t			incoming[VIGIL_CHAT_GROUP_ROSTER];
+	u_int64_t			call_flock;
 	u_int8_t			call_peer;
 	u_int8_t			call_state;
 	u_int8_t			call_flags;
 	u_int8_t			typed_count;
 	struct vigil_companion_typed	typed[VIGIL_COMPANION_TYPED];
+	u_int64_t			ended_flock;
 	u_int8_t			ended_peer;
 	u_int8_t			ended_why;
 	u_int64_t			ended;
@@ -364,14 +369,15 @@ struct vigil_companion_phone {
 
 /*
  * The state a desktop appends to each heartbeat to its phone, its sync
- * version, the peers the desktop types to, the chats the desktop has open,
- * the seq up to which the desktop stored what its phone sent and if the
- * desktop holds a full copy of the chats of its phone. The magic and
- * version always come first.
+ * version, the peers in flock the desktop types to, the chats in flock the
+ * desktop has open, the seq up to which the desktop stored what its phone
+ * sent and if the desktop holds a full copy of the chats of its phone. The
+ * magic and version always come first.
  */
 struct vigil_companion_desktop {
 	u_int16_t		magic;
 	u_int16_t		version;
+	u_int64_t		flock;
 	u_int8_t		typing[VIGIL_CHAT_GROUP_ROSTER];
 	u_int8_t		opened[VIGIL_CHAT_GROUP_ROSTER];
 	u_int64_t		topic;
@@ -664,8 +670,8 @@ struct vigil_state {
 	u_int64_t			started;
 
 	struct in_addr			ip;
-	struct vigil_config		*gospel;
 	struct vigil_config		*config;
+	struct vigil_config		*gospels[VIGIL_GOSPEL_MAX];
 
 	struct sockaddr_in		peer;
 	struct vigil_cathedral		cathedral;
@@ -699,7 +705,10 @@ void	vigil_kyrka_leave(void);
 void	vigil_wake_signal(void);
 void	vigil_socket_nonblock(int);
 int	vigil_socket_unreachable(int, int);
-int	vigil_kyrka_additional_input(KYRKA *, u_int8_t);
+void	vigil_gospel_release(void);
+int	vigil_gospel_find(u_int64_t, u_int8_t *);
+int	vigil_gospel_slot(u_int64_t, u_int8_t *);
+int	vigil_kyrka_additional_input(KYRKA *, u_int64_t, u_int8_t);
 void	vigil_logv(int, const char *, va_list);
 int	vigil_rebind_due(u_int64_t *, u_int64_t *, u_int64_t);
 int	vigil_inet_match(struct sockaddr_in *, struct sockaddr_in *);
@@ -735,16 +744,16 @@ struct vigil_config	*vigil_config_parse(const char *, size_t,
 
 /* src/call.c */
 void	vigil_call_poke(void);
-int	vigil_call_alive(void);
 void	vigil_call_update(void);
 void	vigil_call_rebind(void);
-void	vigil_call_cleanup(void);
-int	vigil_call_peer(u_int8_t);
-void	vigil_call_init(const char *);
-void	vigil_call_liturgies(struct vigil_buf *);
-int	vigil_call_cathedral_pick(struct vigil_cathedral *);
+int	vigil_call_alive(u_int8_t);
+void	vigil_call_attach(u_int8_t);
+void	vigil_call_detach(u_int8_t);
+int	vigil_call_peer(u_int8_t, u_int8_t);
+void	vigil_call_liturgies(u_int8_t, struct vigil_buf *);
+int	vigil_call_cathedral_pick(u_int8_t, struct vigil_cathedral *);
 
-struct sockaddr_in	*vigil_call_cathedral(void);
+struct sockaddr_in	*vigil_call_cathedral(u_int8_t);
 
 /* src/chat.c */
 int	vigil_chat_busy(void);
@@ -753,9 +762,11 @@ void	vigil_chat_poke(void);
 void	vigil_chat_update(void);
 void	vigil_chat_rebind(void);
 void	vigil_chat_cleanup(void);
-void	vigil_chat_safety(u_int8_t);
-int	vigil_chat_accepted(u_int8_t);
-void	vigil_chat_additional_input(u_int8_t);
+void	vigil_chat_attach(u_int8_t);
+void	vigil_chat_detach(u_int8_t);
+void	vigil_chat_safety(u_int8_t, u_int8_t);
+int	vigil_chat_accepted(u_int8_t, u_int8_t);
+void	vigil_chat_additional_input(u_int64_t, u_int8_t);
 void	vigil_chat_status(struct vigil_buf *);
 void	vigil_chat_companion_voice(const u_int8_t *, size_t);
 int	vigil_chat_companion_send(const struct vigil_chat_request *,
@@ -769,6 +780,7 @@ void	vigil_safety_erase(void);
 void	vigil_safety_update(void);
 void	vigil_safety_rebind(void);
 void	vigil_safety_cleanup(void);
+void	vigil_safety_detach(u_int8_t);
 void	vigil_safety_status(struct vigil_buf *);
 
 /* src/ether.c */
@@ -784,18 +796,20 @@ void	vigil_ether_input(struct vigil_peer *, struct sockaddr_in *,
 /* src/voice.c */
 int	vigil_voice_busy(void);
 void	vigil_voice_relay_update(void);
-int	vigil_voice_relay_answer(u_int8_t);
-void	vigil_voice_relay_call(u_int8_t, int);
-void	vigil_voice_relay(u_int8_t, int, int);
+void	vigil_voice_detach(u_int8_t);
+int	vigil_voice_relay_answer(u_int64_t, u_int8_t);
+void	vigil_voice_relay_call(u_int64_t, u_int8_t, int);
+void	vigil_voice_relay(u_int64_t, u_int8_t, int, int);
 void	vigil_voice_relay_play(const u_int8_t *, size_t);
 void	vigil_voice_relay_input(const u_int8_t *, size_t);
-void	vigil_voice_relay_state(u_int8_t *, u_int8_t *, u_int8_t *);
-void	vigil_voice_ended(u_int8_t *, u_int8_t *, u_int64_t *);
+void	vigil_voice_relay_state(u_int64_t *, u_int8_t *, u_int8_t *,
+	    u_int8_t *);
+void	vigil_voice_ended(u_int64_t *, u_int8_t *, u_int8_t *, u_int64_t *);
 void	vigil_voice_hangup(void);
 void	vigil_voice_update(void);
 void	vigil_voice_rebind(void);
 void	vigil_voice_cleanup(void);
-void	vigil_voice_call(u_int8_t, int);
+void	vigil_voice_call(u_int64_t, u_int8_t, int);
 void	vigil_voice_playback(int16_t *, size_t);
 void	vigil_voice_capture(const int16_t *, size_t);
 

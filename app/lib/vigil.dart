@@ -23,6 +23,9 @@ class Summary {
   String? get cathedral => json['cathedral'] as String?;
   String? get spi => json['spi'] as String?;
   String? get flock => json['cathedral_flock'] as String?;
+  String get flockId => flock == null
+      ? ''
+      : BigInt.parse(flock!, radix: 16).toRadixString(16);
   String? get cathedralId => json['cathedral_id'] as String?;
   int? get natPort => json['cathedral_nat_port'] as int?;
   String? get liturgyPrefix => json['liturgy_prefix'] as String?;
@@ -240,9 +243,20 @@ class CallStatus {
   final Map<String, dynamic> json;
 
   bool get alive => json['alive'] as bool? ?? false;
-  String? get cathedral => json['cathedral'] as String?;
   List<String> get peers =>
       (json['peers'] as List<dynamic>? ?? const []).cast<String>();
+
+  bool gospelAlive(String flock) {
+    for (final g in json['gospels'] as List<dynamic>? ?? const []) {
+      final gospel = g as Map<String, dynamic>;
+
+      if (gospel['flock'] == flock) {
+        return gospel['alive'] as bool? ?? false;
+      }
+    }
+
+    return false;
+  }
 }
 
 class ChatPeer {
@@ -269,8 +283,19 @@ class ChatPeer {
       return '';
     }
 
-    return 'g${json['typing_owner']}$group';
+    return '${flockOf(id)}-g${json['typing_owner']}$group';
   }
+}
+
+class GospelStatus {
+  GospelStatus(this.json);
+
+  final Map<String, dynamic> json;
+
+  String get flock => json['flock'] as String? ?? '';
+  String get id => json['id'] as String? ?? '';
+  bool get alive => json['alive'] as bool? ?? false;
+  String get signed => json['signed'] as String? ?? '';
 }
 
 class ChatStatus {
@@ -278,10 +303,16 @@ class ChatStatus {
 
   final Map<String, dynamic> json;
 
-  bool get alive => json['alive'] as bool? ?? false;
-  String get id => json['id'] as String? ?? '00';
+  bool get alive => gospels.any((g) => g.alive);
   String get nick => json['nick'] as String? ?? '';
-  String get signed => json['signed'] as String? ?? '';
+
+  List<GospelStatus> get gospels =>
+      (json['gospels'] as List<dynamic>? ?? const [])
+          .map((g) => GospelStatus(g as Map<String, dynamic>))
+          .toList();
+
+  GospelStatus? gospel(String flock) =>
+      gospels.where((g) => g.flock == flock).firstOrNull;
 
   List<ChatPeer> get peers => (json['peers'] as List<dynamic>? ?? const [])
       .map((p) => ChatPeer(p as Map<String, dynamic>))
@@ -300,22 +331,34 @@ class ChatStatus {
 }
 
 class ChatGroup {
-  ChatGroup(this.json);
+  ChatGroup(this.chat, this.json);
 
+  final String chat;
   final Map<String, dynamic> json;
 
-  String get owner => json['owner'] as String? ?? '00';
+  String get flock => flockOf(chat);
+  String get owner => '$flock-${json['owner'] as String? ?? '00'}';
   String get id => json['id'] as String? ?? '';
-  String get chat => 'g$owner$id';
   String get name => json['name'] as String? ?? '';
   String get state => json['state'] as String? ?? 'open';
   bool get open => state == 'open';
 
-  List<String> get members =>
-      (json['members'] as List<dynamic>? ?? const []).cast<String>();
+  List<String> get members => [
+    for (final m in json['members'] as List<dynamic>? ?? const [])
+      '$flock-$m',
+  ];
 }
 
-bool isGroup(String chat) => chat.length == 19 && chat.startsWith('g');
+final _group = RegExp(r'^[0-9a-f]{1,16}-g[0-9a-f]{18}$');
+final _peer = RegExp(r'^[0-9a-f]{1,16}-[0-9a-f]{2}$');
+
+bool isGroup(String chat) => _group.hasMatch(chat);
+
+bool isPeer(String id) => _peer.hasMatch(id);
+
+String flockOf(String id) => id.split('-').first;
+
+String localOf(String id) => id.substring(id.indexOf('-') + 1);
 
 class Chats {
   Chats(this.json);
@@ -503,11 +546,13 @@ class Status {
       ? CallStatus(json['call'] as Map<String, dynamic>)
       : null;
 
-  List<LiturgyStatus> get liturgies => [
+  List<LiturgyStatus> liturgies(String flock) => [
     for (final owner in [json['call'], json['chat']])
       if (owner is Map<String, dynamic>)
-        for (final l in owner['liturgies'] as List<dynamic>? ?? const [])
-          LiturgyStatus(l as Map<String, dynamic>),
+        for (final g in owner['gospels'] as List<dynamic>? ?? const [])
+          if ((g as Map<String, dynamic>)['flock'] == flock)
+            for (final l in g['liturgies'] as List<dynamic>? ?? const [])
+              LiturgyStatus(l as Map<String, dynamic>),
   ];
 
   ChatStatus? get chat => json['chat'] is Map<String, dynamic>
@@ -597,7 +642,7 @@ class Vigil {
       return group.isEmpty ? 'Group' : group;
     }
 
-    return 'Peer $peer';
+    return peer;
   }
 
   Map<String, ChatGroup> get groups => _groups;
@@ -613,48 +658,85 @@ class Vigil {
       ..._signed.values,
       ..._nicks.values,
       if (chat != null) ...[
-        chat.id,
         if (chat.nick.isNotEmpty) chat.nick,
-        if (chat.signed.isNotEmpty) chat.signed,
+        for (final g in chat.gospels) ...[
+          localOf(g.id),
+          if (g.signed.isNotEmpty) g.signed,
+        ],
       ],
-      for (final g in _groups.values) ...g.members,
+      for (final g in _groups.values) ...g.members.map(localOf),
     };
   }
 
-  String get selfName {
-    final chat = _last.chat;
+  String self(String chat) {
+    final flock = flockOf(chat);
+    final running = _last.chat?.gospel(flock)?.id;
 
-    if (chat == null) {
+    if (running != null) {
+      return running;
+    }
+
+    for (final t in _list.where((t) => t.summary.voice)) {
+      final spi = t.summary.spi ?? '';
+
+      if (t.summary.flockId == flock && spi.length >= 4) {
+        return '$flock-${spi.substring(2)}';
+      }
+    }
+
+    return '';
+  }
+
+  bool mine(String peer) => isPeer(peer) && self(peer) == peer;
+
+  String get selfLabel {
+    final nick = _last.chat?.nick ?? '';
+
+    if (nick.isEmpty) {
       return 'You';
     }
 
-    if (chat.signed.isNotEmpty) {
-      return chat.signed;
-    }
-
-    if (chat.nick.isNotEmpty) {
-      return chosen(chat.nick);
-    }
-
-    return 'Peer ${chat.id}';
+    return chosen(nick);
   }
 
-  bool get selfPicked {
-    final chat = _last.chat;
+  String selfName(String chat) {
+    final status = _last.chat;
+    final gospel = status?.gospel(flockOf(chat));
 
-    return chat != null && chat.signed.isEmpty && chat.nick.isNotEmpty;
+    if (status == null || gospel == null) {
+      return 'You';
+    }
+
+    if (gospel.signed.isNotEmpty) {
+      return gospel.signed;
+    }
+
+    if (status.nick.isNotEmpty) {
+      return chosen(status.nick);
+    }
+
+    return gospel.id;
   }
 
-  bool get selfSigned => _last.chat?.signed.isNotEmpty ?? false;
+  bool selfPicked(String chat) {
+    final status = _last.chat;
+    final gospel = status?.gospel(flockOf(chat));
 
-  Set<String> get selfNames {
-    final chat = _last.chat;
+    return gospel != null && gospel.signed.isEmpty && status!.nick.isNotEmpty;
+  }
+
+  bool selfSigned(String chat) =>
+      _last.chat?.gospel(flockOf(chat))?.signed.isNotEmpty ?? false;
+
+  Set<String> selfNames(String chat) {
+    final status = _last.chat;
+    final gospel = status?.gospel(flockOf(chat));
 
     return {
-      if (chat != null) ...[
-        chat.id,
-        if (chat.nick.isNotEmpty) chat.nick,
-        if (chat.signed.isNotEmpty) chat.signed,
+      if (gospel != null) ...[
+        localOf(gospel.id),
+        if (status!.nick.isNotEmpty) status.nick,
+        if (gospel.signed.isNotEmpty) gospel.signed,
       ],
     };
   }
@@ -709,7 +791,7 @@ class Vigil {
 
     _names = {
       for (final entry in all.entries)
-        if (RegExp(r'^[0-9a-f]{2}$').hasMatch(entry.key))
+        if (isPeer(entry.key))
           entry.key: entry.value as String,
     };
     _publish(_last);
@@ -818,9 +900,6 @@ class Vigil {
 
     final tunnel = Tunnel.fromJson(jsonDecode(raw) as Map<String, dynamic>);
     await reload();
-    if (tunnel.summary.voice) {
-      await _restart();
-    }
 
     return tunnel;
   }
@@ -858,22 +937,8 @@ class Vigil {
   Future<void> unlinkDesktop() => _invoke('remove', 'companion');
 
   Future<void> remove(String id) async {
-    final voice = _list.any((t) => t.id == id && t.summary.voice);
-
     await _invoke('remove', id);
     await reload();
-
-    if (voice) {
-      await _loadNames('{}');
-      await _restart();
-    }
-  }
-
-  Future<void> _restart() async {
-    final id = _last.running ? _last.tunnelId : null;
-    if (id != null) {
-      await connect(id);
-    }
   }
 
   Future<void> connect(String id) async {
@@ -1153,7 +1218,7 @@ class Vigil {
   }
 
   Future<Uint8List?> avatar(String peer) {
-    if (peer.length != 2) {
+    if (peer != selfPeer && !isPeer(peer)) {
       return Future.value(null);
     }
 
@@ -1254,8 +1319,13 @@ class Vigil {
     await refresh();
   }
 
-  Future<String> createGroup(String name, List<String> members) async {
+  Future<String> createGroup(
+    String flock,
+    String name,
+    List<String> members,
+  ) async {
     final chat = await _invoke('groupCreate', {
+      'flock': flock,
       'name': name,
       'members': members,
     });
@@ -1429,7 +1499,7 @@ class Vigil {
 
       _groups = {
         for (final entry in (groups as Map<String, dynamic>).entries)
-          entry.key: ChatGroup(entry.value as Map<String, dynamic>),
+          entry.key: ChatGroup(entry.key, entry.value as Map<String, dynamic>),
       };
 
       final raw = jsonDecode(await _invoke('chatNames', null));

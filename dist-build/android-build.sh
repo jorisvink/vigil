@@ -22,12 +22,17 @@ fi
 echo "using android sdk $SDK"
 echo "using android ndk $NDK ($NDK_VERSION)"
 
-for abi in arm64-v8a x86_64; do
+for abi in arm64-v8a armeabi-v7a x86_64; do
 	case $abi in
 	arm64-v8a)
 		script=android-armv8-a.sh
 		sodium=libsodium-android-armv8-a+crypto
 		cc=aarch64-linux-android$API-clang
+		;;
+	armeabi-v7a)
+		script=android-armv7-a.sh
+		sodium=libsodium-android-armv7-a
+		cc=armv7a-linux-androideabi$API-clang
 		;;
 	x86_64)
 		script=android-x86_64.sh

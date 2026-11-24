@@ -4,6 +4,36 @@ import Security
 import UserNotifications
 import Vigil
 
+enum Flock {
+    static func hex(_ flock: UInt64) -> String { String(flock, radix: 16) }
+
+    static func hex(_ flock: String) -> String { hex(UInt64(flock, radix: 16) ?? 0) }
+
+    static func id(_ flock: UInt64, _ peer: UInt8) -> String { "\(hex(flock))-\(ChatVault.hex(peer))" }
+
+    static func id(_ flock: String, _ peer: String) -> String { "\(flock)-\(peer)" }
+
+    static func of(_ id: String) -> String { String(id.prefix { $0 != "-" }) }
+
+    static func number(_ id: String) -> UInt64 { UInt64(of(id), radix: 16) ?? 0 }
+
+    static func local(_ id: String) -> String {
+        guard let dash = id.firstIndex(of: "-") else { return id }
+
+        return String(id[id.index(after: dash)...])
+    }
+
+    static func peer(_ id: String) -> UInt8 { UInt8(local(id), radix: 16) ?? 0 }
+
+    static func valid(_ id: String) -> Bool {
+        guard id.range(of: "^[0-9a-f]{1,16}-[0-9a-f]{2}$", options: .regularExpression) != nil else {
+            return false
+        }
+
+        return peer(id) > 0 && peer(id) < 0xff
+    }
+}
+
 final class ChatVault {
     struct Locked: Error, CustomStringConvertible {
         var description: String { "Unlock your device to read your chats." }
@@ -143,6 +173,7 @@ final class ChatVault {
             _ = try outboxKey()
             try exclusive { try settleQueued() }
             try dropOldGroups()
+            try migrateFlock()
         }
     }
 
@@ -249,7 +280,7 @@ final class ChatVault {
 
                 for member in to where group {
                     var copy = entry
-                    copy["peer"] = member
+                    copy["peer"] = Flock.id(Flock.of(chat), member)
                     copy["chat"] = chat
                     copy["gs"] = serial
                     copy["at"] = time
@@ -579,6 +610,8 @@ final class ChatVault {
         guard owner else { return }
 
         try mutex.withLock {
+            try migrateFlock()
+
             let inbox = try folder(inbox)
             let pending = ((try? FileManager.default.contentsOfDirectory(atPath: inbox.path)) ?? [])
                 .filter { $0.hasSuffix(".box") }
@@ -919,9 +952,9 @@ final class ChatVault {
         return try mutex.withLock {
             var head = Head()
             let files = (try? FileManager.default.contentsOfDirectory(atPath: folder(avatars).path)) ?? []
-            let faces = files.filter { $0.count == 6 && $0.hasSuffix(".box") }.compactMap { UInt8($0.prefix(2), radix: 16) }
+            let faces = files.filter { $0.hasSuffix(".box") }.map { String($0.dropLast(4)) }.filter { Flock.valid($0) }
 
-            head.ops.append((["op": "avatars", "peers": faces.map { Self.hex($0) }], nil))
+            head.ops.append((["op": "avatars", "peers": faces], nil))
             head.ops.append((Self.prefs(), nil))
 
             for (chat, info) in try groups() {
@@ -939,7 +972,7 @@ final class ChatVault {
             for peer in faces {
                 guard let data = try peerAvatar(peer) else { continue }
 
-                head.ops.append((["op": "avatar", "peer": Self.hex(peer)], data))
+                head.ops.append((["op": "avatar", "peer": peer], data))
             }
 
             let names = (try? FileManager.default.contentsOfDirectory(atPath: folder(dir).path)) ?? []
@@ -1088,12 +1121,22 @@ final class ChatVault {
                 var last: Any = NSNull()
                 var topics: Any = [Any]()
 
-                if let data = conversation.last, let message = try? JSONSerialization.jsonObject(with: data) {
-                    last = message
+                if let data = conversation.last,
+                   let message = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                    last = Self.shown(id, message)
                 }
 
-                if let data = conversation.topics, let list = try? JSONSerialization.jsonObject(with: data) {
-                    topics = list
+                if let data = conversation.topics,
+                   let list = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] {
+                    topics = list.map { topic -> [String: Any] in
+                        var entry = topic
+
+                        if let message = topic["last"] as? [String: Any] {
+                            entry["last"] = Self.shown(id, message)
+                        }
+
+                        return entry
+                    }
                 }
 
                 var entry: [String: Any] = [
@@ -1140,10 +1183,10 @@ final class ChatVault {
             if epoch == current.epoch {
                 out["messages"] = try current.messages.indices
                     .filter { current.stamps[$0] > stamp }
-                    .map { try gone(current.messages[$0]) }
+                    .map { Self.shown(chat, try gone(current.messages[$0])) }
                 out["delta"] = true
             } else {
-                out["messages"] = try current.messages.map { try gone($0) }
+                out["messages"] = try current.messages.map { Self.shown(chat, try gone($0)) }
             }
 
             let meta = Self.topicMeta(conversation)
@@ -1238,7 +1281,7 @@ final class ChatVault {
                                 _ local: String) -> [[String: Any]] {
         members(info).filter { $0 != local }.map {
             var copy = entry
-            copy["peer"] = $0
+            copy["peer"] = Flock.id(Flock.of(chat), $0)
             copy["chat"] = chat
             copy["gs"] = info["serial"] ?? 0
             copy["at"] = now()
@@ -1308,18 +1351,16 @@ final class ChatVault {
 
     func admits() throws -> Set<String> {
         return try mutex.withLock {
-            if Self.reachable {
-                return Set((1..<0xff).map { Self.hex(UInt8($0)) }).subtracting(try ignored())
-            }
-
             var out = try accepted()
 
-            for case let info as [String: Any] in try groups().values {
+            for case let (chat, info as [String: Any]) in try groups() {
+                let flock = Flock.of(chat)
+
                 if let owner = info["owner"] as? String {
-                    out.insert(owner)
+                    out.insert(Flock.id(flock, owner))
                 }
 
-                out.formUnion(Self.members(info))
+                out.formUnion(Self.members(info).map { Flock.id(flock, $0) })
             }
 
             for entry in try outboxList() {
@@ -1373,7 +1414,7 @@ final class ChatVault {
         for name in names where name.hasSuffix(".log") {
             let id = String(name.dropLast(4))
 
-            if Self.chat(id) != nil, Self.group(id) == nil {
+            if Flock.valid(id) {
                 out.insert(id)
             }
         }
@@ -1438,9 +1479,10 @@ final class ChatVault {
         }
     }
 
-    func groupDrop(_ chat: String, _ peers: [String]) throws -> [(String, Int64)] {
+    func groupDrop(_ chat: String, _ members: [String]) throws -> [(String, Int64)] {
         return try mutex.withLock {
             var dropped = [(String, Int64)]()
+            let peers = members.map { Flock.id(Flock.of(chat), $0) }
 
             try exclusive {
                 let list = try outboxList()
@@ -1470,7 +1512,8 @@ final class ChatVault {
     func rosterQueue(_ chat: String, _ info: [String: Any], local: String,
                      also: [String] = [], only: [String]? = nil) throws {
         try mutex.withLock {
-            let targets = Set(only ?? (Self.members(info) + also)).subtracting([local])
+            let targets = Set(Set(only ?? (Self.members(info) + also)).subtracting([local])
+                .map { Flock.id(Flock.of(chat), $0) })
 
             try exclusive {
                 var list = try outboxList().filter {
@@ -1496,26 +1539,32 @@ final class ChatVault {
         try mutex.withLock {
             try exclusive {
                 var list = try outboxList()
-                list.append(["peer": owner, "chat": chat, "ref": ref(), "op": "leave", "at": Self.now()])
+                list.append([
+                    "peer": Flock.id(Flock.of(chat), owner), "chat": chat, "ref": ref(), "op": "leave",
+                    "at": Self.now(),
+                ])
                 try outboxSave(list)
             }
         }
     }
 
-    static func picked(_ value: Any?, without local: String) -> [String]? {
+    static func picked(_ value: Any?, flock: String, without local: String) -> [String]? {
         guard let list = value as? [String] else { return nil }
 
         var out = [String]()
 
-        for peer in list where peer != local && !out.contains(peer) {
-            guard peer.count == 2, let id = UInt8(peer, radix: 16), id > 0, id < 0xff else { continue }
-            out.append(peer)
+        for id in list where Flock.valid(id) && Flock.of(id) == flock {
+            let peer = Flock.local(id)
+
+            if peer != local && !out.contains(peer) {
+                out.append(peer)
+            }
         }
 
         return out
     }
 
-    func groupCreate(name: String, members: [String], local: String) throws -> String {
+    func groupCreate(flock: String, name: String, members: [String], local: String) throws -> String {
         let name = name.trimmingCharacters(in: .whitespacesAndNewlines)
 
         guard name.utf8.count <= Int(VIGIL_CHAT_GROUP_NAME_MAX) else {
@@ -1527,7 +1576,7 @@ final class ChatVault {
         }
 
         let id = String(format: "%016llx", UInt64.random(in: 1...UInt64.max))
-        let chat = Self.groupChat(local, id)
+        let chat = Self.groupChat(flock, local, id)
         let info: [String: Any] = [
             "owner": local, "id": id, "name": name, "members": members + [local], "serial": 1,
             "state": "open", "topics": [[String: Any]](),
@@ -2190,9 +2239,9 @@ final class ChatVault {
         }
     }
 
-    func topicsFill(_ local: String) throws {
+    func topicsFill(_ flock: String, local: String) throws {
         try mutex.withLock {
-            for (chat, value) in try groups() {
+            for (chat, value) in try groups() where Flock.of(chat) == flock {
                 guard var info = value as? [String: Any], info["owner"] as? String == local,
                       info["topics"] == nil else { continue }
 
@@ -2213,7 +2262,7 @@ final class ChatVault {
                 for peer in targets where peer != local {
                     for topic in topics {
                         list.append([
-                            "peer": peer, "chat": chat, "ref": ref(), "op": "topic",
+                            "peer": Flock.id(Flock.of(chat), peer), "chat": chat, "ref": ref(), "op": "topic",
                             "tp": topic["id"] ?? "", "name": topic["name"] ?? "", "color": topic["color"] ?? 0,
                             "gs": info["serial"] ?? 0, "at": Self.now(),
                         ])
@@ -2322,6 +2371,15 @@ final class ChatVault {
 
             return dropped
         }
+    }
+
+    private static func shown(_ chat: String, _ message: [String: Any]) -> [String: Any] {
+        guard let peer = message["peer"] as? String, peer.count == 2, peer != selfAuthor,
+              UInt8(peer, radix: 16) != nil else { return message }
+
+        var out = message
+        out["peer"] = Flock.id(Flock.of(chat), peer)
+        return out
     }
 
     private func gone(_ message: [String: Any]) throws -> [String: Any] {
@@ -2486,13 +2544,13 @@ final class ChatVault {
         }
     }
 
-    func peerAvatar(_ peer: UInt8) throws -> Data? {
+    func peerAvatar(_ peer: String) throws -> Data? {
         return try mutex.withLock {
-            let file = try folder(avatars).appendingPathComponent("\(Self.hex(peer)).box")
+            let file = try folder(avatars).appendingPathComponent(Self.box(peer))
             guard let sealed = try? Data(contentsOf: file) else { return nil }
 
             do {
-                return try unseal(sealed, info: Self.avatarAad + [peer])
+                return try unseal(sealed, info: Self.avatarAad + Data(peer.utf8))
             } catch let error as Locked {
                 throw error
             } catch is CryptoKitError {
@@ -2502,23 +2560,23 @@ final class ChatVault {
         }
     }
 
-    func peerAvatar(_ peer: UInt8, _ data: Data?) throws {
+    func peerAvatar(_ peer: String, _ data: Data?) throws {
         try mutex.withLock {
-            let file = try folder(avatars).appendingPathComponent("\(Self.hex(peer)).box")
+            let file = try folder(avatars).appendingPathComponent(Self.box(peer))
 
             if let data {
-                try write(file, seal(data, to: agreementPublic(), info: Self.avatarAad + [peer]))
+                try write(file, seal(data, to: agreementPublic(), info: Self.avatarAad + Data(peer.utf8)))
             } else {
                 try wipe(file)
             }
 
-            emit(["op": "avatar", "peer": Self.hex(peer)], data)
+            emit(["op": "avatar", "peer": peer], data)
         }
     }
 
-    func safetyTime(_ peer: UInt8) throws -> Int64 {
+    func safetyTime(_ peer: String) throws -> Int64 {
         return try mutex.withLock {
-            let file = try folder(safety).appendingPathComponent("\(Self.hex(peer)).box")
+            let file = try folder(safety).appendingPathComponent(Self.box(peer))
             let attributes = try? FileManager.default.attributesOfItem(atPath: file.path)
 
             guard let date = attributes?[.modificationDate] as? Date else { return 0 }
@@ -2527,12 +2585,12 @@ final class ChatVault {
         }
     }
 
-    func safetyCode(_ peer: UInt8) throws -> Data? {
+    func safetyCode(_ peer: String) throws -> Data? {
         return try mutex.withLock {
-            let file = try folder(safety).appendingPathComponent("\(Self.hex(peer)).box")
+            let file = try folder(safety).appendingPathComponent(Self.box(peer))
             guard let sealed = try? Data(contentsOf: file), sealed.count > Self.wrapped else { return nil }
 
-            let aad = Self.safetyAad + [peer]
+            let aad = Self.safetyAad + Data(peer.utf8)
 
             do {
                 var raw = try openBox(Data(sealed.prefix(Self.wrapped)), key: outboxKey(), aad: aad)
@@ -2546,16 +2604,16 @@ final class ChatVault {
         }
     }
 
-    func safetyCode(_ peer: UInt8, _ plain: Data?) throws {
+    func safetyCode(_ peer: String, _ plain: Data?) throws {
         try mutex.withLock {
-            let file = try folder(safety).appendingPathComponent("\(Self.hex(peer)).box")
+            let file = try folder(safety).appendingPathComponent(Self.box(peer))
 
             guard let plain else {
                 try wipe(file)
                 return
             }
 
-            let aad = Self.safetyAad + [peer]
+            let aad = Self.safetyAad + Data(peer.utf8)
             let key = SymmetricKey(size: .bits256)
             var raw = key.withUnsafeBytes { Data($0) }
             defer { raw.resetBytes(in: 0..<raw.count) }
@@ -2569,12 +2627,12 @@ final class ChatVault {
             let files = (try? FileManager.default.contentsOfDirectory(atPath: folder(safety).path)) ?? []
             var out = [String]()
 
-            for name in files where name.count == 6 && name.hasSuffix(".box") {
-                guard let peer = UInt8(name.prefix(2), radix: 16) else { continue }
-                guard var record = try safetyCode(peer) else { continue }
+            for name in files where name.hasSuffix(".box") {
+                let peer = String(name.dropLast(4))
+                guard Flock.valid(peer), var record = try safetyCode(peer) else { continue }
 
                 if record.count == Int(VIGIL_ADDITIONAL_INPUT_LEN) {
-                    out.append(Self.hex(peer))
+                    out.append(peer)
                 }
 
                 record.resetBytes(in: 0..<record.count)
@@ -2602,15 +2660,20 @@ final class ChatVault {
         }
     }
 
-    static func safetyApply(_ peer: UInt8) {
-        guard codes().contains(hex(peer)),
+    static func safetyApply(_ peer: String) {
+        let flock = Flock.number(peer)
+        let id = Flock.peer(peer)
+
+        guard codes().contains(peer),
               var record = try? shared.safetyCode(peer),
               record.count == Int(VIGIL_ADDITIONAL_INPUT_LEN) else {
-            vigil_additional_input(peer, nil, 0)
+            vigil_additional_input(flock, id, nil, 0)
             return
         }
 
-        record.withUnsafeBytes { vigil_additional_input(peer, $0.baseAddress, Int(VIGIL_ADDITIONAL_INPUT_LEN)) }
+        record.withUnsafeBytes {
+            vigil_additional_input(flock, id, $0.baseAddress, Int(VIGIL_ADDITIONAL_INPUT_LEN))
+        }
         record.resetBytes(in: 0..<record.count)
     }
 
@@ -2620,20 +2683,22 @@ final class ChatVault {
             return
         }
 
-        for name in files where name.count == 6 && name.hasSuffix(".box") {
-            if let peer = UInt8(name.prefix(2), radix: 16), peer > 0, peer < 0xff {
+        for name in files where name.hasSuffix(".box") {
+            let peer = String(name.dropLast(4))
+
+            if Flock.valid(peer) {
                 safetyApply(peer)
             }
         }
     }
 
-    func peerName(_ peer: UInt8, nick: String, signed: String) throws {
+    func peerName(_ peer: String, nick: String, signed: String) throws {
         try mutex.withLock {
-            let file = try folder(names).appendingPathComponent("\(Self.hex(peer)).box")
+            let file = try folder(names).appendingPathComponent(Self.box(peer))
             let plain = try JSONSerialization.data(withJSONObject: ["nick": nick, "signed": signed])
 
-            try write(file, seal(plain, to: agreementPublic(), info: Self.nameAad + [peer]))
-            emit(["op": "name", "peer": Self.hex(peer), "nick": nick, "signed": signed])
+            try write(file, seal(plain, to: agreementPublic(), info: Self.nameAad + Data(peer.utf8)))
+            emit(["op": "name", "peer": peer, "nick": nick, "signed": signed])
         }
     }
 
@@ -2643,15 +2708,15 @@ final class ChatVault {
             let files = (try? FileManager.default.contentsOfDirectory(atPath: names.path)) ?? []
             var out = [String: Any]()
 
-            for name in files where name.count == 6 && name.hasSuffix(".box") {
-                let hex = String(name.prefix(2))
-                guard let peer = UInt8(hex, radix: 16) else { continue }
+            for name in files where name.hasSuffix(".box") {
+                let hex = String(name.dropLast(4))
+                guard Flock.valid(hex) else { continue }
 
                 let file = names.appendingPathComponent(name)
                 let plain: Data
 
                 do {
-                    plain = try unseal(Data(contentsOf: file), info: Self.nameAad + [peer])
+                    plain = try unseal(Data(contentsOf: file), info: Self.nameAad + Data(hex.utf8))
                 } catch let error as Locked {
                     throw error
                 } catch is CryptoKitError {
@@ -2703,7 +2768,7 @@ final class ChatVault {
             }
         }
 
-        try receiptWrite(chat, ref: ref, kind: kind, member: chat != peer ? peer : nil)
+        try receiptWrite(chat, ref: ref, kind: kind, member: chat != peer ? Flock.local(peer) : nil)
     }
 
     private func receiptWrite(_ chat: String, ref: Int64, kind: String, member: String?) throws {
@@ -2752,9 +2817,9 @@ final class ChatVault {
 
                     switch entry["op"] as? String {
                     case "roster", "topic":
-                        stale.append((chat, peer))
+                        stale.append((chat, Flock.local(peer)))
                     case nil:
-                        try receiptWrite(chat, ref: ref, kind: "expired", member: peer)
+                        try receiptWrite(chat, ref: ref, kind: "expired", member: Flock.local(peer))
                     default:
                         break
                     }
@@ -3118,11 +3183,34 @@ final class ChatVault {
             merged = true
         }
 
+        var conversation = try Self.decode(plain)
+        let count = try framed(chat)
+
+        if count != conversation.count {
+            if count < conversation.count { conversation.flags |= Self.truncated }
+            conversation.count = count
+            conversation.unread = -1
+            conversation.last = nil
+            conversation.topics = nil
+            try save(chat, conversation)
+        }
+
+        if merged {
+            try save(chat, conversation)
+            try remove("meta.\(chat)")
+        }
+
+        open[chat] = conversation
+
+        return conversation
+    }
+
+    private static func decode(_ plain: [UInt8]) throws -> Conversation {
         guard plain.count >= 56 else { throw Failure(description: "invalid conversation key") }
 
         var conversation = Conversation(
             key: SymmetricKey(data: plain[0..<32]),
-            count: Self.number(plain, 32), read: Self.number(plain, 40), flags: Self.number(plain, 48))
+            count: number(plain, 32), read: number(plain, 40), flags: number(plain, 48))
 
         if plain.count >= 68 {
             let size = Int(plain[64]) << 24 | Int(plain[65]) << 16 | Int(plain[66]) << 8 | Int(plain[67])
@@ -3155,24 +3243,6 @@ final class ChatVault {
                 }
             }
         }
-
-        let count = try framed(chat)
-
-        if count != conversation.count {
-            if count < conversation.count { conversation.flags |= Self.truncated }
-            conversation.count = count
-            conversation.unread = -1
-            conversation.last = nil
-            conversation.topics = nil
-            try save(chat, conversation)
-        }
-
-        if merged {
-            try save(chat, conversation)
-            try remove("meta.\(chat)")
-        }
-
-        open[chat] = conversation
 
         return conversation
     }
@@ -3370,6 +3440,302 @@ final class ChatVault {
         try FileManager.default.removeItem(at: file)
     }
 
+    static func legacyFlock() -> String? {
+        let gospels = defaults.array(forKey: "gospels") as? [[String: Any]] ?? []
+
+        return gospels.first?["flock"] as? String
+    }
+
+    func migrateFlock() throws {
+        try mutex.withLock {
+            let marker = try folder(dir).appendingPathComponent("flocked")
+            let step = (try? String(contentsOf: marker, encoding: .utf8)) ?? ""
+
+            guard step != Self.migrated else { return }
+            guard let flock = Self.legacyFlock() else { return }
+
+            if step.isEmpty {
+                try exclusive { try migrateLists(flock) }
+                try migrateBoxes(flock)
+                try write(marker, Data(Self.boxed.utf8))
+            }
+
+            guard owner else { return }
+
+            try migrateInbox(flock)
+
+            let names = (try? FileManager.default.contentsOfDirectory(atPath: folder(dir).path)) ?? []
+
+            for name in names where name.hasSuffix(".log") {
+                let old = String(name.dropLast(4))
+
+                guard old.range(of: Self.oldChat, options: .regularExpression) != nil else { continue }
+
+                do {
+                    try migrateChat(old, "\(flock)-\(old)", flock)
+                } catch is CryptoKitError {
+                    continue
+                }
+            }
+
+            try migratePeers(folder(self.names), Self.nameAad, flock)
+            try migratePeers(folder(avatars), Self.avatarAad, flock)
+            try write(marker, Data(Self.migrated.utf8))
+        }
+    }
+
+    private func migrateLists(_ flock: String) throws {
+        let list = try outboxList()
+
+        if !list.isEmpty {
+            try outboxSave(list.map { entry in
+                var moved = entry
+
+                for key in ["peer", "chat", "data"] {
+                    if let value = entry[key] as? String {
+                        moved[key] = Self.moved(flock, value)
+                    }
+                }
+
+                return moved
+            })
+        }
+
+        let dir = try folder(self.dir)
+
+        for (name, aad) in [("groups.box", Self.groupsAad), ("ambry.box", Self.ambryAad)] {
+            let file = dir.appendingPathComponent(name)
+            guard FileManager.default.fileExists(atPath: file.path) else { continue }
+
+            let old = try JSONSerialization.jsonObject(
+                with: openBox(Data(contentsOf: file), key: outboxKey(), aad: aad)) as? [String: Any] ?? [:]
+            let moved = Dictionary(uniqueKeysWithValues: old.map { (Self.moved(flock, $0.key), $0.value) })
+
+            try write(file, sealBox(JSONSerialization.data(withJSONObject: moved), key: outboxKey(), aad: aad))
+        }
+
+        for (name, aad) in [("accepted.box", Self.acceptedAad), ("ignored.box", Self.ignoredAad)] {
+            let file = dir.appendingPathComponent(name)
+            guard FileManager.default.fileExists(atPath: file.path) else { continue }
+
+            let old = try JSONSerialization.jsonObject(
+                with: openBox(Data(contentsOf: file), key: outboxKey(), aad: aad)) as? [String] ?? []
+
+            try write(file, sealBox(JSONSerialization.data(withJSONObject: old.map { Self.moved(flock, $0) }),
+                                    key: outboxKey(), aad: aad))
+        }
+
+        let receipts = dir.appendingPathComponent("receipts.box")
+
+        if FileManager.default.fileExists(atPath: receipts.path) {
+            let old = try JSONSerialization.jsonObject(
+                with: openBox(Data(contentsOf: receipts), key: outboxKey(), aad: Self.receiptsAad))
+                as? [[String: Any]] ?? []
+            let moved = old.map { receipt -> [String: Any] in
+                var entry = receipt
+                entry["peer"] = Self.moved(flock, receipt["peer"] as? String ?? "")
+                return entry
+            }
+
+            try write(receipts, sealBox(JSONSerialization.data(withJSONObject: moved), key: outboxKey(),
+                                        aad: Self.receiptsAad))
+        }
+
+        Self.defaults.set(Self.accepts + 1, forKey: "chatAccepts")
+    }
+
+    private func migrateBoxes(_ flock: String) throws {
+        try lostChange { lost in
+            lost.chats = Set(lost.chats.map { Self.moved(flock, $0) })
+            lost.files = Dictionary(uniqueKeysWithValues: lost.files.map {
+                (Self.moved(flock, $0.key), Self.moved(flock, $0.value))
+            })
+            return true
+        }
+
+        let safety = try folder(self.safety)
+        let files = (try? FileManager.default.contentsOfDirectory(atPath: safety.path)) ?? []
+
+        for name in files where name.count == 6 && name.hasSuffix(".box") {
+            guard let peer = UInt8(name.prefix(2), radix: 16) else { continue }
+
+            let file = safety.appendingPathComponent(name)
+            let sealed = try Data(contentsOf: file)
+            let aad = Self.safetyAad + [peer]
+
+            guard sealed.count > Self.wrapped else {
+                try wipe(file)
+                continue
+            }
+
+            var raw = try openBox(Data(sealed.prefix(Self.wrapped)), key: outboxKey(), aad: aad)
+            defer { raw.resetBytes(in: 0..<raw.count) }
+
+            var plain = try openBox(Data(sealed.dropFirst(Self.wrapped)), key: SymmetricKey(data: raw), aad: aad)
+            defer { plain.resetBytes(in: 0..<plain.count) }
+
+            try safetyCode("\(flock)-\(name.prefix(2))", plain)
+            try wipe(file)
+        }
+
+        _ = state { all in
+            for key in ["names", "mutes"] {
+                if let old = all[key] as? [String: Any] {
+                    all[key] = Dictionary(uniqueKeysWithValues: old.map { (Self.moved(flock, $0.key), $0.value) })
+                }
+            }
+
+            for key in ["stars", "compacts", "order", "codes"] {
+                if let old = all[key] as? [String] {
+                    all[key] = old.map { Self.moved(flock, $0) }
+                }
+            }
+
+            if let old = all["unseen"] as? [String: Any] {
+                all["unseen"] = Dictionary(uniqueKeysWithValues: old.map { (Self.moved(flock, $0.key), $0.value) })
+            }
+        }
+    }
+
+    private static func moved(_ flock: String, _ id: String) -> String {
+        id.range(of: oldId, options: .regularExpression) != nil ? "\(flock)-\(id)" : id
+    }
+
+    private func migrateInbox(_ flock: String) throws {
+        let inbox = try folder(inbox)
+        let names = (try? FileManager.default.contentsOfDirectory(atPath: inbox.path)) ?? []
+
+        for name in names where name.hasSuffix(".box") {
+            let file = inbox.appendingPathComponent(name)
+
+            guard let plain = try? unseal(Data(contentsOf: file), info: Self.inboxAad),
+                  var entry = (try? JSONSerialization.jsonObject(with: plain)) as? [String: Any] else { continue }
+
+            let chat = entry["chat"] as? String ?? entry["peer"] as? String ?? ""
+
+            guard chat.range(of: Self.oldChat, options: .regularExpression) != nil else { continue }
+
+            entry["chat"] = "\(flock)-\(chat)"
+
+            if var rec = entry["rec"] as? [String: Any], let data = rec["data"] as? String {
+                rec["data"] = "\(flock)-\(data)"
+                entry["rec"] = rec
+            }
+
+            try write(file, seal(JSONSerialization.data(withJSONObject: entry), to: agreementPublic(),
+                                 info: Self.inboxAad))
+        }
+    }
+
+    private func migrateChat(_ old: String, _ new: String, _ flock: String) throws {
+        let label = old.count == 2 ? Data([UInt8(old, radix: 16) ?? 0]) : Data(old.utf8)
+        let dir = try folder(self.dir)
+
+        guard let wrapped = try item("key.\(old)") else { return }
+
+        var plain = [UInt8](try unseal(wrapped, info: Self.keyAad + label))
+
+        if plain.count == 32, let sealed = try item("meta.\(old)") {
+            plain.append(contentsOf: [UInt8](try unseal(sealed, info: Self.metaAad + label)))
+        }
+
+        var conversation = try Self.decode(plain)
+
+        plain.withUnsafeMutableBufferPointer { $0.update(repeating: 0) }
+
+        if let last = conversation.last, let text = String(data: last, encoding: .utf8) {
+            conversation.last = Data(text.replacingOccurrences(of: "\"\(old)-", with: "\"\(new)-").utf8)
+        }
+
+        if let topics = conversation.topics, let text = String(data: topics, encoding: .utf8) {
+            conversation.topics = Data(text.replacingOccurrences(of: "\"\(old)-", with: "\"\(new)-").utf8)
+        }
+
+        let files = (try? FileManager.default.contentsOfDirectory(atPath: dir.path)) ?? []
+        let data = files.filter { $0.range(of: "^\(old)-[0-9a-f]{16}\\.dat$", options: .regularExpression) != nil }
+
+        for name in data {
+            let moved = new + name.dropFirst(old.count)
+            var aad = Self.dataAad
+            aad.append(label)
+            aad.append(Data(name.utf8))
+
+            var content = try openBox(Data(contentsOf: dir.appendingPathComponent(name)),
+                                      key: conversation.key, aad: aad)
+            defer { content.resetBytes(in: 0..<content.count) }
+
+            try write(dir.appendingPathComponent(moved),
+                      sealBox(content, key: conversation.key, aad: Self.dataAad(new, moved)))
+        }
+
+        let log = dir.appendingPathComponent("\(old).log")
+        let bytes = [UInt8]((try? Data(contentsOf: log)) ?? Data())
+        var out = Data()
+        var offset = 0
+        var seq: UInt64 = 0
+
+        while offset + 4 <= bytes.count {
+            let len = Int(bytes[offset]) << 24 | Int(bytes[offset + 1]) << 16 |
+                Int(bytes[offset + 2]) << 8 | Int(bytes[offset + 3])
+            guard len >= 28, offset + 4 + len <= bytes.count else { break }
+
+            var aad = Self.recordAad
+            aad.append(label)
+            aad.append(contentsOf: Self.bytes(seq))
+
+            guard let record = try? openBox(Data(bytes[(offset + 4)..<(offset + 4 + len)]),
+                                            key: conversation.key, aad: aad),
+                  var json = (try? JSONSerialization.jsonObject(with: record)) as? [String: Any] else { break }
+
+            if let file = json["data"] as? String, file.hasPrefix("\(old)-") {
+                json["data"] = new + file.dropFirst(old.count)
+            }
+
+            let sealed = try sealBox(JSONSerialization.data(withJSONObject: json), key: conversation.key,
+                                     aad: Self.aad(new, seq: seq))
+
+            out.append(contentsOf: Self.bytes(UInt32(sealed.count)))
+            out.append(sealed)
+
+            offset += 4 + len
+            seq += 1
+        }
+
+        conversation.count = seq
+
+        try write(dir.appendingPathComponent("\(new).log"), out)
+        try save(new, conversation)
+
+        try remove("meta.\(old)")
+        try remove("key.\(old)")
+        try wipe(log)
+
+        for name in data {
+            try wipe(dir.appendingPathComponent(name))
+        }
+    }
+
+    private func migratePeers(_ folder: URL, _ prefix: Data, _ flock: String) throws {
+        let files = (try? FileManager.default.contentsOfDirectory(atPath: folder.path)) ?? []
+
+        for name in files where name.count == 6 && name.hasSuffix(".box") {
+            guard let peer = UInt8(name.prefix(2), radix: 16) else { continue }
+
+            let file = folder.appendingPathComponent(name)
+
+            guard let plain = try? unseal(Data(contentsOf: file), info: prefix + [peer]) else {
+                try wipe(file)
+                continue
+            }
+
+            let id = "\(flock)-\(name.prefix(2))"
+
+            try write(folder.appendingPathComponent("\(id).box"),
+                      seal(plain, to: agreementPublic(), info: prefix + Data(id.utf8)))
+            try wipe(file)
+        }
+    }
+
     private static func aad(_ chat: String, seq: UInt64) -> Data {
         var aad = recordAad
         aad.append(label(chat))
@@ -3378,8 +3744,7 @@ final class ChatVault {
     }
 
     private static func label(_ chat: String) -> Data {
-        if group(chat) != nil { return Data(chat.utf8) }
-        return Data([UInt8(chat, radix: 16) ?? 0])
+        Data(chat.utf8)
     }
 
     private static func bytes<T: FixedWidthInteger>(_ value: T) -> [UInt8] {
@@ -3392,26 +3757,33 @@ final class ChatVault {
 
     static func hex(_ peer: UInt8) -> String { String(format: "%02x", peer) }
 
+    private static func box(_ peer: String) -> String { "\(peer).box" }
+
     static func chat(_ id: String) -> String? {
         if group(id) != nil { return id }
-        guard id.count == 2, id == id.lowercased(), let peer = UInt8(id, radix: 16),
-              peer > 0, peer < 0xff else { return nil }
-        return id
+        return Flock.valid(id) ? id : nil
     }
 
-    static func group(_ chat: String) -> (owner: UInt8, id: UInt64)? {
-        guard chat.count == 19, chat.hasPrefix("g"), chat == chat.lowercased(),
-              let owner = UInt8(chat.dropFirst().prefix(2), radix: 16),
-              let id = UInt64(chat.dropFirst(3), radix: 16) else { return nil }
-        return (owner, id)
+    static func group(_ chat: String) -> (flock: String, owner: UInt8, id: UInt64)? {
+        guard chat.range(of: "^[0-9a-f]{1,16}-g[0-9a-f]{18}$", options: .regularExpression) != nil else {
+            return nil
+        }
+
+        let local = Flock.local(chat)
+
+        guard let owner = UInt8(local.dropFirst().prefix(2), radix: 16),
+              let id = UInt64(local.dropFirst(3), radix: 16) else { return nil }
+        return (Flock.of(chat), owner, id)
     }
 
-    static func groupChat(_ owner: String, _ group: String) -> String { "g\(owner)\(group)" }
+    static func groupChat(_ flock: String, _ owner: String, _ group: String) -> String {
+        "\(flock)-g\(owner)\(group)"
+    }
 
-    static func name(_ peer: UInt8) -> String { names()[hex(peer)] ?? "Peer \(hex(peer))" }
+    static func name(_ peer: String) -> String { names()[peer] ?? peer }
 
     static func name(chat: String) -> String {
-        guard group(chat) != nil else { return names()[chat] ?? "Peer \(chat)" }
+        guard group(chat) != nil else { return names()[chat] ?? chat }
 
         let name = (try? shared.groupInfo(chat))?["name"] as? String ?? ""
 
@@ -3421,15 +3793,14 @@ final class ChatVault {
     static func names() -> [String: String] {
         let all = shared.state()["names"] as? [String: String] ?? [:]
 
-        return all.filter { $0.key.count == 2 && UInt8($0.key, radix: 16) != nil && $0.key == $0.key.lowercased() }
+        return all.filter { Flock.valid($0.key) }
     }
 
     static func save(_ names: [String: Any]) -> [String: String] {
         var clean = [String: String]()
 
         for (key, value) in names {
-            guard key.count == 2, UInt8(key, radix: 16) != nil, key == key.lowercased(),
-                  let value = value as? String else { continue }
+            guard Flock.valid(key), let value = value as? String else { continue }
 
             let name = String(value.trimmingCharacters(in: .whitespacesAndNewlines).prefix(32))
             if !name.isEmpty { clean[key] = name }
@@ -3556,6 +3927,10 @@ final class ChatVault {
         ])
     }
 
+    private static let oldChat = "^([0-9a-f]{2}|g[0-9a-f]{18})$"
+    private static let oldId = "^([0-9a-f]{2}|g[0-9a-f]{18})(-[0-9a-f]{16}\\.dat)?$"
+    private static let boxed = "1"
+    private static let migrated = "2"
     private static let namesKey = "peerNames"
     private static let mutesKey = "chatMutes"
     private static let starsKey = "chatStars"

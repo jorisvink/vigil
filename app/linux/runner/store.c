@@ -86,7 +86,7 @@
 #define STORE_DATA_MAX		(VIGIL_CHAT_DATA_MAX + STORE_SEAL_LEN)
 
 /* The longest context of an op in the log of a chat, the chat and seq. */
-#define STORE_CHAT_CTX		32
+#define STORE_CHAT_CTX		(STORE_CHAT_MAX - 1 + sizeof(u_int64_t))
 
 /* The record we hand the user interface for an avatar we keep. */
 #define STORE_AVATAR_RECORD	\
@@ -96,7 +96,7 @@
  * What we know of the log of a chat, the number of records in it.
  */
 struct store_chat {
-	char			chat[24];
+	char			chat[STORE_CHAT_MAX];
 	u_int64_t		count;
 	LIST_ENTRY(store_chat)	list;
 };
@@ -171,6 +171,8 @@ static void	store_out_record(struct store_out *, const char *, size_t);
 
 static void	store_chat_each(const char *, const char *, void *);
 static void	store_chat_count(const char *, const char *, void *);
+static void	store_chat_legacy(const char *, const char *, void *);
+static void	store_data_legacy(const char *, const char *, void *);
 static int	store_chat_path(const char *, char *, size_t);
 static struct store_chat	*store_chat_find(const char *);
 static size_t	store_chat_ctx(const char *, u_int64_t, u_int8_t *, size_t);
@@ -302,6 +304,62 @@ store_open(const char *pass, size_t len)
 }
 
 /*
+ * Returns 1 if we hold a chat or data named from before our phone ran more
+ * than one flock, a full resync from our phone replaces it.
+ */
+int
+store_legacy(void)
+{
+	int		found;
+
+	PRECOND(unlocked);
+
+	found = 0;
+	store_each("chats", store_chat_legacy, &found);
+	store_each("data", store_data_legacy, &found);
+	store_each("state", store_data_legacy, &found);
+
+	return (found);
+}
+
+/*
+ * Note a chat in the given directory whose name is not one we use.
+ */
+static void
+store_chat_legacy(const char *dir, const char *chat, void *arg)
+{
+	int		*found;
+
+	PRECOND(dir != NULL);
+	PRECOND(chat != NULL);
+	PRECOND(arg != NULL);
+
+	found = arg;
+
+	if (store_chat_valid(chat) == -1)
+		*found = 1;
+}
+
+/*
+ * Note data in the given directory under a name we do not use.
+ */
+static void
+store_data_legacy(const char *dir, const char *name, void *arg)
+{
+	int		*found;
+	char		path[1024];
+
+	PRECOND(dir != NULL);
+	PRECOND(name != NULL);
+	PRECOND(arg != NULL);
+
+	found = arg;
+
+	if (store_data_path(name, path, sizeof(path)) == -1)
+		*found = 1;
+}
+
+/*
  * Seal the given op and add it to the end of the log of the given chat,
  * it is on disk when we return 0.
  */
@@ -424,7 +482,7 @@ void
 store_chat_delete(const char *chat)
 {
 	int		ret;
-	char		id[24];
+	char		id[STORE_CHAT_MAX];
 	char		name[STORE_NAME_MAX];
 
 	PRECOND(chat != NULL);
@@ -843,7 +901,7 @@ store_drop_peers(const char *dir, const char *name, void *arg)
 
 	if (!strncmp(name, "name-", 5) || !strncmp(name, "avatar-", 7) ||
 	    !strncmp(name, "group-", 6))
-		store_data_drop(name);
+		store_drop_any(dir, name, NULL);
 }
 
 /*
@@ -852,20 +910,23 @@ store_drop_peers(const char *dir, const char *name, void *arg)
 static void
 store_drop_faces(const char *dir, const char *name, void *arg)
 {
+	int			len;
 	struct store_peers	*list;
-	char			want[8];
+	char			want[STORE_PEER_MAX + 2];
 
 	PRECOND(name != NULL);
 	PRECOND(arg != NULL);
 
 	list = arg;
 
-	if (strncmp(name, "avatar-", 7) || strlen(name) != 9)
+	if (strncmp(name, "avatar-", 7) || store_peer_valid(name + 7) == -1)
 		return;
 
-	(void)snprintf(want, sizeof(want), "\"%s\"", name + 7);
+	len = snprintf(want, sizeof(want), "\"%s\"", name + 7);
+	if (len < 0 || (size_t)len >= sizeof(want))
+		return;
 
-	if (memmem(list->json, list->len, want, 4) == NULL)
+	if (memmem(list->json, list->len, want, len) == NULL)
 		store_data_drop(name);
 }
 
@@ -996,25 +1057,59 @@ store_chat_path(const char *chat, char *out, size_t len)
 }
 
 /*
- * Returns 0 if the given name is that of a chat, two hex digits for a peer
- * or a g and 18 hex digits for a group.
+ * Returns 0 if the given name is that of a chat, a peer as in
+ * store_peer_valid() or a flock in hex, a dash, a g and 18 hex digits for
+ * a group.
  */
 int
 store_chat_valid(const char *chat)
 {
 	size_t		len;
+	const char	*dash;
 
 	PRECOND(chat != NULL);
 
-	len = strlen(chat);
+	if (store_peer_valid(chat) == 0)
+		return (0);
 
-	if (len == 2)
-		return (store_hex(chat, 2));
+	if ((dash = strchr(chat, '-')) == NULL)
+		return (-1);
 
-	if (len == 19 && chat[0] == 'g')
-		return (store_hex(chat + 1, 18));
+	len = dash - chat;
 
-	return (-1);
+	if (len == 0 || len > 16 || store_hex(chat, len) == -1)
+		return (-1);
+
+	if (strlen(dash + 1) != 19 || dash[1] != 'g')
+		return (-1);
+
+	return (store_hex(dash + 2, 18));
+}
+
+/*
+ * Returns 0 if the given name is that of a peer, a flock in hex, a dash
+ * and two hex digits.
+ */
+int
+store_peer_valid(const char *peer)
+{
+	size_t		len;
+	const char	*dash;
+
+	PRECOND(peer != NULL);
+
+	if ((dash = strchr(peer, '-')) == NULL)
+		return (-1);
+
+	len = dash - peer;
+
+	if (len == 0 || len > 16 || store_hex(peer, len) == -1)
+		return (-1);
+
+	if (strlen(dash + 1) != 2)
+		return (-1);
+
+	return (store_hex(dash + 1, 2));
 }
 
 /*
@@ -1286,7 +1381,7 @@ static int
 store_data_path(const char *name, char *out, size_t len)
 {
 	size_t		namelen;
-	char		chat[24];
+	char		chat[STORE_CHAT_MAX];
 	const char	*dir, *dash;
 	char		file[STORE_NAME_MAX + 8];
 
@@ -1301,17 +1396,20 @@ store_data_path(const char *name, char *out, size_t len)
 	dir = "state";
 
 	if (!strncmp(name, "group-", 6)) {
-		if (store_chat_valid(name + 6) == -1 || name[6] != 'g')
+		if (store_chat_valid(name + 6) == -1)
+			return (-1);
+
+		if (store_peer_valid(name + 6) == 0)
 			return (-1);
 	} else if (!strncmp(name, "name-", 5)) {
-		if (namelen != 7 || store_hex(name + 5, 2) == -1)
+		if (store_peer_valid(name + 5) == -1)
 			return (-1);
 	} else if (!strncmp(name, "avatar-", 7)) {
-		if (namelen != 9 || store_hex(name + 7, 2) == -1)
+		if (store_peer_valid(name + 7) == -1)
 			return (-1);
 	} else if (strcmp(name, "prefs") && strcmp(name, "self") &&
 	    strcmp(name, "self-avatar")) {
-		if ((dash = strchr(name, '-')) == NULL)
+		if ((dash = strrchr(name, '-')) == NULL)
 			return (-1);
 
 		if ((size_t)(dash - name) >= sizeof(chat))

@@ -112,6 +112,7 @@ class MainActivity : FlutterActivity() {
                 "import" -> wiped(call.arguments as ByteArray) {
                     val tunnel = imported(it)
                     store.companionApply()
+                    gospels(tunnel.getJSONObject("summary"))
                     result.success(tunnel.toString())
                 }
                 "handoff" -> result.success(Handoff.token() ?: ByteArray(0))
@@ -120,8 +121,12 @@ class MainActivity : FlutterActivity() {
                         .toString()
                 )
                 "remove" -> {
-                    store.remove(call.arguments as String)
+                    val id = call.arguments as String
+                    val summary = store.summary(id)
+
+                    store.remove(id)
                     store.companionApply()
+                    gospels(summary)
                     result.success("")
                 }
                 "companion" -> result.success(store.companionSummary()?.toString() ?: "")
@@ -172,7 +177,7 @@ class MainActivity : FlutterActivity() {
 
                     withMicrophone(
                         service(VigilVpnService.ACTION_CALL)
-                            .putExtra(VigilVpnService.EXTRA_PEER, call.argument<String>("peer")!!.toInt(16))
+                            .putExtra(VigilVpnService.EXTRA_PEER, Chats.checked(call.argument<String>("peer")!!))
                             .putExtra(VigilVpnService.EXTRA_VIDEO, video),
                         result,
                         video
@@ -306,7 +311,7 @@ class MainActivity : FlutterActivity() {
 
                         val ref = vault.ref()
 
-                        Chats.submit(vault, vault.send(id, text, ref, quote, topic, Chats.self()))
+                        Chats.submit(vault, vault.send(id, text, ref, quote, topic, Chats.self(id)))
                         Chats.changed()
                         ref.toString()
                     }
@@ -420,8 +425,8 @@ class MainActivity : FlutterActivity() {
                         if (peer == ChatVault.SELF) {
                             Chats.vault(this).ownAvatar()
                         } else {
-                            require(peer.matches(Regex("[0-9a-f]{2}"))) { "There is no peer $peer." }
-                            Chats.vault(this).peerAvatar(peer.toInt(16))
+                            require(Flock.valid(peer)) { "There is no peer $peer." }
+                            Chats.vault(this).peerAvatar(peer)
                         }
                     }
                 }
@@ -562,10 +567,11 @@ class MainActivity : FlutterActivity() {
                     }
                 }
                 "groupCreate" -> {
+                    val flock = call.argument<String>("flock")!!
                     val name = call.argument<String>("name")!!.trim()
                     val members = call.argument<List<String>>("members")!!
 
-                    background(result) { Chats.groupCreate(this, name, members) }
+                    background(result) { Chats.groupCreate(this, flock, name, members) }
                 }
                 "groupEdit" -> {
                     val id = chat(call.argument<String>("peer")!!)
@@ -749,6 +755,18 @@ class MainActivity : FlutterActivity() {
         } catch (e: TunnelStore.Invalid) {
             return JSONObject().put("error", e.message).toString()
         }
+    }
+
+    private fun gospels(summary: JSONObject) {
+        if (summary.optString("mode") != "gospel") {
+            return
+        }
+
+        if (VigilVpnService.active == null) {
+            return
+        }
+
+        startService(service(VigilVpnService.ACTION_GOSPEL).putExtra(VigilVpnService.EXTRA_ON, store.gospel))
     }
 
     private fun imported(config: ByteArray): JSONObject {
@@ -1054,7 +1072,7 @@ class MainActivity : FlutterActivity() {
         val vault = Chats.vault(this)
         val ref = vault.ref()
 
-        Chats.submit(vault, vault.sendData(id, media, name, data, ref, topic, Chats.self()))
+        Chats.submit(vault, vault.sendData(id, media, name, data, ref, topic, Chats.self(id)))
         Chats.changed()
 
         return ref.toString()

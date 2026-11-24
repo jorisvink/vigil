@@ -38,7 +38,7 @@ import javax.crypto.spec.SecretKeySpec
 class ChatVault(context: Context) {
     class Locked : Exception("Unlock your device to read your chats.")
 
-    class Group(val owner: Int, val id: Long)
+    class Group(val flock: String, val owner: Int, val id: Long)
 
     class Lost(val chats: MutableSet<String>, val files: MutableMap<String, String>, var state: Boolean) {
         fun isEmpty(): Boolean = chats.isEmpty() && files.isEmpty() && !state
@@ -96,6 +96,7 @@ class ChatVault(context: Context) {
 
     var mirror: ((JSONObject, ByteArray?) -> Boolean)? = null
     var linked: (() -> Boolean)? = null
+    var flock: (() -> String?)? = null
 
     @Volatile
     var accepts = 0L
@@ -115,6 +116,7 @@ class ChatVault(context: Context) {
         agreement()
 
         dir.listFiles { f -> f.name.matches(Regex(OLD_GROUP)) }?.forEach { wipe(it) }
+        migrate()
     }
 
     @Synchronized
@@ -208,7 +210,7 @@ class ChatVault(context: Context) {
 
             for (member in to) {
                 list.put(
-                    JSONObject(entry.toString()).put("peer", member).put("chat", chat)
+                    JSONObject(entry.toString()).put("peer", Flock.id(Flock.of(chat), member)).put("chat", chat)
                         .put("gs", serial).put("at", time)
                 )
             }
@@ -427,6 +429,8 @@ class ChatVault(context: Context) {
 
     @Synchronized
     fun merge() {
+        migrate()
+
         val pending = inbox.listFiles { f -> f.name.endsWith(".box") }
             ?.sortedWith(compareBy({ !it.name.contains('-') }, { it.name }))
 
@@ -561,7 +565,8 @@ class ChatVault(context: Context) {
 
         val groups = groups()
         val names = peerNames()
-        val faces = avatars.list()?.filter { it.matches(Regex("[0-9a-f]{2}\\.box")) }?.map { it.substring(0, 2) } ?: emptyList()
+        val faces = avatars.list()?.filter { it.matches(Regex("${Flock.PEER}\\.box")) }?.map { it.removeSuffix(".box") }
+            ?: emptyList()
         val ops = mutableListOf<Pair<JSONObject, ByteArray?>>()
 
         for (chat in groups.keys()) {
@@ -575,7 +580,7 @@ class ChatVault(context: Context) {
         ops.add(JSONObject().put("op", "avatars").put("peers", JSONArray(faces)) to null)
 
         for (peer in faces) {
-            val data = peerAvatar(peer.toInt(16)) ?: continue
+            val data = peerAvatar(peer) ?: continue
 
             ops.add(JSONObject().put("op", "avatar").put("peer", peer) to data)
         }
@@ -774,11 +779,19 @@ class ChatVault(context: Context) {
                 summarize(id, conversation, full)
             }
 
+            val topics = JSONArray(conversation.topics ?: "[]")
+
+            for (i in 0 until topics.length()) {
+                val topic = topics.getJSONObject(i)
+
+                topic.optJSONObject("last")?.let { topic.put("last", shown(id, it)) }
+            }
+
             val entry = JSONObject()
                 .put("peer", id)
                 .put("unread", conversation.unread)
-                .put("last", conversation.last?.let { JSONObject(it) } ?: JSONObject.NULL)
-                .put("topics", JSONArray(conversation.topics ?: "[]"))
+                .put("last", conversation.last?.let { shown(id, JSONObject(it)) } ?: JSONObject.NULL)
+                .put("topics", topics)
 
             if (group(id) != null) {
                 entry.put("group", groupInfo(id) ?: JSONObject.NULL)
@@ -815,14 +828,14 @@ class ChatVault(context: Context) {
         if (epoch == current.epoch) {
             for (i in current.messages.indices) {
                 if (current.stamps[i] > stamp) {
-                    list.put(gone(current.messages[i]))
+                    list.put(shown(chat, gone(current.messages[i])))
                 }
             }
 
             out.put("delta", true)
         } else {
             for (message in current.messages) {
-                list.put(gone(message))
+                list.put(shown(chat, gone(message)))
             }
         }
 
@@ -1002,7 +1015,7 @@ class ChatVault(context: Context) {
             for (i in 0 until topics.length()) {
                 val topic = topics.getJSONObject(i)
                 val entry = JSONObject()
-                    .put("peer", peer)
+                    .put("peer", Flock.id(Flock.of(chat), peer))
                     .put("chat", chat)
                     .put("ref", ref())
                     .put("op", "topic")
@@ -1042,11 +1055,15 @@ class ChatVault(context: Context) {
     }
 
     @Synchronized
-    fun topicsFill(self: String) {
+    fun topicsFill(flock: String, self: String) {
         val all = groups()
 
         for (chat in all.keys()) {
             val info = all.getJSONObject(chat)
+
+            if (Flock.of(chat) != flock) {
+                continue
+            }
 
             if (info.getString("owner") != self || info.has("topics")) {
                 continue
@@ -1130,18 +1147,15 @@ class ChatVault(context: Context) {
 
     @Synchronized
     fun admits(): Set<String> {
-        if (reachable) {
-            return (1 until 0xff).map { "%02x".format(it) }.toSet() - ignored()
-        }
-
         val out = accepted().toMutableSet()
         val all = groups()
 
         for (chat in all.keys()) {
             val info = all.getJSONObject(chat)
+            val flock = Flock.of(chat)
 
-            out.add(info.getString("owner"))
-            out.addAll(members(info))
+            out.add(Flock.id(flock, info.getString("owner")))
+            out.addAll(members(info).map { Flock.id(flock, it) })
         }
 
         val list = outboxList()
@@ -1194,7 +1208,7 @@ class ChatVault(context: Context) {
 
     private fun acceptedFirst(): Set<String> {
         val out = mutableSetOf<String>()
-        val files = dir.listFiles { f -> f.name.matches(Regex("[0-9a-f]{2}\\$KEY")) } ?: emptyArray()
+        val files = dir.listFiles { f -> f.name.matches(Regex("${Flock.PEER}\\$KEY")) } ?: emptyArray()
         val list = outboxList()
 
         for (file in files) {
@@ -1277,10 +1291,11 @@ class ChatVault(context: Context) {
     }
 
     @Synchronized
-    fun groupDrop(chat: String, peers: Collection<String>, keep: Long = 0L): List<Pair<String, Long>> {
+    fun groupDrop(chat: String, members: Collection<String>, keep: Long = 0L): List<Pair<String, Long>> {
         val list = outboxList()
         val kept = JSONArray()
         val dropped = mutableListOf<Pair<String, Long>>()
+        val peers = members.map { Flock.id(Flock.of(chat), it) }.toSet()
 
         for (i in 0 until list.length()) {
             val entry = list.getJSONObject(i)
@@ -1308,7 +1323,8 @@ class ChatVault(context: Context) {
         val list = outboxList()
         val kept = JSONArray()
         val queued = JSONArray()
-        val targets = (only ?: (members(info) + also)).filter { it != self }.toSet()
+        val flock = Flock.of(chat)
+        val targets = (only ?: (members(info) + also)).filter { it != self }.map { Flock.id(flock, it) }.toSet()
 
         for (i in 0 until list.length()) {
             val entry = list.getJSONObject(i)
@@ -1345,7 +1361,8 @@ class ChatVault(context: Context) {
 
     @Synchronized
     fun leaveQueue(chat: String, owner: String): JSONObject {
-        val entry = JSONObject().put("peer", owner).put("chat", chat).put("ref", ref()).put("op", "leave")
+        val entry = JSONObject().put("peer", Flock.id(Flock.of(chat), owner)).put("chat", chat).put("ref", ref())
+            .put("op", "leave")
             .put("at", System.currentTimeMillis())
         val list = outboxList()
 
@@ -1395,8 +1412,8 @@ class ChatVault(context: Context) {
     }
 
     @Synchronized
-    fun peerAvatar(peer: Int): ByteArray? {
-        val file = File(avatars, "%02x.box".format(peer))
+    fun peerAvatar(peer: String): ByteArray? {
+        val file = File(avatars, box(peer))
         if (!file.exists()) {
             return null
         }
@@ -1415,8 +1432,8 @@ class ChatVault(context: Context) {
     }
 
     @Synchronized
-    fun peerAvatar(peer: Int, data: ByteArray?) {
-        val file = File(avatars, "%02x.box".format(peer))
+    fun peerAvatar(peer: String, data: ByteArray?) {
+        val file = File(avatars, box(peer))
 
         if (data == null) {
             wipe(file)
@@ -1427,15 +1444,15 @@ class ChatVault(context: Context) {
             write(file, if (static != null) seal(static, data, aad) else device(aad, data))
         }
 
-        emit(JSONObject().put("op", "avatar").put("peer", Calls.hex(peer)), data)
+        emit(JSONObject().put("op", "avatar").put("peer", peer), data)
     }
 
     @Synchronized
-    fun safetyTime(peer: Int): Long = File(safety, "%02x.box".format(peer)).lastModified()
+    fun safetyTime(peer: String): Long = File(safety, box(peer)).lastModified()
 
     @Synchronized
-    fun safetyCode(peer: Int): ByteArray? {
-        val file = File(safety, "%02x.box".format(peer))
+    fun safetyCode(peer: String): ByteArray? {
+        val file = File(safety, box(peer))
         if (!file.exists()) {
             return null
         }
@@ -1464,8 +1481,8 @@ class ChatVault(context: Context) {
     }
 
     @Synchronized
-    fun safetyCode(peer: Int, plain: ByteArray?) {
-        val file = File(safety, "%02x.box".format(peer))
+    fun safetyCode(peer: String, plain: ByteArray?) {
+        val file = File(safety, box(peer))
 
         if (plain == null) {
             wipe(file)
@@ -1490,12 +1507,12 @@ class ChatVault(context: Context) {
     }
 
     @Synchronized
-    fun safetyInputs(): Map<Int, ByteArray> {
-        val out = mutableMapOf<Int, ByteArray>()
-        val files = safety.listFiles { f -> f.name.matches(Regex("[0-9a-f]{2}\\.box")) } ?: emptyArray()
+    fun safetyInputs(): Map<String, ByteArray> {
+        val out = mutableMapOf<String, ByteArray>()
+        val files = safety.listFiles { f -> f.name.matches(Regex("${Flock.PEER}\\.box")) } ?: emptyArray()
 
         for (file in files) {
-            val peer = file.name.substring(0, 2).toInt(16)
+            val peer = file.name.removeSuffix(".box")
             val plain = safetyCode(peer) ?: continue
 
             if (plain.size == INPUT) {
@@ -1509,33 +1526,30 @@ class ChatVault(context: Context) {
     }
 
     @Synchronized
-    fun peerName(peer: Int, nick: String, signed: String) {
+    fun peerName(peer: String, nick: String, signed: String) {
         val aad = nameAad(peer)
         val name = JSONObject().put("nick", nick).put("signed", signed)
         val plain = name.toString().toByteArray()
         val static = agreement()?.certificate?.publicKey
 
         try {
-            write(
-                File(names, "%02x.box".format(peer)),
-                if (static != null) seal(static, plain, aad) else device(aad, plain)
-            )
+            write(File(names, box(peer)), if (static != null) seal(static, plain, aad) else device(aad, plain))
         } finally {
             plain.fill(0)
         }
 
-        emit(JSONObject(name.toString()).put("op", "name").put("peer", Calls.hex(peer)))
+        emit(JSONObject(name.toString()).put("op", "name").put("peer", peer))
     }
 
     @Synchronized
     fun peerNames(): JSONObject {
         val out = JSONObject()
-        val files = names.listFiles { f -> f.name.matches(Regex("[0-9a-f]{2}\\.box")) } ?: emptyArray()
+        val files = names.listFiles { f -> f.name.matches(Regex("${Flock.PEER}\\.box")) } ?: emptyArray()
 
         for (file in files) {
-            val peer = file.name.substring(0, 2)
+            val peer = file.name.removeSuffix(".box")
             val plain = try {
-                unseal(file.readBytes(), nameAad(peer.toInt(16)))
+                unseal(file.readBytes(), nameAad(peer))
             } catch (e: AEADBadTagException) {
                 wipe(file)
                 continue
@@ -1599,7 +1613,7 @@ class ChatVault(context: Context) {
             outboxSave(kept)
         }
 
-        receiptWrite(chat, ref, kind, if (chat != peer) peer else null)
+        receiptWrite(chat, ref, kind, if (chat != peer) Flock.local(peer) else null)
     }
 
     @Synchronized
@@ -1636,8 +1650,8 @@ class ChatVault(context: Context) {
             changed = true
 
             when (entry.optString("op")) {
-                "roster", "topic" -> groupStale(chat, peer, true)
-                "" -> receiptWrite(chat, ref, "expired", peer)
+                "roster", "topic" -> groupStale(chat, Flock.local(peer), true)
+                "" -> receiptWrite(chat, ref, "expired", Flock.local(peer))
             }
         }
 
@@ -2290,12 +2304,22 @@ class ChatVault(context: Context) {
                 continue
             }
 
-            val copy = JSONObject(entry.toString()).put("peer", member).put("chat", chat)
+            val copy = JSONObject(entry.toString()).put("peer", Flock.id(Flock.of(chat), member)).put("chat", chat)
                 .put("gs", info.getInt("serial")).put("at", System.currentTimeMillis())
 
             list.put(copy)
             queued.put(copy)
         }
+    }
+
+    private fun shown(chat: String, message: JSONObject): JSONObject {
+        val peer = message.optString("peer")
+
+        if (!peer.matches(Regex("[0-9a-f]{2}")) || peer == SELF) {
+            return message
+        }
+
+        return JSONObject(message.toString()).put("peer", Flock.id(Flock.of(chat), peer))
     }
 
     private fun gone(message: JSONObject): JSONObject {
@@ -2499,6 +2523,34 @@ class ChatVault(context: Context) {
             plain = joined
         }
 
+        val conversation = decode(plain)
+
+        plain.fill(0)
+
+        val framed = framed(chat)
+
+        if (framed != conversation.count) {
+            if (framed < conversation.count) {
+                conversation.flags = conversation.flags or FLAG_TRUNCATED
+            }
+            conversation.count = framed
+            conversation.unread = -1
+            conversation.last = null
+            conversation.topics = null
+            save(chat, conversation)
+        }
+
+        if (merged) {
+            save(chat, conversation)
+            wipe(meta)
+        }
+
+        open[chat] = conversation
+
+        return conversation
+    }
+
+    private fun decode(plain: ByteArray): Conversation {
         val buffer = ByteBuffer.wrap(plain)
         val conversation = Conversation(
             ByteArray(32).also { buffer.get(it) }, buffer.long, buffer.long, buffer.long
@@ -2529,28 +2581,6 @@ class ChatVault(context: Context) {
                 topics.fill(0)
             }
         }
-
-        plain.fill(0)
-
-        val framed = framed(chat)
-
-        if (framed != conversation.count) {
-            if (framed < conversation.count) {
-                conversation.flags = conversation.flags or FLAG_TRUNCATED
-            }
-            conversation.count = framed
-            conversation.unread = -1
-            conversation.last = null
-            conversation.topics = null
-            save(chat, conversation)
-        }
-
-        if (merged) {
-            save(chat, conversation)
-            wipe(meta)
-        }
-
-        open[chat] = conversation
 
         return conversation
     }
@@ -2819,15 +2849,368 @@ class ChatVault(context: Context) {
         check(file.delete()) { "${file.name} could not be removed" }
     }
 
+    @Synchronized
+    fun migrate() {
+        val marker = File(dir, FLOCKED)
+        val step = if (marker.exists()) marker.readText().trim() else ""
+
+        if (step == MIGRATED) {
+            return
+        }
+
+        val flock = flock?.invoke() ?: return
+
+        if (step.isEmpty()) {
+            migrateBoxes(flock)
+            write(marker, BOXED.toByteArray())
+        }
+
+        try {
+            migrateInbox(flock)
+
+            for (file in dir.listFiles { f -> f.name.matches(Regex("($OLD_CHAT)\\$KEY")) } ?: emptyArray()) {
+                val old = file.name.removeSuffix(KEY)
+
+                try {
+                    migrateChat(old, "$flock-$old")
+                } catch (e: AEADBadTagException) {
+                    continue
+                }
+            }
+
+            migratePeers(names, NAME_AAD, flock)
+            migratePeers(avatars, AVATAR_AAD, flock)
+        } catch (e: UserNotAuthenticatedException) {
+            throw Locked()
+        }
+
+        write(marker, MIGRATED.toByteArray())
+    }
+
+    private fun migrateBoxes(flock: String) {
+        val list = outboxList()
+
+        for (i in 0 until list.length()) {
+            val entry = list.getJSONObject(i)
+
+            entry.put("peer", moved(flock, entry.getString("peer")))
+
+            if (entry.has("chat")) {
+                entry.put("chat", moved(flock, entry.getString("chat")))
+            }
+
+            if (entry.has("data")) {
+                entry.put("data", moved(flock, entry.getString("data")))
+            }
+        }
+
+        if (list.length() > 0) {
+            outboxSave(list)
+        }
+
+        val groups = File(dir, GROUPS)
+
+        if (groups.exists()) {
+            val all = groups()
+            val moved = JSONObject()
+
+            for (chat in all.keys()) {
+                moved.put(moved(flock, chat), all.getJSONObject(chat))
+            }
+
+            migrateBox(groups, GROUPS_AAD, moved.toString())
+        }
+
+        for ((name, aad) in listOf(ACCEPTED to ACCEPTED_AAD, IGNORED to IGNORED_AAD)) {
+            val file = File(dir, name)
+
+            if (!file.exists()) {
+                continue
+            }
+
+            val plain = unwrap(outbox(), aad, file.readBytes())
+            val old = JSONArray(String(plain))
+
+            plain.fill(0)
+            migrateBox(file, aad, JSONArray((0 until old.length()).map { moved(flock, old.getString(it)) }).toString())
+        }
+
+        val receipts = File(dir, RECEIPTS)
+
+        if (receipts.exists()) {
+            val plain = unwrap(outbox(), RECEIPTS_AAD, receipts.readBytes())
+            val old = JSONArray(String(plain))
+
+            plain.fill(0)
+
+            for (i in 0 until old.length()) {
+                val receipt = old.getJSONObject(i)
+
+                receipt.put("peer", moved(flock, receipt.getString("peer")))
+            }
+
+            migrateBox(receipts, RECEIPTS_AAD, old.toString())
+        }
+
+        val ambry = File(dir, AMBRY)
+
+        if (ambry.exists()) {
+            val plain = unwrap(outbox(), AMBRY_AAD, ambry.readBytes())
+            val old = JSONObject(String(plain))
+            val moved = JSONObject()
+
+            plain.fill(0)
+
+            for (chat in old.keys()) {
+                moved.put(moved(flock, chat), old.getString(chat))
+            }
+
+            migrateBox(ambry, AMBRY_AAD, moved.toString())
+        }
+
+        if (File(dir, LOST).exists()) {
+            val all = lost()
+            val chats = all.chats.map { moved(flock, it) }
+            val files = all.files.entries.associate { moved(flock, it.key) to moved(flock, it.value) }
+
+            all.chats.clear()
+            all.chats.addAll(chats)
+            all.files.clear()
+            all.files.putAll(files)
+            lostSave()
+        }
+
+        for (file in safety.listFiles { f -> f.name.matches(Regex("[0-9a-f]{2}\\.box")) } ?: emptyArray()) {
+            val peer = file.name.substring(0, 2)
+            val old = SAFETY_AAD + byteArrayOf(peer.toInt(16).toByte())
+            val data = file.readBytes()
+            val key = unwrap(outbox(), old, data.copyOfRange(0, WRAPPED))
+
+            try {
+                val plain = Cipher.getInstance(GCM).run {
+                    init(Cipher.DECRYPT_MODE, SecretKeySpec(key, "AES"), GCMParameterSpec(TAG, data, WRAPPED, NONCE))
+                    updateAAD(old)
+                    doFinal(data, WRAPPED + NONCE, data.size - WRAPPED - NONCE)
+                }
+
+                safetyCode("$flock-$peer", plain)
+                plain.fill(0)
+            } finally {
+                key.fill(0)
+            }
+
+            wipe(file)
+        }
+    }
+
+    private fun moved(flock: String, id: String): String =
+        if (id.matches(Regex(OLD_ID))) "$flock-$id" else id
+
+    private fun migrateBox(file: File, aad: ByteArray, json: String) {
+        val plain = json.toByteArray()
+
+        try {
+            write(file, wrap(outbox(), aad, plain))
+        } finally {
+            plain.fill(0)
+        }
+    }
+
+    private fun migrateInbox(flock: String) {
+        val static = agreement()?.certificate?.publicKey
+
+        for (file in inbox.listFiles { f -> f.name.endsWith(".box") } ?: emptyArray()) {
+            val plain = try {
+                unseal(file.readBytes())
+            } catch (e: AEADBadTagException) {
+                continue
+            } catch (e: IllegalArgumentException) {
+                continue
+            }
+
+            try {
+                val entry = JSONObject(String(plain))
+                val chat = entry.optString("chat", entry.optString("peer"))
+
+                if (!chat.matches(Regex(OLD_CHAT))) {
+                    continue
+                }
+
+                entry.put("chat", "$flock-$chat")
+                entry.optJSONObject("rec")?.let { rec ->
+                    if (rec.has("data")) {
+                        rec.put("data", "$flock-${rec.getString("data")}")
+                    }
+                }
+
+                val moved = entry.toString().toByteArray()
+
+                try {
+                    write(file, if (static != null) seal(static, moved) else device(INBOX_AAD, moved))
+                } finally {
+                    moved.fill(0)
+                }
+            } catch (e: JSONException) {
+                continue
+            } finally {
+                plain.fill(0)
+            }
+        }
+    }
+
+    private fun migrateChat(old: String, new: String) {
+        val label = if (old.length == 2) byteArrayOf(old.toInt(16).toByte()) else old.toByteArray()
+        var plain = unwrap(history(), KEY_AAD + label, File(dir, "$old$KEY").readBytes())
+        val meta = File(dir, "$old$META")
+
+        if (plain.size == 32 && meta.exists()) {
+            val tail = unwrap(history(), META_AAD + label, meta.readBytes())
+            val joined = plain + tail
+
+            plain.fill(0)
+            tail.fill(0)
+            plain = joined
+        }
+
+        val conversation = decode(plain)
+        val key = SecretKeySpec(conversation.key, "AES")
+
+        plain.fill(0)
+
+        conversation.last = conversation.last?.replace("\"$old-", "\"$new-")
+        conversation.topics = conversation.topics?.replace("\"$old-", "\"$new-")
+
+        for (file in dir.listFiles { f -> f.name.matches(Regex("$old-[0-9a-f]{16}\\.dat")) } ?: emptyArray()) {
+            val sealed = file.readBytes()
+            val data = Cipher.getInstance(GCM).run {
+                init(Cipher.DECRYPT_MODE, key, GCMParameterSpec(TAG, sealed, 0, NONCE))
+                updateAAD(DATA_AAD + label + file.name.toByteArray())
+                doFinal(sealed, NONCE, sealed.size - NONCE)
+            }
+
+            val name = file.name.replaceFirst("$old-", "$new-")
+            val nonce = ByteArray(NONCE).also(random::nextBytes)
+
+            try {
+                val moved = Cipher.getInstance(GCM).run {
+                    init(Cipher.ENCRYPT_MODE, key, GCMParameterSpec(TAG, nonce))
+                    updateAAD(dataAad(new, name))
+                    doFinal(data)
+                }
+
+                write(File(dir, name), nonce + moved)
+            } finally {
+                data.fill(0)
+            }
+        }
+
+        val log = File(dir, "$old$LOG")
+        val moved = File(dir, "$new$LOG.tmp")
+        val data = if (log.exists()) log.readBytes() else ByteArray(0)
+        var offset = 0
+        var seq = 0L
+
+        FileOutputStream(moved).use { out ->
+            while (offset + 4 <= data.size) {
+                val len = ByteBuffer.wrap(data, offset, 4).int
+                if (len < NONCE + TAG / 8 || offset + 4 + len > data.size) {
+                    break
+                }
+
+                val aad = ByteBuffer.allocate(RECORD_AAD.size + label.size + 8)
+                    .put(RECORD_AAD).put(label).putLong(seq).array()
+                val record = try {
+                    Cipher.getInstance(GCM).run {
+                        init(Cipher.DECRYPT_MODE, key, GCMParameterSpec(TAG, data, offset + 4, NONCE))
+                        updateAAD(aad)
+                        doFinal(data, offset + 4 + NONCE, len - NONCE)
+                    }
+                } catch (e: AEADBadTagException) {
+                    break
+                }
+
+                val json = JSONObject(String(record))
+
+                record.fill(0)
+
+                if (json.has("data")) {
+                    json.put("data", json.getString("data").replaceFirst("$old-", "$new-"))
+                }
+
+                val nonce = ByteArray(NONCE).also(random::nextBytes)
+                val text = json.toString().toByteArray()
+                val sealed = Cipher.getInstance(GCM).run {
+                    init(Cipher.ENCRYPT_MODE, key, GCMParameterSpec(TAG, nonce))
+                    updateAAD(recordAad(new, seq))
+                    doFinal(text)
+                }
+
+                text.fill(0)
+                out.write(ByteBuffer.allocate(4).putInt(NONCE + sealed.size).array())
+                out.write(nonce)
+                out.write(sealed)
+
+                offset += 4 + len
+                seq++
+            }
+
+            out.fd.sync()
+        }
+
+        data.fill(0)
+        conversation.count = seq
+        check(moved.renameTo(File(dir, "$new$LOG"))) { "the history of $new could not be moved" }
+        save(new, conversation)
+        conversation.key.fill(0)
+
+        wipe(meta)
+        wipe(log)
+        wipe(File(dir, "$old$KEY"))
+
+        dir.listFiles { f -> f.name.matches(Regex("$old-[0-9a-f]{16}\\.dat")) }?.forEach { wipe(it) }
+    }
+
+    private fun migratePeers(where: File, prefix: ByteArray, flock: String) {
+        val static = agreement()?.certificate?.publicKey
+
+        for (file in where.listFiles { f -> f.name.matches(Regex("[0-9a-f]{2}\\.box")) } ?: emptyArray()) {
+            val peer = file.name.substring(0, 2)
+            val plain = try {
+                unseal(file.readBytes(), prefix + byteArrayOf(peer.toInt(16).toByte()))
+            } catch (e: AEADBadTagException) {
+                wipe(file)
+                continue
+            }
+
+            try {
+                val aad = prefix + "$flock-$peer".toByteArray()
+
+                val sealed = if (static != null) seal(static, plain, aad) else device(aad, plain)
+
+                write(File(where, "$flock-$peer.box"), sealed)
+            } finally {
+                plain.fill(0)
+            }
+
+            wipe(file)
+        }
+    }
+
     private fun keyAad(chat: String): ByteArray = KEY_AAD + label(chat)
 
     private fun metaAad(chat: String): ByteArray = META_AAD + label(chat)
 
-    private fun avatarAad(peer: Int): ByteArray = AVATAR_AAD + byteArrayOf(peer.toByte())
+    private fun avatarAad(peer: String): ByteArray = AVATAR_AAD + peer.toByteArray()
 
-    private fun nameAad(peer: Int): ByteArray = NAME_AAD + byteArrayOf(peer.toByte())
+    private fun nameAad(peer: String): ByteArray = NAME_AAD + peer.toByteArray()
 
-    private fun safetyAad(peer: Int): ByteArray = SAFETY_AAD + byteArrayOf(peer.toByte())
+    private fun safetyAad(peer: String): ByteArray = SAFETY_AAD + peer.toByteArray()
+
+    private fun box(peer: String): String {
+        require(Flock.valid(peer)) { "There is no peer $peer." }
+
+        return "$peer.box"
+    }
 
     private fun recordAad(chat: String, seq: Long): ByteArray {
         val label = label(chat)
@@ -2842,7 +3225,7 @@ class ChatVault(context: Context) {
     private fun label(chat: String): ByteArray {
         require(chat.matches(Regex(CHAT))) { "invalid chat $chat" }
 
-        return if (group(chat) != null) chat.toByteArray() else byteArrayOf(chat.toInt(16).toByte())
+        return chat.toByteArray()
     }
 
     companion object {
@@ -2851,10 +3234,17 @@ class ChatVault(context: Context) {
                 return null
             }
 
-            return Group(chat.substring(1, 3).toInt(16), java.lang.Long.parseUnsignedLong(chat.substring(3), 16))
+            val local = Flock.local(chat)
+
+            return Group(
+                Flock.of(chat), local.substring(1, 3).toInt(16),
+                java.lang.Long.parseUnsignedLong(local.substring(3), 16)
+            )
         }
 
-        fun groupChat(owner: String, group: String): String = "g$owner$group"
+        fun groupChat(flock: String, owner: String, group: String): String = "$flock-g$owner$group"
+
+        fun chat(chat: String): Boolean = chat.matches(Regex(CHAT))
 
         fun members(info: JSONObject): List<String> {
             val list = info.optJSONArray("members") ?: return emptyList()
@@ -2907,9 +3297,14 @@ class ChatVault(context: Context) {
         const val GROUP_DROP = 1
         const val GROUP_HOLD = 2
 
-        private const val GROUP_CHAT = "g[0-9a-f]{18}"
-        private const val CHAT = "[0-9a-f]{2}|$GROUP_CHAT"
-        private const val DATA = "(?:[0-9a-f]{2}|$GROUP_CHAT)-[0-9a-f]{16}\\.dat"
+        private const val GROUP_CHAT = "[0-9a-f]{1,16}-g[0-9a-f]{18}"
+        private const val OLD_CHAT = "[0-9a-f]{2}|g[0-9a-f]{18}"
+        private const val OLD_ID = "(?:$OLD_CHAT)(?:-[0-9a-f]{16}\\.dat)?"
+        private const val FLOCKED = "flocked"
+        private const val BOXED = "1"
+        private const val MIGRATED = "2"
+        private const val CHAT = "[0-9a-f]{1,16}-(?:[0-9a-f]{2}|g[0-9a-f]{18})"
+        private const val DATA = "(?:$CHAT)-[0-9a-f]{16}\\.dat"
         private const val OLD_GROUP = "g[0-9a-f]{4}(?:\\.key|\\.meta|\\.log|-[0-9a-f]{16}\\.dat)"
         private const val KEYSTORE = "AndroidKeyStore"
         private const val HISTORY = "se.sanctorum.vigil.chat.history"

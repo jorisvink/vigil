@@ -125,6 +125,7 @@ struct voice_ring {
  */
 struct voice_relay {
 	int			live;
+	u_int64_t		flock;
 	u_int8_t		peer;
 	u_int16_t		rx_seq;
 	u_int16_t		tx_seq;
@@ -140,6 +141,8 @@ struct voice_session {
 	int			end;
 	int			mode;
 	int			rang;
+	u_int8_t		slot;
+	u_int64_t		flock;
 	u_int8_t		peer;
 	int			audio;
 	int			owned;
@@ -248,6 +251,7 @@ static int			embedded_open = 0;
 
 /* The calls requested from the vigil core, may be set from any thread. */
 static volatile u_int64_t	request_seq = 0;
+static volatile u_int64_t	request_flock = 0;
 static volatile u_int8_t	request_peer = 0;
 static volatile int		request_mode = 0;
 static volatile u_int64_t	request_hangup = 0;
@@ -264,6 +268,7 @@ static volatile int		answered = 0;
 /* What we show in vigil_voice_status(). */
 static volatile u_int64_t	ended = 0;
 static volatile int		muted = 0;
+static volatile u_int64_t	peer_flock = 0;
 static volatile u_int8_t	peer_id = 0;
 static volatile u_int64_t	talking = 0;
 static volatile u_int64_t	rx_bytes = 0;
@@ -272,6 +277,7 @@ static volatile u_int64_t	rx_frames = 0;
 static volatile u_int64_t	tx_frames = 0;
 static volatile int		state = VIGIL_VOICE_STATE_IDLE;
 static volatile int		ended_why = VIGIL_VOICE_END_LOCAL;
+static volatile u_int64_t	ended_flock = 0;
 static volatile int		ended_peer = 0;
 
 /* Where we send to and the cathedral we relay via, for vigil_voice_status(). */
@@ -379,12 +385,14 @@ vigil_voice_run(u_int64_t id, const char *cfg, size_t cfglen,
 }
 
 /*
- * Request a voice session with the given peer from the vigil core, any
- * session it is running is hung up first. May be called from any thread.
+ * Request a voice session with the given peer in the given flock from the
+ * vigil core, any session it is running is hung up first. May be called
+ * from any thread.
  */
 void
-vigil_voice_call(u_int8_t peer, int mode)
+vigil_voice_call(u_int64_t flock, u_int8_t peer, int mode)
 {
+	PRECOND(flock != 0);
 	PRECOND(peer > 0 && peer < KYRKA_PEERS_PER_FLOCK);
 	PRECOND(mode == VIGIL_VOICE_MODE_CALL ||
 	    mode == VIGIL_VOICE_MODE_RING ||
@@ -392,40 +400,46 @@ vigil_voice_call(u_int8_t peer, int mode)
 	    mode == VIGIL_VOICE_MODE_DECLINE);
 
 	vigil_atomic_write(&request_relay, 0);
+	vigil_atomic_write(&request_flock, flock);
 	vigil_atomic_write(&request_peer, peer);
 	vigil_atomic_write(&request_mode, mode);
 	vigil_atomic_add(&request_seq, 1);
 }
 
 /*
- * Request a voice session with the given peer that our desktop holds, we
- * only relay its audio. Only called from the vigil core.
+ * Request a voice session with the given peer in the given flock that our
+ * desktop holds, we only relay its audio. Only called from the vigil core.
  */
 void
-vigil_voice_relay_call(u_int8_t peer, int mode)
+vigil_voice_relay_call(u_int64_t flock, u_int8_t peer, int mode)
 {
+	PRECOND(flock != 0);
 	PRECOND(peer > 0 && peer < KYRKA_PEERS_PER_FLOCK);
 	PRECOND(mode == VIGIL_VOICE_MODE_CALL ||
 	    mode == VIGIL_VOICE_MODE_ANSWER);
 
 	vigil_atomic_write(&request_relay, 1);
+	vigil_atomic_write(&request_flock, flock);
 	vigil_atomic_write(&request_peer, peer);
 	vigil_atomic_write(&request_mode, mode);
 	vigil_atomic_add(&request_seq, 1);
 }
 
 /*
- * Our desktop answers the session ringing for the given peer, returns -1
- * if no session rings for that peer. A session we answered ourselves
- * already stays ours.
+ * Our desktop answers the session ringing for the given peer in the given
+ * flock, returns -1 if no session rings for that peer. A session we
+ * answered ourselves already stays ours.
  */
 int
-vigil_voice_relay_answer(u_int8_t peer)
+vigil_voice_relay_answer(u_int64_t flock, u_int8_t peer)
 {
 	if (!embedded_open)
 		return (-1);
 
 	if (embedded.end != -1)
+		return (-1);
+
+	if (embedded.flock != flock)
 		return (-1);
 
 	if (embedded.peer != peer)
@@ -486,22 +500,27 @@ vigil_voice_relay_input(const u_int8_t *data, size_t len)
 }
 
 /*
- * Fill in the peer of the last call that ended, why it ended and how many
- * calls ended so far. Only called from the thread that runs our calls.
+ * Fill in the flock and peer of the last call that ended, why it ended and
+ * how many calls ended so far. Only called from the thread that runs our
+ * calls.
  */
 void
-vigil_voice_ended(u_int8_t *peer, u_int8_t *why, u_int64_t *count)
+vigil_voice_ended(u_int64_t *flock, u_int8_t *peer, u_int8_t *why,
+    u_int64_t *count)
 {
+	PRECOND(flock != NULL);
 	PRECOND(peer != NULL);
 	PRECOND(why != NULL);
 	PRECOND(count != NULL);
 
+	*flock = vigil_atomic_read(&ended_flock);
 	*peer = vigil_atomic_read(&ended_peer);
 	*why = vigil_atomic_read(&ended_why);
 	*count = vigil_atomic_read(&ended);
 
 	/* A call that is over but not closed yet has ended too. */
 	if (embedded_open && embedded.end != -1) {
+		*flock = embedded.flock;
 		*peer = embedded.peer;
 		*why = embedded.end;
 		*count = *count + 1;
@@ -512,12 +531,15 @@ vigil_voice_ended(u_int8_t *peer, u_int8_t *why, u_int64_t *count)
  * Fill in the call our desktop must know about, peer is 0 without one.
  */
 void
-vigil_voice_relay_state(u_int8_t *peer, u_int8_t *st, u_int8_t *flags)
+vigil_voice_relay_state(u_int64_t *flock, u_int8_t *peer, u_int8_t *st,
+    u_int8_t *flags)
 {
+	PRECOND(flock != NULL);
 	PRECOND(peer != NULL);
 	PRECOND(st != NULL);
 	PRECOND(flags != NULL);
 
+	*flock = 0;
 	*peer = 0;
 	*st = 0;
 	*flags = 0;
@@ -528,6 +550,7 @@ vigil_voice_relay_state(u_int8_t *peer, u_int8_t *st, u_int8_t *flags)
 	if (embedded.mode == VIGIL_VOICE_MODE_DECLINE)
 		return;
 
+	*flock = embedded.flock;
 	*peer = embedded.peer;
 	*st = vigil_atomic_read(&state);
 
@@ -542,12 +565,12 @@ vigil_voice_relay_state(u_int8_t *peer, u_int8_t *st, u_int8_t *flags)
 }
 
 /*
- * As a desktop, hold the call of our phone with the given peer and play
- * the given tone until we hear our peer, live is set once we may talk.
- * A peer of 0 ends the call we hold.
+ * As a desktop, hold the call of our phone with the given peer in the given
+ * flock and play the given tone until we hear our peer, live is set once
+ * we may talk. A peer of 0 ends the call we hold.
  */
 void
-vigil_voice_relay(u_int8_t peer, int sound, int live)
+vigil_voice_relay(u_int64_t flock, u_int8_t peer, int sound, int live)
 {
 	PRECOND(peer < KYRKA_PEERS_PER_FLOCK);
 	PRECOND(sound == VIGIL_VOICE_TONE_NONE ||
@@ -556,6 +579,9 @@ vigil_voice_relay(u_int8_t peer, int sound, int live)
 	PRECOND(live == 0 || live == 1);
 
 	if (held.peer != 0 && held.peer != peer)
+		voice_relay_stop();
+
+	if (held.peer != 0 && held.flock != flock)
 		voice_relay_stop();
 
 	if (peer == 0)
@@ -569,6 +595,7 @@ vigil_voice_relay(u_int8_t peer, int sound, int live)
 		vigil_atomic_write(&rx_frames, 0);
 		vigil_atomic_write(&tx_frames, 0);
 		vigil_atomic_write(&peer_id, peer);
+		vigil_atomic_write(&peer_flock, flock);
 		vigil_atomic_write(&state, VIGIL_VOICE_STATE_CONNECTING);
 
 		if (vigil_platform_audio_start() == -1) {
@@ -580,6 +607,7 @@ vigil_voice_relay(u_int8_t peer, int sound, int live)
 		voice_codec_open(&held.encoder, &held.decoder);
 
 		held.peer = peer;
+		held.flock = flock;
 		held.rx_seq = 0;
 		held.tx_seq = 0;
 
@@ -713,9 +741,9 @@ vigil_voice_update(void)
 	u_int64_t		seq;
 	struct sockaddr_in	*sin;
 	int			signal;
+	u_int8_t		slot;
 
 	PRECOND(vigil != NULL);
-	PRECOND(vigil->gospel != NULL);
 
 	seq = vigil_atomic_read(&request_seq);
 
@@ -728,16 +756,19 @@ vigil_voice_update(void)
 			vigil_voice_cleanup();
 		}
 
-		if (!vigil_atomic_cas_simple(&active, 0, 1)) {
+		if (vigil_gospel_find(vigil_atomic_read(&request_flock),
+		    &slot) == -1 || !vigil_atomic_cas_simple(&active, 0, 1)) {
 			vigil_log(LOG_NOTICE, "[voice] can't start a call");
 			vigil_atomic_write(&ended_why, VIGIL_VOICE_END_ERROR);
+			vigil_atomic_write(&ended_flock,
+			    vigil_atomic_read(&request_flock));
 			vigil_atomic_write(&ended_peer,
 			    vigil_atomic_read(&request_peer));
 			vigil_atomic_add(&ended, 1);
 			return;
 		}
 
-		if (voice_session_open(&embedded, vigil->gospel,
+		if (voice_session_open(&embedded, vigil->gospels[slot],
 		    vigil_atomic_read(&request_peer),
 		    vigil_atomic_read(&request_mode)) == -1) {
 			voice_session_close(&embedded);
@@ -745,10 +776,11 @@ vigil_voice_update(void)
 			return;
 		}
 
+		embedded.slot = slot;
 		embedded.relay = vigil_atomic_read(&request_relay);
 		vigil_atomic_write(&relayed, embedded.relay);
 
-		sin = vigil_call_cathedral();
+		sin = vigil_call_cathedral(slot);
 		if (sin == NULL) {
 			vigil_log(LOG_NOTICE, "[voice] no cathedral for calls");
 			embedded.end = VIGIL_VOICE_END_ERROR;
@@ -776,10 +808,11 @@ vigil_voice_update(void)
 	if (embedded.end == -1 &&
 	    vigil_atomic_read(&request_hangup) == request_handled) {
 		voice_session_hangup(&embedded);
-		vigil_call_done(embedded.peer);
+		vigil_call_done(embedded.flock, embedded.peer);
 	}
 
-	if (vigil_call_peer(embedded.peer) & VIGIL_CALL_PEER_SIGNALING)
+	if (vigil_call_peer(embedded.slot, embedded.peer) &
+	    VIGIL_CALL_PEER_SIGNALING)
 		signal = 1;
 	else
 		signal = 0;
@@ -834,12 +867,32 @@ vigil_voice_cleanup(void)
 	if (embedded.fd != -1)
 		vigil_io_unschedule(&embedded_io);
 
-	vigil_call_done(embedded.peer);
+	vigil_call_done(embedded.flock, embedded.peer);
 	voice_session_close(&embedded);
 
 	embedded_open = 0;
 	vigil_atomic_write(&relayed, 0);
 	vigil_atomic_write(&active, 0);
+}
+
+/*
+ * The Gospel configuration in the given slot goes away, so does the voice
+ * session of the vigil core if it runs over it.
+ */
+void
+vigil_voice_detach(u_int8_t slot)
+{
+	PRECOND(slot < VIGIL_GOSPEL_MAX);
+
+	if (!embedded_open || embedded.slot != slot)
+		return;
+
+	if (embedded.end == -1) {
+		voice_hangup_send(&embedded);
+		embedded.end = VIGIL_VOICE_END_LOCAL;
+	}
+
+	vigil_voice_cleanup();
 }
 
 /*
@@ -955,12 +1008,14 @@ vigil_voice_status(char *buf, size_t len)
 		return (0);
 
 	ret = snprintf(buf, len,
-	    "{\"running\":true,\"calls\":%" PRIu64 ",\"peer\":\"%02x\","
+	    "{\"running\":true,\"calls\":%" PRIu64
+	    ",\"peer\":\"%" PRIx64 "-%02x\","
 	    "\"state\":\"%s\",\"muted\":%s,\"uptime\":%" PRIu64
 	    ",\"rx\":%" PRIu64 ",\"tx\":%" PRIu64 ",\"p2p\":%s,"
 	    "\"path\":\"%s:%u\",\"cathedral\":\"%s:%u\",\"rx_bytes\":%" PRIu64
 	    ",\"tx_bytes\":%" PRIu64 ",\"relay\":%s,\"video\":%s}",
-	    vigil_atomic_read(&ended), vigil_atomic_read(&peer_id), name,
+	    vigil_atomic_read(&ended), vigil_atomic_read(&peer_flock),
+	    vigil_atomic_read(&peer_id), name,
 	    vigil_atomic_read(&muted) ? "true" : "false", since,
 	    vigil_atomic_read(&rx_frames), vigil_atomic_read(&tx_frames),
 	    (path.s_addr == relay.s_addr && vigil_atomic_read(&path_port) ==
@@ -1093,6 +1148,7 @@ voice_session_open(struct voice_session *s, struct vigil_config *config,
 	s->peer = peer;
 	s->mode = mode;
 	s->config = config;
+	s->flock = config->cathedral_flock;
 
 	s->now = vigil_time_ms();
 	s->started = s->now;
@@ -1107,6 +1163,7 @@ voice_session_open(struct voice_session *s, struct vigil_config *config,
 	vigil_atomic_write(&rx_frames, 0);
 	vigil_atomic_write(&tx_frames, 0);
 	vigil_atomic_write(&peer_id, peer);
+	vigil_atomic_write(&peer_flock, s->flock);
 	vigil_atomic_write(&state, VIGIL_VOICE_STATE_CONNECTING);
 
 	switch (mode) {
@@ -1163,7 +1220,7 @@ voice_session_setup(struct voice_session *s)
 	if (s->ctx == NULL)
 		fatal("failed to create voice context");
 
-	s->safety = vigil_kyrka_additional_input(s->ctx, s->peer);
+	s->safety = vigil_kyrka_additional_input(s->ctx, s->flock, s->peer);
 
 	memset(&kcfg, 0, sizeof(kcfg));
 
@@ -1459,6 +1516,7 @@ voice_session_close(struct voice_session *s)
 	    s->peer, vigil_voice_end_name(s->end));
 
 	vigil_atomic_write(&ended_why, s->end);
+	vigil_atomic_write(&ended_flock, s->flock);
 	vigil_atomic_write(&ended_peer, s->peer);
 	vigil_atomic_write(&state, VIGIL_VOICE_STATE_IDLE);
 	vigil_atomic_add(&ended, 1);

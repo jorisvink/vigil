@@ -13,9 +13,9 @@ final class VigilCall: NSObject, CXProviderDelegate {
         case ringing, dialing, alerting, connecting, active
     }
 
-    var config: (() -> [UInt8]?)?
+    var config: ((String) -> [UInt8]?)?
     var send: ((String) -> Void)?
-    var answering: UInt8?
+    var answering: String?
 
     private let provider: CXProvider
     private let controller = CXCallController()
@@ -24,7 +24,7 @@ final class VigilCall: NSObject, CXProviderDelegate {
     private var network: String?
 
     private var uuid = UUID()
-    private var peer: UInt8 = 0
+    private var peer = ""
     private var incoming = false
     private var phase: Phase? { didSet { awake() } }
     private var muted = false
@@ -34,8 +34,8 @@ final class VigilCall: NSObject, CXProviderDelegate {
     private var started = 0.0
     private var voice: UInt64 = 0
     private var pending: Int32?
-    private var cathedral: String?
-    private var ignored = Set<UInt8>()
+    private var cathedrals = [String: String]()
+    private var ignored = Set<String>()
 
     private override init() {
         let configuration = CXProviderConfiguration()
@@ -85,7 +85,7 @@ final class VigilCall: NSObject, CXProviderDelegate {
         guard let phase else { return nil }
 
         return [
-            "peer": ChatVault.hex(peer),
+            "peer": peer,
             "incoming": incoming,
             "state": phase.rawValue,
             "muted": muted,
@@ -96,12 +96,12 @@ final class VigilCall: NSObject, CXProviderDelegate {
         ]
     }
 
-    func dial(_ peer: UInt8, video: Bool) {
-        guard !busy, peer > 0, peer < 0xff else { return }
+    func dial(_ peer: String, video: Bool) {
+        guard !busy, Flock.valid(peer) else { return }
 
         begin(peer, incoming: false, phase: .dialing)
         camera(video)
-        send?("dial \(ChatVault.hex(peer))")
+        send?("dial \(peer)")
 
         let action = CXStartCallAction(call: uuid, handle: CXHandle(type: .generic, value: ChatVault.name(peer)))
         action.isVideo = video
@@ -152,8 +152,15 @@ final class VigilCall: NSObject, CXProviderDelegate {
 
     func update(_ status: [String: Any]?) {
         let call = status?["call"] as? [String: Any]
-        cathedral = call?["cathedral"] as? String
-        let callers = Set((call?["incoming"] as? [String] ?? []).compactMap { UInt8($0, radix: 16) })
+        cathedrals.removeAll()
+
+        for case let gospel as [String: Any] in call?["gospels"] as? [Any] ?? [] {
+            if let flock = gospel["flock"] as? String, let cathedral = gospel["cathedral"] as? String {
+                cathedrals[flock] = cathedral
+            }
+        }
+
+        let callers = Set((call?["incoming"] as? [String] ?? []).filter { Flock.valid($0) })
 
         ignored.formIntersection(callers)
 
@@ -238,7 +245,7 @@ final class VigilCall: NSObject, CXProviderDelegate {
     func provider(_ provider: CXProvider, perform action: CXEndCallAction) {
         if voice != 0 { vigil_voice_stop(voice) }
 
-        send?("done \(ChatVault.hex(peer))")
+        send?("done \(peer)")
         ignored.insert(peer)
 
         reset()
@@ -254,7 +261,7 @@ final class VigilCall: NSObject, CXProviderDelegate {
         action.fulfill()
     }
 
-    private func ring(_ caller: UInt8) {
+    private func ring(_ caller: String) {
         begin(caller, incoming: true, phase: .ringing)
 
         let update = CXCallUpdate()
@@ -267,7 +274,7 @@ final class VigilCall: NSObject, CXProviderDelegate {
         update.supportsDTMF = false
 
         UNUserNotificationCenter.current()
-            .removeDeliveredNotifications(withIdentifiers: ["call-\(ChatVault.hex(caller))"])
+            .removeDeliveredNotifications(withIdentifiers: ["call-\(caller)"])
 
         provider.reportNewIncomingCall(with: uuid, update: update) { error in
             DispatchQueue.main.async {
@@ -286,7 +293,7 @@ final class VigilCall: NSObject, CXProviderDelegate {
         startVoice(Int32(VIGIL_VOICE_MODE_RING))
     }
 
-    private func begin(_ peer: UInt8, incoming: Bool, phase: Phase) {
+    private func begin(_ peer: String, incoming: Bool, phase: Phase) {
         self.uuid = UUID()
         self.peer = peer
         self.incoming = incoming
@@ -308,7 +315,7 @@ final class VigilCall: NSObject, CXProviderDelegate {
         }
 
         if voice != 0 { vigil_voice_stop(voice) }
-        send?("done \(ChatVault.hex(peer))")
+        send?("done \(peer)")
 
         ignored.insert(peer)
         reset()
@@ -337,19 +344,20 @@ final class VigilCall: NSObject, CXProviderDelegate {
     }
 
     private func startVoice(_ mode: Int32) {
-        guard var config = config?(), !config.isEmpty else {
+        guard var config = config?(Flock.of(peer)), !config.isEmpty else {
             end(.failed)
             return
         }
 
         let id = vigil_voice_run_id()
-        let peer = self.peer
-        let cathedral = self.cathedral
+        let who = self.peer
+        let peer = Flock.peer(who)
+        let cathedral = cathedrals[Flock.of(who)]
 
         if mode != Int32(VIGIL_VOICE_MODE_DECLINE) { voice = id }
 
         queue.async {
-            ChatVault.safetyApply(peer)
+            ChatVault.safetyApply(who)
 
             let ret = config.withUnsafeBytes { raw in
                 let ptr = raw.baseAddress?.assumingMemoryBound(to: CChar.self)

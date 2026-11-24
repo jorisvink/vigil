@@ -606,12 +606,14 @@ class PeerName extends StatelessWidget {
     this.peer, {
     super.key,
     required this.style,
+    this.chat = '',
     this.name,
     this.picked,
     this.shrink,
   });
 
   final String peer;
+  final String chat;
   final TextStyle style;
   final String? name;
   final bool? picked;
@@ -620,14 +622,15 @@ class PeerName extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final vigil = Vigil.instance;
-    final own = peer == selfPeer;
-    final shown = name ?? (own ? vigil.selfName : vigil.name(peer));
+    final own = peer == selfPeer || vigil.mine(peer);
+    final where = chat.isEmpty ? peer : chat;
+    final shown = name ?? (own ? vigil.selfName(where) : vigil.name(peer));
     final sealed = own
-        ? vigil.selfSigned
+        ? vigil.selfSigned(where)
         : vigil.authenticated(peer) && shown == vigil.name(peer);
     final styled = peerStyle(
       style,
-      picked ?? (own ? vigil.selfPicked : vigil.picked(peer)),
+      picked ?? (own ? vigil.selfPicked(where) : vigil.picked(peer)),
     );
     final smallest = shrink;
 
@@ -738,7 +741,7 @@ class Monogram extends StatelessWidget {
   Widget build(BuildContext context) {
     final vigil = Vigil.instance;
     final shown =
-        name ?? (peer == selfPeer ? vigil.selfName : vigil.name(peer));
+        name ?? (peer == selfPeer ? vigil.selfLabel : vigil.name(peer));
     final plain = shown.replaceFirst('~', '').trim();
     var initial = '';
 

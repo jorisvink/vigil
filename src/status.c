@@ -306,18 +306,21 @@ status_render(char *buf, size_t len)
 
 	}
 
-	if (vigil->gospel != NULL) {
+	for (idx = 0; idx < VIGIL_GOSPEL_MAX; idx++) {
+		if (vigil->gospels[idx] != NULL)
+			break;
+	}
+
+	if (idx < VIGIL_GOSPEL_MAX) {
 		vigil_buf_appendf(&out,
 		    ",\"gospel\":{\"rx_bytes\":%" PRIu64
 		    ",\"tx_bytes\":%" PRIu64 "}",
 		    vigil->gospel_rx, vigil->gospel_tx);
 
 		status_call(&out);
-		vigil_chat_status(&out);
 	}
 
-	if (cfg->mode == VIGIL_MODE_COMPANION)
-		vigil_chat_status(&out);
+	vigil_chat_status(&out);
 
 	if (cfg->mode != VIGIL_MODE_TUNNEL) {
 		vigil_buf_appendf(&out, ",\"remembrances\":[");
@@ -389,50 +392,95 @@ status_render(char *buf, size_t len)
 }
 
 /*
- * Append the signaling state for calls, which peer we are calling
- * and which peers are calling us.
+ * Append the signaling state for calls of all our Gospel configurations,
+ * which peer we are calling and which peers are calling us.
  */
 static void
 status_call(struct vigil_buf *buf)
 {
 	struct sockaddr_in	*sin;
-	int			idx, state, first;
+	u_int64_t		flock;
+	int			idx, slot, state, first, alive;
 
 	PRECOND(buf != NULL);
 
-	vigil_buf_appendf(buf, ",\"call\":{\"alive\":%s",
-	    vigil_call_alive() ? "true" : "false");
+	alive = 0;
+	for (slot = 0; slot < VIGIL_GOSPEL_MAX; slot++) {
+		if (vigil->gospels[slot] != NULL && vigil_call_alive(slot))
+			alive = 1;
+	}
 
-	vigil_call_liturgies(buf);
+	vigil_buf_appendf(buf, ",\"call\":{\"alive\":%s,\"gospels\":[",
+	    alive ? "true" : "false");
 
-	sin = vigil_call_cathedral();
-	if (sin != NULL) {
-		vigil_buf_appendf(buf, ",\"cathedral\":\"%s\"",
-		    vigil_address(sin));
+	first = 1;
+
+	for (slot = 0; slot < VIGIL_GOSPEL_MAX; slot++) {
+		if (vigil->gospels[slot] == NULL)
+			continue;
+
+		vigil_buf_appendf(buf,
+		    "%s{\"flock\":\"%" PRIx64 "\",\"alive\":%s",
+		    first ? "" : ",", vigil->gospels[slot]->cathedral_flock,
+		    vigil_call_alive(slot) ? "true" : "false");
+
+		vigil_call_liturgies(slot, buf);
+
+		sin = vigil_call_cathedral(slot);
+		if (sin != NULL) {
+			vigil_buf_appendf(buf, ",\"cathedral\":\"%s\"",
+			    vigil_address(sin));
+		}
+
+		vigil_buf_appendf(buf, "}");
+		first = 0;
 	}
 
 	first = 1;
-	vigil_buf_appendf(buf, ",\"peers\":[");
+	vigil_buf_appendf(buf, "],\"peers\":[");
 
-	for (idx = 1; idx < KYRKA_PEERS_PER_FLOCK; idx++) {
-		if (!(vigil_call_peer(idx) & VIGIL_CALL_PEER_ONLINE))
+	for (slot = 0; slot < VIGIL_GOSPEL_MAX; slot++) {
+		if (vigil->gospels[slot] == NULL)
 			continue;
 
-		vigil_buf_appendf(buf, "%s\"%02x\"", first ? "" : ",", idx);
-		first = 0;
+		flock = vigil->gospels[slot]->cathedral_flock;
+
+		for (idx = 1; idx < KYRKA_PEERS_PER_FLOCK; idx++) {
+			state = vigil_call_peer(slot, idx);
+			if (!(state & VIGIL_CALL_PEER_ONLINE))
+				continue;
+
+			vigil_buf_appendf(buf, "%s\"%" PRIx64 "-%02x\"",
+			    first ? "" : ",", flock, idx);
+			first = 0;
+		}
 	}
 
 	vigil_buf_appendf(buf, "],\"dialing\":");
 
-	for (idx = 1; idx < KYRKA_PEERS_PER_FLOCK; idx++) {
-		state = vigil_call_peer(idx);
-		if (state & VIGIL_CALL_PEER_WANTED)
+	state = 0;
+	flock = 0;
+
+	for (slot = 0; slot < VIGIL_GOSPEL_MAX; slot++) {
+		if (vigil->gospels[slot] == NULL)
+			continue;
+
+		for (idx = 1; idx < KYRKA_PEERS_PER_FLOCK; idx++) {
+			state = vigil_call_peer(slot, idx);
+			if (state & VIGIL_CALL_PEER_WANTED)
+				break;
+		}
+
+		if (idx < KYRKA_PEERS_PER_FLOCK) {
+			flock = vigil->gospels[slot]->cathedral_flock;
 			break;
+		}
 	}
 
-	if (idx < KYRKA_PEERS_PER_FLOCK) {
-		vigil_buf_appendf(buf, "\"%02x\",\"reachable\":%s",
-		    idx, (state & VIGIL_CALL_PEER_PRESENT) ? "true" : "false");
+	if (flock != 0) {
+		vigil_buf_appendf(buf,
+		    "\"%" PRIx64 "-%02x\",\"reachable\":%s", flock, idx,
+		    (state & VIGIL_CALL_PEER_PRESENT) ? "true" : "false");
 	} else {
 		vigil_buf_appendf(buf, "null");
 	}
@@ -440,13 +488,23 @@ status_call(struct vigil_buf *buf)
 	first = 1;
 	vigil_buf_appendf(buf, ",\"incoming\":[");
 
-	for (idx = 1; idx < KYRKA_PEERS_PER_FLOCK; idx++) {
-		state = vigil_call_peer(idx) & VIGIL_CALL_PEER_SIGNALING;
-		if (state != VIGIL_CALL_PEER_PRESENT)
+	for (slot = 0; slot < VIGIL_GOSPEL_MAX; slot++) {
+		if (vigil->gospels[slot] == NULL)
 			continue;
 
-		vigil_buf_appendf(buf, "%s\"%02x\"", first ? "" : ",", idx);
-		first = 0;
+		flock = vigil->gospels[slot]->cathedral_flock;
+
+		for (idx = 1; idx < KYRKA_PEERS_PER_FLOCK; idx++) {
+			state = vigil_call_peer(slot, idx);
+			state &= VIGIL_CALL_PEER_SIGNALING;
+
+			if (state != VIGIL_CALL_PEER_PRESENT)
+				continue;
+
+			vigil_buf_appendf(buf, "%s\"%" PRIx64 "-%02x\"",
+			    first ? "" : ",", flock, idx);
+			first = 0;
+		}
 	}
 
 	vigil_buf_appendf(buf, "]}");

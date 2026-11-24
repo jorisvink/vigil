@@ -81,8 +81,9 @@ static void	companion_data(u_int64_t, size_t);
 static int	companion_members(const char *, u_int8_t *);
 static size_t	companion_read(const char *, char *, size_t);
 
-/* The companion configuration. */
+/* The companion configuration and the flock of our phone we talk in. */
 static size_t		config_len;
+static u_int64_t	flock = 0;
 static char		config[VIGIL_CONFIG_MAX];
 
 /* What we send. */
@@ -111,7 +112,7 @@ usage(void)
 	fprintf(stderr, "usage: companion [-m peer:text] [-i peer:file] "
 	    "[-g owner:id:serial:members:text] [-a json] [-t peer] "
 	    "[-C peer] [-A] [-H secs] [-e count] [-x secs] [-o dir] "
-	    "[-D datadir] <companion>\n");
+	    "[-D datadir] -F flock <companion>\n");
 	exit(1);
 }
 
@@ -132,8 +133,13 @@ main(int argc, char **argv)
 	expect = 0;
 	delivered = 0;
 
-	while ((ch = getopt(argc, argv, "AC:D:H:a:e:g:i:m:o:t:x:")) != -1) {
+	while ((ch = getopt(argc, argv, "AC:D:F:H:a:e:g:i:m:o:t:x:")) != -1) {
 		switch (ch) {
+		case 'F':
+			flock = strtoull(optarg, &ep, 16);
+			if (*ep != '\0' || flock == 0)
+				usage();
+			break;
 		case 'A':
 			call_answer = 1;
 			break;
@@ -230,6 +236,9 @@ main(int argc, char **argv)
 	if (argc != 1)
 		usage();
 
+	if (flock == 0)
+		usage();
+
 	config_len = companion_read(argv[0], config, sizeof(config));
 
 	wanted = 0;
@@ -270,9 +279,9 @@ main(int argc, char **argv)
 		if (sent == 0 && (ep = strstr(p, COMPANION_ONLINE)) != NULL &&
 		    strstr(ep, "\"online\":true") != NULL) {
 			if (typing != 0)
-				vigil_chat_typing(typing, 0, 1);
+				vigil_chat_typing(flock, typing, 0, 1);
 			if (call_peer != 0 &&
-			    vigil_chat_call(VIGIL_COMPANION_DIAL,
+			    vigil_chat_call(VIGIL_COMPANION_DIAL, flock,
 			    call_peer) == -1)
 				fatal("vigil_chat_call");
 			for (idx = 0; idx < send_count; idx++)
@@ -290,7 +299,7 @@ main(int argc, char **argv)
 
 		if (talked != 0 && call_hangup > 0 && call_peer != 0 &&
 		    vigil_time_ms() - talked >= (u_int64_t)call_hangup * 1000) {
-			if (vigil_chat_call(VIGIL_COMPANION_HANGUP,
+			if (vigil_chat_call(VIGIL_COMPANION_HANGUP, flock,
 			    call_peer) == -1)
 				fatal("vigil_chat_call");
 			call_hangup = 0;
@@ -432,6 +441,7 @@ companion_send(int idx)
 	memset(&req, 0, sizeof(req));
 
 	req.ref = ref;
+	req.flock = flock;
 	req.op = VIGIL_COMPANION_SEND;
 
 	if (send_group[idx] == 0) {
@@ -482,18 +492,22 @@ companion_call(const char *status)
 {
 	const char	*p;
 	long		peer;
+	char		*ep;
 	char		voice[1024];
 
 	PRECOND(status != NULL);
 
 	if (call_answer == 1 &&
 	    (p = strstr(status, "\"incoming\":[\"")) != NULL) {
-		peer = strtol(p + 13, NULL, 16);
+		if (strtoull(p + 13, &ep, 16) != flock || *ep != '-')
+			fatal("odd incoming call");
+
+		peer = strtol(ep + 1, NULL, 16);
 		if (peer <= 0 || peer >= KYRKA_PEERS_PER_FLOCK)
 			fatal("odd incoming call");
 
 		printf("companion: answering %02lx\n", peer);
-		if (vigil_chat_call(VIGIL_COMPANION_ANSWER, peer) == -1)
+		if (vigil_chat_call(VIGIL_COMPANION_ANSWER, flock, peer) == -1)
 			fatal("vigil_chat_call");
 
 		call_peer = peer;

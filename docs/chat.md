@@ -504,8 +504,8 @@ An author of 0 in a reply means us. A hash of 0 in a group message means
 it replies to nothing.
 
 ```
-event        fields, besides "peer", and "owner", "group" and "serial"
-             in a group
+event        fields, besides "flock" and "peer", and "owner", "group"
+             and "serial" in a group
 -----------  -------------------------------------------------------------
 message      token, nick, signed, text, mention if it names us,
              author and hash if it is a reply, topic if it is

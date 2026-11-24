@@ -98,6 +98,17 @@
 /* The maximum length of a configuration we accept. */
 #define VIGIL_CONFIG_MAX		4096
 
+/* The most Gospel configurations we run at once. */
+#define VIGIL_GOSPEL_MAX		16
+
+#if VIGIL_GOSPEL_MAX > 255
+#error "VIGIL_GOSPEL_MAX must fit in a u_int8_t"
+#endif
+
+/* The largest set of Gospel configurations, each one ends in a NUL. */
+#define VIGIL_GOSPEL_SET_MAX		\
+    (VIGIL_GOSPEL_MAX * (VIGIL_CONFIG_MAX + 1))
+
 /*
  * The words from covenant to join a flock remotely, the route to covenant
  * followed by the passphrase for the tunnel. All of them come from the
@@ -388,51 +399,56 @@
 
 /* src/call.c */
 void	vigil_call_hangup(void);
-void	vigil_call_dial(u_int8_t);
-void	vigil_call_done(u_int8_t);
-int	vigil_chat_forget(u_int8_t);
-int	vigil_chat_drop(u_int8_t, u_int64_t);
+void	vigil_call_dial(u_int64_t, u_int8_t);
+void	vigil_call_done(u_int64_t, u_int8_t);
+
+/* src/chat.c */
 int	vigil_chat_stored(u_int64_t);
 int	vigil_chat_nick(const char *);
-void	vigil_chat_open(u_int8_t, int);
-void	vigil_chat_accept(u_int8_t, int);
-void	vigil_chat_ignore(u_int8_t, int);
-void	vigil_chat_typing(u_int8_t, u_int64_t, int);
+int	vigil_chat_forget(u_int64_t, u_int8_t);
 size_t	vigil_chat_events(char *, size_t);
 void	vigil_chat_avatar(const void *, size_t);
-void	vigil_chat_group_typing(u_int8_t, u_int64_t, u_int64_t,
-	    const u_int8_t *);
+int	vigil_chat_drop(u_int64_t, u_int8_t, u_int64_t);
+void	vigil_chat_open(u_int64_t, u_int8_t, int);
+void	vigil_chat_accept(u_int64_t, u_int8_t, int);
+void	vigil_chat_ignore(u_int64_t, u_int8_t, int);
+int	vigil_chat_call(int, u_int64_t, u_int8_t);
 ssize_t	vigil_chat_data_take(u_int64_t, void *, size_t);
-int	vigil_chat_group_leave(u_int8_t, u_int64_t, u_int64_t);
-int	vigil_chat_send(u_int8_t, u_int64_t, const char *, size_t);
-int	vigil_chat_data_send(u_int8_t, u_int64_t, int, const char *,
-	    const void *, size_t);
-int	vigil_chat_reply(u_int8_t, u_int64_t, u_int8_t, u_int64_t,
-	    const char *, size_t);
-int	vigil_chat_topic(u_int8_t, u_int64_t, u_int64_t, u_int32_t,
-	    const char *, size_t);
-int	vigil_chat_topic_send(u_int8_t, u_int64_t, u_int64_t, u_int8_t,
-	    u_int64_t, const char *, size_t);
-int	vigil_chat_topic_data_send(u_int8_t, u_int64_t, u_int64_t, int,
+void	vigil_chat_typing(u_int64_t, u_int8_t, u_int64_t, int);
+void	vigil_chat_group_typing(u_int64_t, u_int8_t, u_int64_t, u_int64_t,
+	    const u_int8_t *);
+int	vigil_chat_group_leave(u_int64_t, u_int8_t, u_int64_t, u_int64_t);
+int	vigil_chat_send(u_int64_t, u_int8_t, u_int64_t, const char *, size_t);
+int	vigil_chat_data_send(u_int64_t, u_int8_t, u_int64_t, int,
 	    const char *, const void *, size_t);
-int	vigil_chat_group_roster(u_int8_t, u_int64_t, u_int64_t, u_int32_t,
-	    int, const u_int8_t *, const char *, size_t);
-int	vigil_chat_group_send(u_int8_t, u_int64_t, u_int8_t, u_int64_t,
-	    u_int32_t, u_int64_t, u_int8_t, u_int64_t, const char *, size_t);
-int	vigil_chat_group_topic(u_int8_t, u_int64_t, u_int64_t, u_int32_t,
-	    u_int64_t, u_int32_t, const char *, size_t);
-int	vigil_chat_group_data_send(u_int8_t, u_int64_t, u_int8_t, u_int64_t,
-	    u_int32_t, u_int64_t, int, const char *, const void *, size_t);
-int	vigil_chat_call(int, u_int8_t);
+int	vigil_chat_reply(u_int64_t, u_int8_t, u_int64_t, u_int8_t, u_int64_t,
+	    const char *, size_t);
+int	vigil_chat_topic(u_int64_t, u_int8_t, u_int64_t, u_int64_t, u_int32_t,
+	    const char *, size_t);
+int	vigil_chat_topic_send(u_int64_t, u_int8_t, u_int64_t, u_int64_t,
+	    u_int8_t, u_int64_t, const char *, size_t);
+int	vigil_chat_topic_data_send(u_int64_t, u_int8_t, u_int64_t, u_int64_t,
+	    int, const char *, const void *, size_t);
+int	vigil_chat_group_roster(u_int64_t, u_int8_t, u_int64_t, u_int64_t,
+	    u_int32_t, int, const u_int8_t *, const char *, size_t);
+int	vigil_chat_group_send(u_int64_t, u_int8_t, u_int64_t, u_int8_t,
+	    u_int64_t, u_int32_t, u_int64_t, u_int8_t, u_int64_t,
+	    const char *, size_t);
+int	vigil_chat_group_topic(u_int64_t, u_int8_t, u_int64_t, u_int64_t,
+	    u_int32_t, u_int64_t, u_int32_t, const char *, size_t);
+int	vigil_chat_group_data_send(u_int64_t, u_int8_t, u_int64_t, u_int8_t,
+	    u_int64_t, u_int32_t, u_int64_t, int, const char *, const void *,
+	    size_t);
 int	vigil_chat_companion(const char *, size_t);
 int	vigil_chat_companion_sync(const char *, size_t, const void *, size_t);
 int	vigil_chat_companion_resync(int);
 int	vigil_chat_companion_unsync(void);
 int	vigil_chat_companion_ask(u_int64_t, const char *, size_t,
 	    const void *, size_t);
-int	vigil_chat_retract(u_int8_t, u_int64_t, u_int64_t, u_int64_t);
-int	vigil_chat_group_retract(u_int8_t, u_int64_t, u_int8_t, u_int64_t,
-	    u_int32_t, u_int64_t, u_int64_t);
+int	vigil_chat_retract(u_int64_t, u_int8_t, u_int64_t, u_int64_t,
+	    u_int64_t);
+int	vigil_chat_group_retract(u_int64_t, u_int8_t, u_int64_t, u_int8_t,
+	    u_int64_t, u_int32_t, u_int64_t, u_int64_t);
 
 /* src/link.c */
 void	vigil_link_close(void);
@@ -452,12 +468,12 @@ const char	*vigil_remote_word(u_int16_t);
 
 /* src/safety.c */
 void	vigil_safety_stop(void);
-int	vigil_safety_get(u_int8_t, u_int8_t *, size_t);
+int	vigil_safety_get(u_int64_t, u_int8_t, u_int8_t *, size_t);
 int	vigil_safety_half(const char *, u_int8_t *, size_t);
 int	vigil_safety_code(const u_int8_t *, size_t, char *, size_t);
 int	vigil_safety_words(const u_int8_t *, size_t, char *, size_t);
-int	vigil_safety_start(u_int8_t, const u_int8_t *, const u_int8_t *,
-	    size_t);
+int	vigil_safety_start(u_int64_t, u_int8_t, const u_int8_t *,
+	    const u_int8_t *, size_t);
 
 /* src/config.c */
 int	vigil_config_check(const char *, size_t, char *, size_t);
@@ -469,7 +485,7 @@ void	vigil_poke(void);
 void	vigil_rebind(void);
 void	vigil_stop(u_int64_t);
 int	vigil_gospel(const char *, size_t);
-void	vigil_additional_input(u_int8_t, const void *, size_t);
+void	vigil_additional_input(u_int64_t, u_int8_t, const void *, size_t);
 int	vigil_run(u_int64_t, int, const char *, size_t,
 	    const char *, size_t, const char *);
 

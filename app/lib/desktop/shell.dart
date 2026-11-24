@@ -9,6 +9,7 @@ import '../reliquary.dart';
 import '../theme.dart';
 import '../voice.dart';
 import '../widgets/marks.dart';
+import '../vigil.dart' show flockOf;
 import 'desk.dart';
 import 'join.dart';
 
@@ -680,7 +681,7 @@ class _Me extends StatelessWidget {
       ),
       child: Row(
         children: [
-          _Avatar(peer: desk.self.isEmpty ? '00' : desk.self, size: 30),
+          _Avatar(peer: '00', size: 30),
           const SizedBox(width: 10),
           Expanded(
             child: Column(
@@ -696,8 +697,12 @@ class _Me extends StatelessWidget {
                   ),
                 ),
                 Text(
-                  desk.self.isEmpty ? 'Not heard from your phone' : desk.self,
+                  desk.selves.isEmpty
+                      ? 'Not heard from your phone'
+                      : (desk.selves.values.toList()..sort()).join(' · '),
                   style: Styles.detail,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
                 ),
               ],
             ),
@@ -837,7 +842,10 @@ class _ChatItemState extends State<_ChatItem> {
       if (desk.owns(chat) && !chat.closed) _item('topic', 'New topic'),
       if (owned) _item('edit', 'Edit group'),
       if (chat.isGroup && !chat.closed)
-        _item('leave', chat.owner == desk.self ? 'End group' : 'Leave group'),
+        _item(
+          'leave',
+          chat.owner == desk.selfIn(chat.id) ? 'End group' : 'Leave group',
+        ),
       _item('delete', 'Delete chat'),
     ]);
 
@@ -870,9 +878,11 @@ class _ChatItemState extends State<_ChatItem> {
       case 'leave':
         final sure = await _confirm(
           context,
-          chat.owner == desk.self ? 'End this group?' : 'Leave this group?',
+          chat.owner == desk.selfIn(chat.id)
+              ? 'End this group?'
+              : 'Leave this group?',
           'Your phone does this for you, the messages here stay.',
-          chat.owner == desk.self ? 'End' : 'Leave',
+          chat.owner == desk.selfIn(chat.id) ? 'End' : 'Leave',
         );
         if (sure) {
           await widget.act(() => desk.leaveGroup(chat));
@@ -1558,7 +1568,9 @@ class _GroupDialogState extends State<_GroupDialog> {
     final chat = widget.chat;
     if (chat != null) {
       _name.text = chat.name;
-      _picked.addAll(chat.members.where((m) => m != Desk.instance.self));
+      _picked.addAll(
+        chat.members.where((m) => m != Desk.instance.selfIn(chat.id)),
+      );
     }
   }
 
@@ -1580,7 +1592,13 @@ class _GroupDialogState extends State<_GroupDialog> {
     Navigator.of(context).pop();
 
     if (chat == null) {
-      await widget.act(() => desk.createGroup(name, _picked.toList()));
+      await widget.act(
+        () => desk.createGroup(
+          flockOf(_picked.first),
+          name,
+          _picked.toList(),
+        ),
+      );
     } else {
       await widget.act(() => desk.editGroup(chat, name, _picked.toList()));
     }
@@ -1589,8 +1607,14 @@ class _GroupDialogState extends State<_GroupDialog> {
   @override
   Widget build(BuildContext context) {
     final desk = Desk.instance;
-    final known = {...desk.known, ..._picked}.toList()
-      ..sort((a, b) => desk.name(a).compareTo(desk.name(b)));
+    final flock =
+        widget.chat?.flock ??
+        (_picked.isEmpty ? null : flockOf(_picked.first));
+    final known =
+        {...desk.known, ..._picked}
+            .where((p) => flock == null || flockOf(p) == flock)
+            .toList()
+          ..sort((a, b) => desk.name(a).compareTo(desk.name(b)));
 
     return _Dialog(
       title: widget.chat == null ? 'New group' : 'Edit group',
@@ -1635,6 +1659,7 @@ class _GroupDialogState extends State<_GroupDialog> {
                               style: const TextStyle(color: Palette.fg),
                             ),
                           ),
+                          Text(peer, style: Styles.detail),
                         ],
                       ),
                     ),
@@ -1869,10 +1894,11 @@ class _SettingsDialogState extends State<_SettingsDialog> {
             limit: nickMax,
             onSubmit: _save,
           ),
-          if (desk.selfSigned.isNotEmpty) ...[
+          for (final signed in desk.selves.keys.map(desk.selfSigned))
+            if (signed.isNotEmpty) ...[
             const SizedBox(height: 6),
             Text(
-              'Your peers see your signed name ${desk.selfSigned}.',
+              'Your peers see your signed name $signed.',
               style: Styles.detail,
             ),
           ],

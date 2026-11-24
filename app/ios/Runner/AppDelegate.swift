@@ -25,9 +25,9 @@ import UserNotifications
       VigilPlugin.requestedTopic = info["topic"] as? String
     }
 
-    if let caller = (info["call"] as? String).flatMap({ UInt8($0, radix: 16) }) {
+    if let caller = (info["call"] as? String).flatMap({ Flock.valid($0) ? $0 : nil }) {
       if response.actionIdentifier == "decline" {
-        VigilPlugin.send("done \(ChatVault.hex(caller))") {
+        VigilPlugin.send("done \(caller)") {
           super.userNotificationCenter(center, didReceive: response, withCompletionHandler: completionHandler)
         }
         return

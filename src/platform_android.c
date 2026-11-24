@@ -36,13 +36,14 @@
 static jstring		android_status(JNIEnv *, jclass);
 static jlong		android_run_id(JNIEnv *, jclass);
 static jstring		android_version(JNIEnv *, jclass);
+static jint		android_gospel_max(JNIEnv *, jclass);
 static void		android_stop(JNIEnv *, jclass, jlong);
 static jstring		android_kyrka_version(JNIEnv *, jclass);
 static jstring		android_string_new(JNIEnv *, const char *);
 static jstring		android_check(JNIEnv *, jclass, jbyteArray);
 static jboolean		android_gospel(JNIEnv *, jclass, jbyteArray);
 static jbyteArray	android_edit(JNIEnv *, jclass, jbyteArray, jstring);
-static jboolean		android_additional_input(JNIEnv *, jclass, jint,
+static jboolean		android_additional_input(JNIEnv *, jclass, jlong, jint,
 			    jbyteArray);
 static jint		android_run(JNIEnv *, jclass, jobject, jint, jbyteArray,
 			    jbyteArray, jstring, jlong);
@@ -52,13 +53,13 @@ static void	android_bytes_wipe(JNIEnv *, jbyteArray, size_t);
 static char	*android_bytes_copy(JNIEnv *, jbyteArray, size_t, size_t *);
 
 static void	android_call_hangup(JNIEnv *, jclass);
-static void	android_call_dial(JNIEnv *, jclass, jint);
+static void	android_call_dial(JNIEnv *, jclass, jlong, jint);
 
 static void	android_voice_hangup(JNIEnv *, jclass);
 static void	android_voice_answer(JNIEnv *, jclass);
 static jstring	android_voice_status(JNIEnv *, jclass);
 static void	android_voice_mute(JNIEnv *, jclass, jboolean);
-static void	android_voice_call(JNIEnv *, jclass, jint, jint);
+static void	android_voice_call(JNIEnv *, jclass, jlong, jint, jint);
 
 static jint		android_remote_run(JNIEnv *, jclass);
 static void		android_remote_stop(JNIEnv *, jclass);
@@ -69,17 +70,17 @@ static jboolean		android_remote_start(JNIEnv *, jclass, jstring,
 			    jstring);
 
 static void		android_safety_stop(JNIEnv *, jclass);
-static jbyteArray	android_safety_get(JNIEnv *, jclass, jint);
+static jbyteArray	android_safety_get(JNIEnv *, jclass, jlong, jint);
 static jstring		android_safety_code(JNIEnv *, jclass, jbyteArray);
 static jbyteArray	android_safety_half(JNIEnv *, jclass, jbyteArray);
 static jstring		android_safety_words(JNIEnv *, jclass, jbyteArray);
-static jboolean		android_safety_start(JNIEnv *, jclass, jint,
+static jboolean		android_safety_start(JNIEnv *, jclass, jlong, jint,
 			    jbyteArray, jbyteArray);
 
 static jbyteArray	android_chat_events(JNIEnv *, jclass);
 static jbyteArray	android_chat_data_take(JNIEnv *, jclass, jlong, jint);
-static jboolean		android_chat_forget(JNIEnv *, jclass, jint);
-static jboolean		android_chat_drop(JNIEnv *, jclass, jint, jlong);
+static jboolean		android_chat_forget(JNIEnv *, jclass, jlong, jint);
+static jboolean		android_chat_drop(JNIEnv *, jclass, jlong, jint, jlong);
 static jboolean		android_chat_stored(JNIEnv *, jclass, jlong);
 static jboolean		android_chat_nick(JNIEnv *, jclass, jstring);
 static jboolean		android_chat_avatar(JNIEnv *, jclass, jbyteArray);
@@ -88,37 +89,40 @@ static jboolean		android_chat_companion_sync(JNIEnv *, jclass,
 			    jbyteArray, jbyteArray);
 static jboolean		android_chat_companion_resync(JNIEnv *, jclass,
 			    jboolean);
-static void		android_chat_open(JNIEnv *, jclass, jint, jboolean);
-static void		android_chat_accept(JNIEnv *, jclass, jint,
+static void		android_chat_open(JNIEnv *, jclass, jlong, jint,
 			    jboolean);
-static void		android_chat_ignore(JNIEnv *, jclass, jint,
+static void		android_chat_accept(JNIEnv *, jclass, jlong, jint,
 			    jboolean);
-static void		android_chat_typing(JNIEnv *, jclass, jint, jlong,
+static void		android_chat_ignore(JNIEnv *, jclass, jlong, jint,
 			    jboolean);
-static void		android_chat_group_typing(JNIEnv *, jclass, jint,
+static void		android_chat_typing(JNIEnv *, jclass, jlong, jint,
+			    jlong, jboolean);
+static void		android_chat_group_typing(JNIEnv *, jclass, jlong, jint,
 			    jlong, jlong, jbyteArray);
-static jboolean		android_chat_group_leave(JNIEnv *, jclass, jint, jlong,
-			    jlong);
-static jboolean		android_chat_retract(JNIEnv *, jclass, jint, jlong,
-			    jint, jlong, jint, jlong, jlong);
-static jboolean		android_chat_send(JNIEnv *, jclass, jint, jlong,
+static jboolean		android_chat_group_leave(JNIEnv *, jclass, jlong, jint,
+			    jlong, jlong);
+static jboolean		android_chat_retract(JNIEnv *, jclass, jlong, jint,
+			    jlong, jint, jlong, jint, jlong, jlong);
+static jboolean		android_chat_send(JNIEnv *, jclass, jlong, jint, jlong,
 			    jbyteArray, jint, jlong, jlong);
-static jboolean		android_chat_topic(JNIEnv *, jclass, jint, jlong,
+static jboolean		android_chat_topic(JNIEnv *, jclass, jlong, jint, jlong,
 			    jlong, jint, jbyteArray);
-static jboolean		android_chat_group_send(JNIEnv *, jclass, jint, jlong,
-			    jint, jlong, jint, jlong, jbyteArray, jint, jlong);
-static jboolean		android_chat_group_topic(JNIEnv *, jclass, jint, jlong,
-			    jlong, jint, jlong, jint, jbyteArray);
-static jboolean		android_chat_group_roster(JNIEnv *, jclass, jint,
+static jboolean		android_chat_group_send(JNIEnv *, jclass, jlong, jint,
+			    jlong, jint, jlong, jint, jlong, jbyteArray, jint,
+			    jlong);
+static jboolean		android_chat_group_topic(JNIEnv *, jclass, jlong, jint,
+			    jlong, jlong, jint, jlong, jint, jbyteArray);
+static jboolean		android_chat_group_roster(JNIEnv *, jclass, jlong, jint,
 			    jlong, jlong, jint, jboolean, jbyteArray,
 			    jbyteArray);
-static jboolean		android_chat_data_send(JNIEnv *, jclass, jint, jlong,
-			    jint, jbyteArray, jbyteArray, jlong);
-static jboolean		android_chat_group_data_send(JNIEnv *, jclass, jint,
-			    jlong, jint, jlong, jint, jlong, jint, jbyteArray,
-			    jbyteArray);
-static jboolean		android_chat_data_queue(JNIEnv *, jint, jlong, jint,
-			    jlong, jint, jint, jbyteArray, jbyteArray, jlong);
+static jboolean		android_chat_data_send(JNIEnv *, jclass, jlong, jint,
+			    jlong, jint, jbyteArray, jbyteArray, jlong);
+static jboolean		android_chat_group_data_send(JNIEnv *, jclass, jlong,
+			    jint, jlong, jint, jlong, jint, jlong, jint,
+			    jbyteArray, jbyteArray);
+static jboolean		android_chat_data_queue(JNIEnv *, jlong, jint, jlong,
+			    jint, jlong, jint, jint, jbyteArray, jbyteArray,
+			    jlong);
 
 /* The native methods we register with the Vigil class. */
 static JNINativeMethod	methods[] = {
@@ -127,29 +131,30 @@ static JNINativeMethod	methods[] = {
 	    (void *)android_run },
 	{ "stop", "(J)V", (void *)android_stop },
 	{ "runId", "()J", (void *)android_run_id },
+	{ "gospelMax", "()I", (void *)android_gospel_max },
 	{ "check", "([B)Ljava/lang/String;", (void *)android_check },
 	{ "edit", "([BLjava/lang/String;)[B", (void *)android_edit },
 	{ "status", "()Ljava/lang/String;", (void *)android_status },
 	{ "version", "()Ljava/lang/String;", (void *)android_version },
 	{ "kyrkaVersion", "()Ljava/lang/String;",
 	    (void *)android_kyrka_version },
-	{ "callDial", "(I)V", (void *)android_call_dial },
+	{ "callDial", "(JI)V", (void *)android_call_dial },
 	{ "callHangup", "()V", (void *)android_call_hangup },
-	{ "voiceCall", "(II)V", (void *)android_voice_call },
+	{ "voiceCall", "(JII)V", (void *)android_voice_call },
 	{ "voiceHangup", "()V", (void *)android_voice_hangup },
 	{ "voiceAnswer", "()V", (void *)android_voice_answer },
 	{ "voiceMute", "(Z)V", (void *)android_voice_mute },
 	{ "voiceStatus", "()Ljava/lang/String;",
 	    (void *)android_voice_status },
-	{ "chatSend", "(IJ[BIJJ)Z", (void *)android_chat_send },
-	{ "chatTopic", "(IJJI[B)Z", (void *)android_chat_topic },
-	{ "chatForget", "(I)Z", (void *)android_chat_forget },
-	{ "chatDrop", "(IJ)Z", (void *)android_chat_drop },
+	{ "chatSend", "(JIJ[BIJJ)Z", (void *)android_chat_send },
+	{ "chatTopic", "(JIJJI[B)Z", (void *)android_chat_topic },
+	{ "chatForget", "(JI)Z", (void *)android_chat_forget },
+	{ "chatDrop", "(JIJ)Z", (void *)android_chat_drop },
 	{ "chatStored", "(J)Z", (void *)android_chat_stored },
-	{ "chatOpen", "(IZ)V", (void *)android_chat_open },
-	{ "chatAccept", "(IZ)V", (void *)android_chat_accept },
-	{ "chatIgnore", "(IZ)V", (void *)android_chat_ignore },
-	{ "chatTyping", "(IJZ)V", (void *)android_chat_typing },
+	{ "chatOpen", "(JIZ)V", (void *)android_chat_open },
+	{ "chatAccept", "(JIZ)V", (void *)android_chat_accept },
+	{ "chatIgnore", "(JIZ)V", (void *)android_chat_ignore },
+	{ "chatTyping", "(JIJZ)V", (void *)android_chat_typing },
 	{ "chatNick", "(Ljava/lang/String;)Z", (void *)android_chat_nick },
 	{ "chatAvatar", "([B)Z", (void *)android_chat_avatar },
 	{ "chatCompanion", "([B)Z", (void *)android_chat_companion },
@@ -157,20 +162,20 @@ static JNINativeMethod	methods[] = {
 	    (void *)android_chat_companion_sync },
 	{ "chatCompanionResync", "(Z)Z",
 	    (void *)android_chat_companion_resync },
-	{ "chatGroupTyping", "(IJJ[B)V", (void *)android_chat_group_typing },
-	{ "chatGroupSend", "(IJIJIJ[BIJ)Z", (void *)android_chat_group_send },
-	{ "chatGroupTopic", "(IJJIJI[B)Z", (void *)android_chat_group_topic },
-	{ "chatGroupRoster", "(IJJIZ[B[B)Z",
+	{ "chatGroupTyping", "(JIJJ[B)V", (void *)android_chat_group_typing },
+	{ "chatGroupSend", "(JIJIJIJ[BIJ)Z", (void *)android_chat_group_send },
+	{ "chatGroupTopic", "(JIJJIJI[B)Z", (void *)android_chat_group_topic },
+	{ "chatGroupRoster", "(JIJJIZ[B[B)Z",
 	    (void *)android_chat_group_roster },
-	{ "chatGroupLeave", "(IJJ)Z", (void *)android_chat_group_leave },
-	{ "chatRetract", "(IJIJIJJ)Z", (void *)android_chat_retract },
+	{ "chatGroupLeave", "(JIJJ)Z", (void *)android_chat_group_leave },
+	{ "chatRetract", "(JIJIJIJJ)Z", (void *)android_chat_retract },
 	{ "chatEvents", "()[B", (void *)android_chat_events },
-	{ "chatDataSend", "(IJI[B[BJ)Z", (void *)android_chat_data_send },
-	{ "chatGroupDataSend", "(IJIJIJI[B[B)Z",
+	{ "chatDataSend", "(JIJI[B[BJ)Z", (void *)android_chat_data_send },
+	{ "chatGroupDataSend", "(JIJIJIJI[B[B)Z",
 	    (void *)android_chat_group_data_send },
 	{ "chatDataTake", "(JI)[B", (void *)android_chat_data_take },
 	{ "gospel", "([B)Z", (void *)android_gospel },
-	{ "additionalInput", "(I[B)Z", (void *)android_additional_input },
+	{ "additionalInput", "(JI[B)Z", (void *)android_additional_input },
 	{ "remoteWord", "(I)Ljava/lang/String;", (void *)android_remote_word },
 	{ "remoteWords", "([B)Ljava/lang/String;",
 	    (void *)android_remote_words },
@@ -184,8 +189,8 @@ static JNINativeMethod	methods[] = {
 	{ "safetyHalf", "([B)[B", (void *)android_safety_half },
 	{ "safetyCode", "([B)Ljava/lang/String;",
 	    (void *)android_safety_code },
-	{ "safetyStart", "(I[B[B)Z", (void *)android_safety_start },
-	{ "safetyGet", "(I)[B", (void *)android_safety_get },
+	{ "safetyStart", "(JI[B[B)Z", (void *)android_safety_start },
+	{ "safetyGet", "(JI)[B", (void *)android_safety_get },
 	{ "safetyStop", "()V", (void *)android_safety_stop },
 };
 
@@ -335,7 +340,8 @@ android_run(JNIEnv *env, jclass cls, jobject service, jint fd,
 	gcfg = NULL;
 
 	if (gospel != NULL)
-		gcfg = android_bytes_copy(env, gospel, VIGIL_CONFIG_MAX, &glen);
+		gcfg = android_bytes_copy(env, gospel,
+		    VIGIL_GOSPEL_SET_MAX, &glen);
 
 	if (gcfg != NULL)
 		android_bytes_wipe(env, gospel, glen);
@@ -388,6 +394,15 @@ static jlong
 android_run_id(JNIEnv *env, jclass cls)
 {
 	return ((jlong)vigil_run_id());
+}
+
+/*
+ * Vigil.gospelMax(), returns how many Gospel configurations we run at most.
+ */
+static jint
+android_gospel_max(JNIEnv *env, jclass cls)
+{
+	return (VIGIL_GOSPEL_MAX);
 }
 
 /*
@@ -535,10 +550,10 @@ android_kyrka_version(JNIEnv *env, jclass cls)
  * Vigil.callDial(), signals the given peer we want to call it.
  */
 static void
-android_call_dial(JNIEnv *env, jclass cls, jint peer)
+android_call_dial(JNIEnv *env, jclass cls, jlong flock, jint peer)
 {
 	if (peer > 0 && peer < KYRKA_PEERS_PER_FLOCK)
-		vigil_call_dial(peer);
+		vigil_call_dial(flock, peer);
 }
 
 /*
@@ -554,7 +569,7 @@ android_call_hangup(JNIEnv *env, jclass cls)
  * Vigil.voiceCall(), starts a voice session with the given peer.
  */
 static void
-android_voice_call(JNIEnv *env, jclass cls, jint peer, jint mode)
+android_voice_call(JNIEnv *env, jclass cls, jlong flock, jint peer, jint mode)
 {
 	if (peer <= 0 || peer >= KYRKA_PEERS_PER_FLOCK)
 		return;
@@ -563,7 +578,7 @@ android_voice_call(JNIEnv *env, jclass cls, jint peer, jint mode)
 	    mode != VIGIL_VOICE_MODE_ANSWER && mode != VIGIL_VOICE_MODE_DECLINE)
 		return;
 
-	vigil_voice_call(peer, mode);
+	vigil_voice_call(flock, peer, mode);
 }
 
 /*
@@ -614,7 +629,7 @@ android_voice_status(JNIEnv *env, jclass cls)
  * topic that is not 0 puts it in that topic.
  */
 static jboolean
-android_chat_send(JNIEnv *env, jclass cls, jint peer, jlong ref,
+android_chat_send(JNIEnv *env, jclass cls, jlong flock, jint peer, jlong ref,
     jbyteArray text, jint author, jlong hash, jlong topic)
 {
 	int		ret;
@@ -648,13 +663,13 @@ android_chat_send(JNIEnv *env, jclass cls, jint peer, jlong ref,
 	}
 
 	if (topic != 0) {
-		ret = vigil_chat_topic_send(peer, (u_int64_t)ref,
+		ret = vigil_chat_topic_send(flock, peer, (u_int64_t)ref,
 		    (u_int64_t)topic, author, (u_int64_t)hash, buf, len);
 	} else if (hash != 0) {
-		ret = vigil_chat_reply(peer, (u_int64_t)ref, author,
+		ret = vigil_chat_reply(flock, peer, (u_int64_t)ref, author,
 		    (u_int64_t)hash, buf, len);
 	} else {
-		ret = vigil_chat_send(peer, (u_int64_t)ref, buf, len);
+		ret = vigil_chat_send(flock, peer, (u_int64_t)ref, buf, len);
 	}
 
 	android_bytes_free(buf, len);
@@ -670,7 +685,7 @@ android_chat_send(JNIEnv *env, jclass cls, jint peer, jlong ref,
  * is utf-8 in a byte array, an empty name removes the topic.
  */
 static jboolean
-android_chat_topic(JNIEnv *env, jclass cls, jint peer, jlong ref,
+android_chat_topic(JNIEnv *env, jclass cls, jlong flock, jint peer, jlong ref,
     jlong topic, jint color, jbyteArray name)
 {
 	int		ret;
@@ -690,7 +705,7 @@ android_chat_topic(JNIEnv *env, jclass cls, jint peer, jlong ref,
 	if (buf == NULL)
 		return (JNI_FALSE);
 
-	ret = vigil_chat_topic(peer, (u_int64_t)ref, (u_int64_t)topic,
+	ret = vigil_chat_topic(flock, peer, (u_int64_t)ref, (u_int64_t)topic,
 	    (u_int32_t)color, buf, len);
 
 	android_bytes_free(buf, len);
@@ -705,7 +720,7 @@ android_chat_topic(JNIEnv *env, jclass cls, jint peer, jlong ref,
  * Vigil.chatForget(), drops the messages we hold for the given peer.
  */
 static jboolean
-android_chat_forget(JNIEnv *env, jclass cls, jint peer)
+android_chat_forget(JNIEnv *env, jclass cls, jlong flock, jint peer)
 {
 	if (peer <= 0)
 		return (JNI_FALSE);
@@ -713,7 +728,7 @@ android_chat_forget(JNIEnv *env, jclass cls, jint peer)
 	if (peer >= KYRKA_PEERS_PER_FLOCK)
 		return (JNI_FALSE);
 
-	return (vigil_chat_forget(peer) == 0);
+	return (vigil_chat_forget(flock, peer) == 0);
 }
 
 /*
@@ -721,7 +736,7 @@ android_chat_forget(JNIEnv *env, jclass cls, jint peer)
  * given peer.
  */
 static jboolean
-android_chat_drop(JNIEnv *env, jclass cls, jint peer, jlong ref)
+android_chat_drop(JNIEnv *env, jclass cls, jlong flock, jint peer, jlong ref)
 {
 	if (peer <= 0)
 		return (JNI_FALSE);
@@ -729,7 +744,7 @@ android_chat_drop(JNIEnv *env, jclass cls, jint peer, jlong ref)
 	if (peer >= KYRKA_PEERS_PER_FLOCK)
 		return (JNI_FALSE);
 
-	return (vigil_chat_drop(peer, ref) == 0);
+	return (vigil_chat_drop(flock, peer, ref) == 0);
 }
 
 /*
@@ -745,30 +760,32 @@ android_chat_stored(JNIEnv *env, jclass cls, jlong token)
  * Vigil.chatOpen(), marks the chat with the given peer as open or not.
  */
 static void
-android_chat_open(JNIEnv *env, jclass cls, jint peer, jboolean on)
+android_chat_open(JNIEnv *env, jclass cls, jlong flock, jint peer, jboolean on)
 {
 	if (peer > 0 && peer < KYRKA_PEERS_PER_FLOCK)
-		vigil_chat_open(peer, on == JNI_TRUE);
+		vigil_chat_open(flock, peer, on == JNI_TRUE);
 }
 
 /*
  * Vigil.chatAccept(), accepts the given peer or not.
  */
 static void
-android_chat_accept(JNIEnv *env, jclass cls, jint peer, jboolean on)
+android_chat_accept(JNIEnv *env, jclass cls, jlong flock, jint peer,
+    jboolean on)
 {
 	if (peer > 0 && peer < KYRKA_PEERS_PER_FLOCK)
-		vigil_chat_accept(peer, on == JNI_TRUE);
+		vigil_chat_accept(flock, peer, on == JNI_TRUE);
 }
 
 /*
  * Vigil.chatIgnore(), ignores the given peer or not.
  */
 static void
-android_chat_ignore(JNIEnv *env, jclass cls, jint peer, jboolean on)
+android_chat_ignore(JNIEnv *env, jclass cls, jlong flock, jint peer,
+    jboolean on)
 {
 	if (peer > 0 && peer < KYRKA_PEERS_PER_FLOCK)
-		vigil_chat_ignore(peer, on == JNI_TRUE);
+		vigil_chat_ignore(flock, peer, on == JNI_TRUE);
 }
 
 /*
@@ -776,11 +793,11 @@ android_chat_ignore(JNIEnv *env, jclass cls, jint peer, jboolean on)
  * topic if it is not 0.
  */
 static void
-android_chat_typing(JNIEnv *env, jclass cls, jint peer, jlong topic,
-    jboolean on)
+android_chat_typing(JNIEnv *env, jclass cls, jlong flock, jint peer,
+    jlong topic, jboolean on)
 {
 	if (peer > 0 && peer < KYRKA_PEERS_PER_FLOCK)
-		vigil_chat_typing(peer, topic, on == JNI_TRUE);
+		vigil_chat_typing(flock, peer, topic, on == JNI_TRUE);
 }
 
 /*
@@ -839,14 +856,14 @@ android_chat_avatar(JNIEnv *env, jclass cls, jbyteArray data)
  * members hold a bit for every member.
  */
 static void
-android_chat_group_typing(JNIEnv *env, jclass cls, jint owner, jlong group,
-    jlong topic, jbyteArray members)
+android_chat_group_typing(JNIEnv *env, jclass cls, jlong flock, jint owner,
+    jlong group, jlong topic, jbyteArray members)
 {
 	size_t		mlen;
 	char		*mbuf;
 
 	if (group == 0) {
-		vigil_chat_group_typing(0, 0, 0, NULL);
+		vigil_chat_group_typing(0, 0, 0, 0, NULL);
 		return;
 	}
 
@@ -861,7 +878,7 @@ android_chat_group_typing(JNIEnv *env, jclass cls, jint owner, jlong group,
 		return;
 
 	if (mlen == VIGIL_CHAT_GROUP_ROSTER) {
-		vigil_chat_group_typing(owner, group, topic,
+		vigil_chat_group_typing(flock, owner, group, topic,
 		    (const u_int8_t *)mbuf);
 	}
 
@@ -875,9 +892,9 @@ android_chat_group_typing(JNIEnv *env, jclass cls, jint owner, jlong group,
  * utf-8. A hash that is not 0 makes it a reply, see android_chat_send().
  */
 static jboolean
-android_chat_group_send(JNIEnv *env, jclass cls, jint peer, jlong ref,
-    jint owner, jlong group, jint serial, jlong topic, jbyteArray text,
-    jint author, jlong hash)
+android_chat_group_send(JNIEnv *env, jclass cls, jlong flock, jint peer,
+    jlong ref, jint owner, jlong group, jint serial, jlong topic,
+    jbyteArray text, jint author, jlong hash)
 {
 	int		ret;
 	size_t		len;
@@ -915,8 +932,8 @@ android_chat_group_send(JNIEnv *env, jclass cls, jint peer, jlong ref,
 		return (JNI_FALSE);
 	}
 
-	ret = vigil_chat_group_send(peer, ref, owner, group, serial, topic,
-	    author, hash, buf, len);
+	ret = vigil_chat_group_send(flock, peer, ref, owner, group, serial,
+	    topic, author, hash, buf, len);
 
 	android_bytes_free(buf, len);
 
@@ -932,8 +949,9 @@ android_chat_group_send(JNIEnv *env, jclass cls, jint peer, jlong ref,
  * byte array, an empty name removes the topic.
  */
 static jboolean
-android_chat_group_topic(JNIEnv *env, jclass cls, jint peer, jlong ref,
-    jlong group, jint serial, jlong topic, jint color, jbyteArray name)
+android_chat_group_topic(JNIEnv *env, jclass cls, jlong flock, jint peer,
+    jlong ref, jlong group, jint serial, jlong topic, jint color,
+    jbyteArray name)
 {
 	int		ret;
 	size_t		len;
@@ -955,8 +973,8 @@ android_chat_group_topic(JNIEnv *env, jclass cls, jint peer, jlong ref,
 	if (buf == NULL)
 		return (JNI_FALSE);
 
-	ret = vigil_chat_group_topic(peer, ref, group, serial, topic, color,
-	    buf, len);
+	ret = vigil_chat_group_topic(flock, peer, ref, group, serial, topic,
+	    color, buf, len);
 
 	android_bytes_free(buf, len);
 
@@ -972,8 +990,8 @@ android_chat_group_topic(JNIEnv *env, jclass cls, jint peer, jlong ref,
  * utf-8 in a byte array.
  */
 static jboolean
-android_chat_group_roster(JNIEnv *env, jclass cls, jint peer, jlong ref,
-    jlong group, jint serial, jboolean ended, jbyteArray members,
+android_chat_group_roster(JNIEnv *env, jclass cls, jlong flock, jint peer,
+    jlong ref, jlong group, jint serial, jboolean ended, jbyteArray members,
     jbyteArray name)
 {
 	int		ret;
@@ -1013,7 +1031,7 @@ android_chat_group_roster(JNIEnv *env, jclass cls, jint peer, jlong ref,
 	else
 		state = VIGIL_CHAT_GROUP_OPEN;
 
-	ret = vigil_chat_group_roster(peer, ref, group, serial, state,
+	ret = vigil_chat_group_roster(flock, peer, ref, group, serial, state,
 	    (const u_int8_t *)mbuf, buf, len);
 
 	android_bytes_free(buf, len);
@@ -1030,8 +1048,8 @@ android_chat_group_roster(JNIEnv *env, jclass cls, jint peer, jlong ref,
  * given peer owns.
  */
 static jboolean
-android_chat_group_leave(JNIEnv *env, jclass cls, jint owner, jlong ref,
-    jlong group)
+android_chat_group_leave(JNIEnv *env, jclass cls, jlong flock, jint owner,
+    jlong ref, jlong group)
 {
 	int		ret;
 
@@ -1041,7 +1059,7 @@ android_chat_group_leave(JNIEnv *env, jclass cls, jint owner, jlong ref,
 	if (group == 0)
 		return (JNI_FALSE);
 
-	ret = vigil_chat_group_leave(owner, ref, group);
+	ret = vigil_chat_group_leave(flock, owner, ref, group);
 	if (ret == -1)
 		return (JNI_FALSE);
 
@@ -1053,7 +1071,7 @@ android_chat_group_leave(JNIEnv *env, jclass cls, jint owner, jlong ref,
  * in the given group if it is not 0.
  */
 static jboolean
-android_chat_retract(JNIEnv *env, jclass cls, jint peer, jlong ref,
+android_chat_retract(JNIEnv *env, jclass cls, jlong flock, jint peer, jlong ref,
     jint owner, jlong group, jint serial, jlong topic, jlong hash)
 {
 	int		ret;
@@ -1065,12 +1083,12 @@ android_chat_retract(JNIEnv *env, jclass cls, jint peer, jlong ref,
 		return (JNI_FALSE);
 
 	if (group == 0) {
-		ret = vigil_chat_retract(peer, ref, topic, hash);
+		ret = vigil_chat_retract(flock, peer, ref, topic, hash);
 	} else {
 		if (owner <= 0 || owner >= KYRKA_PEERS_PER_FLOCK)
 			return (JNI_FALSE);
 
-		ret = vigil_chat_group_retract(peer, ref, owner, group,
+		ret = vigil_chat_group_retract(flock, peer, ref, owner, group,
 		    serial, topic, hash);
 	}
 
@@ -1086,15 +1104,15 @@ android_chat_retract(JNIEnv *env, jclass cls, jint peer, jlong ref,
  * utf-8 in a byte array.
  */
 static jboolean
-android_chat_data_send(JNIEnv *env, jclass cls, jint peer, jlong ref,
-    jint kind, jbyteArray name, jbyteArray data, jlong topic)
+android_chat_data_send(JNIEnv *env, jclass cls, jlong flock, jint peer,
+    jlong ref, jint kind, jbyteArray name, jbyteArray data, jlong topic)
 {
 	jboolean	ret;
 
 	if (peer <= 0 || peer >= KYRKA_PEERS_PER_FLOCK)
 		return (JNI_FALSE);
 
-	ret = android_chat_data_queue(env, peer, ref, 0, 0, 0, kind,
+	ret = android_chat_data_queue(env, flock, peer, ref, 0, 0, 0, kind,
 	    name, data, topic);
 
 	return (ret);
@@ -1107,8 +1125,8 @@ android_chat_data_send(JNIEnv *env, jclass cls, jint peer, jlong ref,
  * in a byte array.
  */
 static jboolean
-android_chat_group_data_send(JNIEnv *env, jclass cls, jint peer, jlong ref,
-    jint owner, jlong group, jint serial, jlong topic, jint kind,
+android_chat_group_data_send(JNIEnv *env, jclass cls, jlong flock, jint peer,
+    jlong ref, jint owner, jlong group, jint serial, jlong topic, jint kind,
     jbyteArray name, jbyteArray data)
 {
 	jboolean	ret;
@@ -1122,8 +1140,8 @@ android_chat_group_data_send(JNIEnv *env, jclass cls, jint peer, jlong ref,
 	if (group == 0)
 		return (JNI_FALSE);
 
-	ret = android_chat_data_queue(env, peer, ref, owner, group, serial,
-	    kind, name, data, topic);
+	ret = android_chat_data_queue(env, flock, peer, ref, owner, group,
+	    serial, kind, name, data, topic);
 
 	return (ret);
 }
@@ -1133,7 +1151,8 @@ android_chat_group_data_send(JNIEnv *env, jclass cls, jint peer, jlong ref,
  * and the given topic for those that are not 0.
  */
 static jboolean
-android_chat_data_queue(JNIEnv *env, jint peer, jlong ref, jint owner,
+android_chat_data_queue(JNIEnv *env, jlong flock, jint peer, jlong ref,
+    jint owner,
     jlong group, jint serial, jint kind, jbyteArray name, jbyteArray data,
     jlong topic)
 {
@@ -1160,14 +1179,14 @@ android_chat_data_queue(JNIEnv *env, jint peer, jlong ref, jint owner,
 	if (len == 0) {
 		ret = -1;
 	} else if (group != 0) {
-		ret = vigil_chat_group_data_send(peer, ref, owner, group,
+		ret = vigil_chat_group_data_send(flock, peer, ref, owner, group,
 		    serial, topic, kind, nbuf, buf, len);
 	} else if (topic != 0) {
-		ret = vigil_chat_topic_data_send(peer, (u_int64_t)ref,
+		ret = vigil_chat_topic_data_send(flock, peer, (u_int64_t)ref,
 		    (u_int64_t)topic, kind, nbuf, buf, len);
 	} else {
-		ret = vigil_chat_data_send(peer, (u_int64_t)ref, kind, nbuf,
-		    buf, len);
+		ret = vigil_chat_data_send(flock, peer, (u_int64_t)ref, kind,
+		    nbuf, buf, len);
 	}
 
 	android_bytes_free(buf, len);
@@ -1260,7 +1279,8 @@ android_gospel(JNIEnv *env, jclass cls, jbyteArray config)
 	buf = NULL;
 
 	if (config != NULL) {
-		buf = android_bytes_copy(env, config, VIGIL_CONFIG_MAX, &len);
+		buf = android_bytes_copy(env, config,
+		    VIGIL_GOSPEL_SET_MAX, &len);
 		if (buf == NULL)
 			return (JNI_FALSE);
 	}
@@ -1281,7 +1301,8 @@ android_gospel(JNIEnv *env, jclass cls, jbyteArray config)
  * peer, null for none.
  */
 static jboolean
-android_additional_input(JNIEnv *env, jclass cls, jint peer, jbyteArray ikm)
+android_additional_input(JNIEnv *env, jclass cls, jlong flock, jint peer,
+    jbyteArray ikm)
 {
 	size_t		len;
 	char		*buf;
@@ -1293,7 +1314,7 @@ android_additional_input(JNIEnv *env, jclass cls, jint peer, jbyteArray ikm)
 		return (JNI_FALSE);
 
 	if (ikm == NULL) {
-		vigil_additional_input(peer, NULL, 0);
+		vigil_additional_input(flock, peer, NULL, 0);
 		return (JNI_TRUE);
 	}
 
@@ -1306,7 +1327,7 @@ android_additional_input(JNIEnv *env, jclass cls, jint peer, jbyteArray ikm)
 		return (JNI_FALSE);
 	}
 
-	vigil_additional_input(peer, buf, len);
+	vigil_additional_input(flock, peer, buf, len);
 	android_bytes_free(buf, len);
 
 	return (JNI_TRUE);
@@ -1639,8 +1660,8 @@ android_safety_half(JNIEnv *env, jclass cls, jbyteArray words)
  * from our half and theirs.
  */
 static jboolean
-android_safety_start(JNIEnv *env, jclass cls, jint peer, jbyteArray own,
-    jbyteArray theirs)
+android_safety_start(JNIEnv *env, jclass cls, jlong flock, jint peer,
+    jbyteArray own, jbyteArray theirs)
 {
 	int		ret;
 	char		*mine, *other;
@@ -1667,7 +1688,7 @@ android_safety_start(JNIEnv *env, jclass cls, jint peer, jbyteArray own,
 
 	if (mine_len == VIGIL_SAFETY_HALF_LEN &&
 	    other_len == VIGIL_SAFETY_HALF_LEN) {
-		ret = vigil_safety_start(peer, (const u_int8_t *)mine,
+		ret = vigil_safety_start(flock, peer, (const u_int8_t *)mine,
 		    (const u_int8_t *)other, VIGIL_SAFETY_HALF_LEN);
 	}
 
@@ -1685,7 +1706,7 @@ android_safety_start(JNIEnv *env, jclass cls, jint peer, jbyteArray own,
  * given peer gave us, only once, or null.
  */
 static jbyteArray
-android_safety_get(JNIEnv *env, jclass cls, jint peer)
+android_safety_get(JNIEnv *env, jclass cls, jlong flock, jint peer)
 {
 	jbyteArray	out;
 	u_int8_t	input[VIGIL_ADDITIONAL_INPUT_LEN];
@@ -1693,7 +1714,7 @@ android_safety_get(JNIEnv *env, jclass cls, jint peer)
 	if (peer <= 0 || peer >= KYRKA_PEERS_PER_FLOCK)
 		return (NULL);
 
-	if (vigil_safety_get(peer, input, sizeof(input)) == -1)
+	if (vigil_safety_get(flock, peer, input, sizeof(input)) == -1)
 		return (NULL);
 
 	out = (*env)->NewByteArray(env, sizeof(input));

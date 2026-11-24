@@ -33,7 +33,7 @@ object Calls {
     private var connection: CallConnection? = null
     private var proximity: PowerManager.WakeLock? = null
 
-    var peer = 0
+    var peer = ""
         private set
     private var incoming = false
     private var phase: Phase? = null
@@ -44,7 +44,7 @@ object Calls {
     private var started = 0L
     private var sessions = 0L
 
-    private val ignored = mutableSetOf<Int>()
+    private val ignored = mutableSetOf<String>()
 
     val busy: Boolean
         get() = phase != null
@@ -123,7 +123,7 @@ object Calls {
         val phase = phase ?: return null
 
         return JSONObject()
-            .put("peer", hex(peer))
+            .put("peer", peer)
             .put("incoming", incoming)
             .put("state", phase.name.lowercase())
             .put("muted", muted)
@@ -133,17 +133,17 @@ object Calls {
             .put("since", if (phase == Phase.ACTIVE) started else 0L)
     }
 
-    fun dial(peer: Int, video: Boolean) {
+    fun dial(peer: String, video: Boolean) {
         val service = service ?: return
-        if (busy || peer <= 0 || peer >= 0xff) {
+        if (busy || !Flock.valid(peer)) {
             return
         }
 
         begin(peer, false, Phase.DIALING)
         camera(video)
 
-        Vigil.callDial(peer)
-        Vigil.voiceCall(peer, VOICE_CALL)
+        Vigil.callDial(Flock.number(peer), Flock.peer(peer))
+        Vigil.voiceCall(Flock.number(peer), Flock.peer(peer), VOICE_CALL)
 
         try {
             telecom()?.placeCall(
@@ -152,7 +152,7 @@ object Calls {
                     putParcelable(TelecomManager.EXTRA_PHONE_ACCOUNT_HANDLE, handle(service))
                     putBundle(
                         TelecomManager.EXTRA_OUTGOING_CALL_EXTRAS,
-                        Bundle().apply { putInt(EXTRA_PEER, peer) }
+                        Bundle().apply { putString(EXTRA_PEER, peer) }
                     )
                 }
             )
@@ -248,7 +248,7 @@ object Calls {
     fun update(status: JSONObject?, voice: JSONObject?) {
         val service = service ?: return
         val call = status?.optJSONObject("call")
-        val callers = mutableSetOf<Int>()
+        val callers = mutableSetOf<String>()
 
         if (voice?.optBoolean("relay") == true) {
             end(DisconnectCause.ANSWERED_ELSEWHERE)
@@ -257,7 +257,7 @@ object Calls {
 
         call?.optJSONArray("incoming")?.let { list ->
             for (i in 0 until list.length()) {
-                callers.add(list.getString(i).toInt(16))
+                callers.add(list.getString(i))
             }
         }
 
@@ -399,9 +399,9 @@ object Calls {
         service.getSystemService(NotificationManager::class.java).notify(NOTIFICATION_RING, notification)
     }
 
-    private fun ring(service: VigilVpnService, caller: Int) {
+    private fun ring(service: VigilVpnService, caller: String) {
         begin(caller, true, Phase.RINGING)
-        Vigil.voiceCall(caller, VOICE_RING)
+        Vigil.voiceCall(Flock.number(caller), Flock.peer(caller), VOICE_RING)
 
         val telecom = telecom()
 
@@ -415,7 +415,7 @@ object Calls {
                         putParcelable(TelecomManager.EXTRA_INCOMING_CALL_ADDRESS, address(caller))
                         putBundle(
                             TelecomManager.EXTRA_INCOMING_CALL_EXTRAS,
-                            Bundle().apply { putInt(EXTRA_PEER, caller) }
+                            Bundle().apply { putString(EXTRA_PEER, caller) }
                         )
                     }
                 )
@@ -428,7 +428,7 @@ object Calls {
         service.callChanged()
     }
 
-    private fun begin(peer: Int, incoming: Boolean, phase: Phase) {
+    private fun begin(peer: String, incoming: Boolean, phase: Phase) {
         this.peer = peer
         this.incoming = incoming
         this.phase = phase
@@ -475,7 +475,7 @@ object Calls {
     private fun telecom(): TelecomManager? =
         service?.getSystemService(TelecomManager::class.java)
 
-    private fun person(peer: Int): Person =
+    private fun person(peer: String): Person =
         Person.Builder().setName(name(peer)).setImportant(true).build()
 
     private fun launch(service: VigilVpnService, action: String, code: Int): PendingIntent =
@@ -493,12 +493,12 @@ object Calls {
     private fun handle(service: VigilVpnService) =
         PhoneAccountHandle(ComponentName(service, VigilConnectionService::class.java), "vigil")
 
-    private fun address(peer: Int): Uri = Uri.fromParts(PhoneAccount.SCHEME_SIP, hex(peer), null)
+    private fun address(peer: String): Uri = Uri.fromParts(PhoneAccount.SCHEME_SIP, peer, null)
 
     fun hex(peer: Int) = "%02x".format(peer)
 
-    fun name(peer: Int): String =
-        service?.let { PeerNames.name(it, peer) } ?: "Peer ${hex(peer)}"
+    fun name(peer: String): String =
+        service?.let { PeerNames.name(it, peer) } ?: peer
 
     private const val TAG = "vigil"
     private const val CHANNEL_CALL = "call"
@@ -530,20 +530,20 @@ class VigilConnectionService : ConnectionService() {
     private fun connection(request: ConnectionRequest): Connection {
         Log.i("vigil", "telecom connection ${request.extras?.keySet()}")
 
-        val peer = request.extras?.getInt(Calls.EXTRA_PEER, 0) ?: 0
+        val peer = request.extras?.getString(Calls.EXTRA_PEER) ?: ""
 
-        return CallConnection(if (peer != 0) peer else Calls.peer).also { Calls.connected(it) }
+        return CallConnection(peer.ifEmpty { Calls.peer }).also { Calls.connected(it) }
     }
 }
 
-class CallConnection(val peer: Int) : Connection() {
+class CallConnection(val peer: String) : Connection() {
     init {
         connectionProperties = PROPERTY_SELF_MANAGED
         connectionCapabilities = CAPABILITY_MUTE
         audioModeIsVoip = true
 
         val name = Calls.name(peer)
-        setAddress(Uri.fromParts(PhoneAccount.SCHEME_SIP, Calls.hex(peer), null),
+        setAddress(Uri.fromParts(PhoneAccount.SCHEME_SIP, peer, null),
             TelecomManager.PRESENTATION_ALLOWED)
         setCallerDisplayName(name, TelecomManager.PRESENTATION_ALLOWED)
     }

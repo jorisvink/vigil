@@ -84,11 +84,16 @@ extern volatile u_int64_t	host_video_keys;
 /* The tunnel side and our side of the socketpair. */
 static int		tun[2];
 
-/* The tunnel and Gospel configurations. */
+/* The tunnel and Gospel configurations, and the flock of the latter. */
 static size_t		gospel_len;
 static size_t		config_len;
+static u_int64_t	flock = 0;
 static char		gospel[VIGIL_CONFIG_MAX];
 static char		config[VIGIL_CONFIG_MAX];
+
+/* The additional kdf input we load once we know our flock. */
+static u_int8_t		input_peer = 0;
+static u_int8_t		input_ikm[VIGIL_ADDITIONAL_INPUT_LEN];
 
 /* Where the core keeps its remembrances, if anywhere. */
 static const char	*datadir = NULL;
@@ -204,7 +209,8 @@ main(int argc, char **argv)
 				    &ikm[idx]) != 1)
 					usage();
 			}
-			vigil_additional_input(peer, ikm, sizeof(ikm));
+			input_peer = peer;
+			memcpy(input_ikm, ikm, sizeof(ikm));
 			break;
 		case 't':
 			talk = atoi(optarg);
@@ -255,6 +261,16 @@ main(int argc, char **argv)
 	    summary, sizeof(summary)) == -1)
 		fatal("%s", summary);
 
+	if ((ep = strstr(summary, "\"cathedral_flock\":\"")) == NULL)
+		fatal("no flock in %s", summary);
+
+	flock = strtoull(ep + 19, NULL, 16);
+
+	if (input_peer != 0) {
+		vigil_additional_input(flock, input_peer,
+		    input_ikm, sizeof(input_ikm));
+	}
+
 	if (socketpair(AF_UNIX, SOCK_DGRAM, 0, tun) == -1)
 		fatal("socketpair: %s", errno_s);
 
@@ -262,9 +278,6 @@ main(int argc, char **argv)
 
 	signal(SIGPIPE, SIG_IGN);
 	vigil_socket_nonblock(tun[1]);
-
-	for (idx = 1; idx < KYRKA_PEERS_PER_FLOCK; idx++)
-		vigil_chat_accept(idx, !refused[idx]);
 
 	id = vigil_run_id();
 
@@ -282,16 +295,19 @@ main(int argc, char **argv)
 		(void)poll(NULL, 0, 1000);
 		seconds++;
 
+		for (idx = 1; idx < KYRKA_PEERS_PER_FLOCK; idx++)
+			vigil_chat_accept(flock, idx, !refused[idx]);
+
 		if (vigil_time_ms() - start > CALLER_TIMEOUT * 1000) {
 			printf("caller: timed out\n");
 			break;
 		}
 
 		if (dial && !dialed && seconds >= wait && (standalone ||
-		    (vigil_call_peer(dial) & VIGIL_CALL_PEER_ONLINE))) {
+		    (vigil_call_peer(0, dial) & VIGIL_CALL_PEER_ONLINE))) {
 			printf("caller: %02x is online\n", dial);
 			if (!standalone)
-				vigil_call_dial(dial);
+				vigil_call_dial(flock, dial);
 			if (!signal_only)
 				caller_voice_start(dial, VIGIL_VOICE_MODE_CALL);
 			dialed = 1;
@@ -304,7 +320,7 @@ main(int argc, char **argv)
 
 		if (attach > 0 && seconds == attach) {
 			printf("caller: attaching the gospel configuration\n");
-			if (vigil_gospel(gospel, gospel_len) == -1)
+			if (vigil_gospel(gospel, gospel_len + 1) == -1)
 				fatal("vigil_gospel");
 		}
 
@@ -328,7 +344,7 @@ main(int argc, char **argv)
 
 		if ((answer || decline || ring) && voice_id == 0) {
 			for (idx = 1; idx < KYRKA_PEERS_PER_FLOCK; idx++) {
-				if ((vigil_call_peer(idx) &
+				if ((vigil_call_peer(0, idx) &
 				    VIGIL_CALL_PEER_SIGNALING) ==
 				    VIGIL_CALL_PEER_PRESENT)
 					break;
@@ -455,7 +471,7 @@ caller_core_run(void *arg)
 		    NULL, 0, datadir);
 	} else {
 		ret = vigil_run(*id, tun[0], config, config_len,
-		    gospel, gospel_len, datadir);
+		    gospel, gospel_len + 1, datadir);
 	}
 
 	if (ret == -1)
@@ -482,7 +498,7 @@ caller_voice_start(u_int8_t peer, int mode)
 	voice_id = vigil_voice_run_id();
 
 	if (!standalone) {
-		vigil_voice_call(peer, mode);
+		vigil_voice_call(flock, peer, mode);
 		return;
 	}
 

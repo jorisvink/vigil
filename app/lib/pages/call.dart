@@ -127,7 +127,7 @@ class _NamePromptState extends State<_NamePrompt> {
             style: Styles.pre,
             cursorColor: Palette.amber,
             decoration: InputDecoration.collapsed(
-              hintText: 'Peer $peer',
+              hintText: peer,
               hintStyle: Styles.pre.copyWith(color: Palette.dim),
             ).copyWith(counterText: ''),
             onSubmitted: (value) => Navigator.of(context).pop(value),
@@ -211,9 +211,9 @@ class _PeerDetails extends StatelessWidget {
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         sheetTitle(vigil.name(peer)),
-        if (vigil.name(peer) != 'Peer $peer') ...[
+        if (vigil.name(peer) != peer) ...[
           const SizedBox(height: 6),
-          Text('Peer $peer', style: Styles.detail),
+          Text(peer, style: Styles.detail),
         ],
         const SizedBox(height: 16),
         LinkList(
@@ -770,7 +770,7 @@ class _CallPageState extends State<CallPage> {
                     Expanded(
                       child: _PeerMark(
                         peer: peer,
-                        name: vigil.names[peer],
+                        name: vigil.name(peer),
                         state: _liveness(phone),
                         label: Row(
                           mainAxisSize: MainAxisSize.min,
@@ -964,7 +964,7 @@ class _PeerMark extends StatelessWidget {
   });
 
   final String peer;
-  final String? name;
+  final String name;
   final Liveness state;
   final Widget label;
 
@@ -995,21 +995,22 @@ class _PeerMark extends StatelessWidget {
                       size: 112,
                       margin: const EdgeInsets.only(bottom: 14),
                     ),
-                    Text(
-                      peer.toUpperCase(),
-                      style: Styles.title.copyWith(
-                        fontFamily: Fonts.mono,
-                        fontSize: 38,
-                        color: live ? Palette.amber : Palette.dim,
+                    Padding(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: Metrics.edge,
+                      ),
+                      child: PeerName(
+                        peer,
+                        name: name,
+                        style: Styles.title.copyWith(
+                          color: live ? Palette.amber : Palette.dim,
+                        ),
+                        shrink: 16,
                       ),
                     ),
-                    if (name != null) ...[
+                    if (name != peer) ...[
                       const SizedBox(height: 6),
-                      Text(
-                        name!,
-                        style: Styles.title,
-                        overflow: TextOverflow.ellipsis,
-                      ),
+                      Text(peer, style: Styles.detail),
                     ],
                   ],
                 ),
@@ -1226,6 +1227,7 @@ class _VideoCallState extends State<_VideoCall> {
                 PeerName(
                   widget.call.peer,
                   style: Styles.cardTitle.copyWith(color: Colors.white),
+                  shrink: 12,
                 ),
                 const SizedBox(height: 4),
                 Text(widget.state, style: Styles.rubric),

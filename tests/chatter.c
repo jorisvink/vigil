@@ -85,6 +85,14 @@
 /* The color of the topic we set up. */
 #define CHATTER_TOPIC_COLOR	0x3366ff
 
+/*
+ * An additional kdf input for a peer.
+ */
+struct chatter_input {
+	u_int8_t	peer;
+	u_int8_t	ikm[VIGIL_ADDITIONAL_INPUT_LEN];
+};
+
 static void	usage(void) __attribute__((noreturn));
 
 static void	*chatter_core_run(void *);
@@ -105,9 +113,20 @@ static void	chatter_data_send(u_int8_t, u_int64_t, int, const char *, int);
 static const char	*chatter_field(const char *, const char *,
 			    const char *);
 
-/* The Gospel configuration. */
+/* The Gospel configuration and its flock, and the one we run next to it. */
 static size_t		gospel_len;
+static u_int64_t	flock = 0;
 static char		gospel[VIGIL_CONFIG_MAX];
+static size_t		extra_len = 0;
+static u_int64_t	extra_flock = 0;
+static char		extra[VIGIL_CONFIG_MAX + 1];
+
+/* The additional kdf inputs we load once we know our flock. */
+static int			input_count = 0;
+static struct chatter_input	inputs[CHATTER_MESSAGES_MAX];
+
+/* The safety code exchange we start once our chats run. */
+static const char	*safety_arg = NULL;
 
 /* The number of messages we do not store. */
 static int		lose = 0;
@@ -118,9 +137,10 @@ static int		phone = 0;
 /* Where the core keeps its remembrances, if anywhere. */
 static const char	*datadir = NULL;
 
-/* The messages we send. */
+/* The messages we send and the flock of each one. */
 static int		message_count = 0;
 static u_int8_t		message_peer[CHATTER_MESSAGES_MAX];
+static u_int64_t	message_flock[CHATTER_MESSAGES_MAX];
 static const char	*message_text[CHATTER_MESSAGES_MAX];
 
 /* Our group, its members, the messages we send to it and what we do after. */
@@ -197,7 +217,7 @@ usage(void)
 	    "[-l count] [-r author:hash] [-c topic:name] [-C peer:topic] "
 	    "[-P file] [-R peer:hash] [-M companion] [-D datadir] "
 	    "[-S peer:input] [-W peer:own:theirs] [-u peer] [-U secs] "
-	    "[-X secs] [-y peer] <gospel>\n");
+	    "[-X secs] [-y peer] [-E gospel] <gospel>\n");
 	exit(1);
 }
 
@@ -222,9 +242,20 @@ main(int argc, char **argv)
 	delivered = 0;
 
 	while ((ch = getopt(argc, argv,
-	    "a:A:c:C:D:e:f:F:g:G:i:I:j:K:l:Lm:M:n:o:O:P:r:R:S:t:T"
+	    "a:A:c:C:D:e:E:f:F:g:G:i:I:j:K:l:Lm:M:n:o:O:P:r:R:S:t:T"
 	    "u:U:W:x:X:y:")) != -1) {
 		switch (ch) {
+		case 'E':
+			extra_len = chatter_config_read(optarg,
+			    extra, sizeof(extra) - 1);
+			if (vigil_config_check(extra, extra_len,
+			    summary, sizeof(summary)) == -1)
+				fatal("%s", summary);
+			if ((ep = strstr(summary,
+			    "\"cathedral_flock\":\"")) == NULL)
+				fatal("no flock in %s", summary);
+			extra_flock = strtoull(ep + 19, NULL, 16);
+			break;
 		case 'M':
 			gospel_len = chatter_config_read(optarg,
 			    gospel, sizeof(gospel));
@@ -259,6 +290,8 @@ main(int argc, char **argv)
 			chatter_avatar(optarg);
 			break;
 		case 'S':
+			if (input_count == CHATTER_MESSAGES_MAX)
+				usage();
 			peer = strtol(optarg, &ep, 16);
 			if (*ep != ':')
 				usage();
@@ -271,10 +304,12 @@ main(int argc, char **argv)
 				    &ikm[idx]) != 1)
 					usage();
 			}
-			vigil_additional_input(peer, ikm, sizeof(ikm));
+			inputs[input_count].peer = peer;
+			memcpy(inputs[input_count].ikm, ikm, sizeof(ikm));
+			input_count++;
 			break;
 		case 'W':
-			chatter_safety_start(optarg);
+			safety_arg = optarg;
 			break;
 		case 'R':
 			if (retract_count == CHATTER_MESSAGES_MAX)
@@ -377,7 +412,12 @@ main(int argc, char **argv)
 		case 'm':
 			if (message_count == CHATTER_MESSAGES_MAX)
 				usage();
-			peer = strtol(optarg, &ep, 16);
+			message_flock[message_count] = 0;
+			peer = strtoll(optarg, &ep, 16);
+			if (*ep == '-') {
+				message_flock[message_count] = peer;
+				peer = strtol(ep + 1, &ep, 16);
+			}
 			if (*ep != ':')
 				usage();
 			if (peer <= 0 || peer >= KYRKA_PEERS_PER_FLOCK)
@@ -527,6 +567,21 @@ main(int argc, char **argv)
 
 	local = strtoul(ep + 7, NULL, 16) & 0xff;
 
+	if ((ep = strstr(summary, "\"cathedral_flock\":\"")) == NULL)
+		fatal("no flock in %s", summary);
+
+	flock = strtoull(ep + 19, NULL, 16);
+
+	for (idx = 0; idx < message_count; idx++) {
+		if (message_flock[idx] == 0)
+			message_flock[idx] = flock;
+	}
+
+	for (idx = 0; idx < input_count; idx++) {
+		vigil_additional_input(flock, inputs[idx].peer,
+		    inputs[idx].ikm, sizeof(inputs[idx].ikm));
+	}
+
 	if (group_known && owner == 0)
 		owner = local;
 
@@ -534,11 +589,6 @@ main(int argc, char **argv)
 		members[local / 8] |= 1 << (local % 8);
 
 	signal(SIGPIPE, SIG_IGN);
-
-	for (idx = 1; idx < KYRKA_PEERS_PER_FLOCK; idx++) {
-		vigil_chat_accept(idx, !refused[idx]);
-		vigil_chat_ignore(idx, ignoring[idx]);
-	}
 
 	id = vigil_run_id();
 
@@ -558,7 +608,7 @@ main(int argc, char **argv)
 		    vigil_time_ms() - start >= (u_int64_t)accept_after * 1000) {
 			printf("chatter: accepting the peers we refused\n");
 			for (idx = 1; idx < KYRKA_PEERS_PER_FLOCK; idx++)
-				vigil_chat_accept(idx, 1);
+				vigil_chat_accept(flock, idx, 1);
 			accept_after = 0;
 		}
 
@@ -566,7 +616,7 @@ main(int argc, char **argv)
 		    vigil_time_ms() - start >= (u_int64_t)refuse_after * 1000) {
 			printf("chatter: refusing those peers again\n");
 			for (idx = 1; idx < KYRKA_PEERS_PER_FLOCK; idx++)
-				vigil_chat_accept(idx, !refused[idx]);
+				vigil_chat_accept(flock, idx, !refused[idx]);
 			refuse_after = 0;
 		}
 
@@ -577,16 +627,39 @@ main(int argc, char **argv)
 			if (strtol(ep, NULL, 10) != session) {
 				session = strtol(ep, NULL, 10);
 
+				for (idx = 1; idx < KYRKA_PEERS_PER_FLOCK;
+				    idx++) {
+					vigil_chat_accept(flock, idx,
+					    !refused[idx]);
+					vigil_chat_ignore(flock, idx,
+					    ignoring[idx]);
+
+					if (extra_flock == 0)
+						continue;
+
+					vigil_chat_accept(extra_flock, idx,
+					    !refused[idx]);
+					vigil_chat_ignore(extra_flock, idx,
+					    ignoring[idx]);
+				}
+
+				if (safety_arg != NULL) {
+					chatter_safety_start(safety_arg);
+					safety_arg = NULL;
+				}
+
 				for (idx = 0; idx < message_count; idx++) {
 					if (topic != 0 &&
-					    vigil_chat_topic(message_peer[idx],
-					    900 + idx, topic, CHATTER_TOPIC_COLOR,
-					    topic_name, strlen(topic_name)) == -1)
+					    vigil_chat_topic(flock,
+					    message_peer[idx], 900 + idx, topic,
+					    CHATTER_TOPIC_COLOR, topic_name,
+					    strlen(topic_name)) == -1)
 						fatal("vigil_chat_topic");
 
 					if (topic != 0 &&
-					    vigil_chat_topic_send(message_peer[idx],
-					    idx + 1, topic, reply_author, reply_hash,
+					    vigil_chat_topic_send(flock,
+					    message_peer[idx], idx + 1, topic,
+					    reply_author, reply_hash,
 					    message_text[idx],
 					    strlen(message_text[idx])) == -1)
 						fatal("vigil_chat_topic_send");
@@ -595,46 +668,50 @@ main(int argc, char **argv)
 						continue;
 
 					if (reply_hash != 0 &&
-					    vigil_chat_reply(message_peer[idx],
-					    idx + 1, reply_author, reply_hash,
+					    vigil_chat_reply(flock,
+					    message_peer[idx], idx + 1,
+					    reply_author, reply_hash,
 					    message_text[idx],
 					    strlen(message_text[idx])) == -1)
 						fatal("vigil_chat_reply");
 
 					if (reply_hash == 0 &&
-					    vigil_chat_send(message_peer[idx],
+					    vigil_chat_send(message_flock[idx],
+					    message_peer[idx],
 					    idx + 1, message_text[idx],
 					    strlen(message_text[idx])) == -1)
 						fatal("vigil_chat_send");
 				}
 
 				for (idx = 0; idx < remove_count; idx++) {
-					if (vigil_chat_topic(remove_peer[idx],
-					    980 + idx, remove_topic[idx], 0,
-					    NULL, 0) == -1)
+					if (vigil_chat_topic(flock,
+					    remove_peer[idx], 980 + idx,
+					    remove_topic[idx], 0, NULL,
+					    0) == -1)
 						fatal("vigil_chat_topic");
 				}
 
 				for (idx = 0; idx < retract_count; idx++) {
 					if (group != 0 &&
-					    vigil_chat_group_retract(
+					    vigil_chat_group_retract( flock,
 					    retract_peer[idx], 960 + idx, owner,
 					    group, group_serial, topic,
 					    retract_hash[idx]) == -1)
 						fatal("vigil_chat_group_retract");
 
 					if (group == 0 &&
-					    vigil_chat_retract(retract_peer[idx],
-					    960 + idx, topic,
+					    vigil_chat_retract(flock,
+					    retract_peer[idx], 960 + idx, topic,
 					    retract_hash[idx]) == -1)
 						fatal("vigil_chat_retract");
 				}
 
 				for (idx = 0; idx < data_count; idx++) {
 					if (topic != 0 &&
-					    vigil_chat_topic(data_peer[idx],
-					    950 + idx, topic, CHATTER_TOPIC_COLOR,
-					    topic_name, strlen(topic_name)) == -1)
+					    vigil_chat_topic(flock,
+					    data_peer[idx], 950 + idx, topic,
+					    CHATTER_TOPIC_COLOR, topic_name,
+					    strlen(topic_name)) == -1)
 						fatal("vigil_chat_topic");
 
 					chatter_data_send(data_peer[idx],
@@ -646,15 +723,15 @@ main(int argc, char **argv)
 					chatter_roster_send(0, &wanted);
 
 				if (typing_peer != 0)
-					vigil_chat_typing(typing_peer,
+					vigil_chat_typing(flock, typing_peer,
 					    topic, 1);
 
 				if (open_peer != 0)
-					vigil_chat_open(open_peer, 1);
+					vigil_chat_open(flock, open_peer, 1);
 
 				if (typing_group)
-					vigil_chat_group_typing(owner, group,
-					    topic, members);
+					vigil_chat_group_typing(flock, owner,
+					    group, topic, members);
 
 				sent = 1;
 				gsent = 0;
@@ -736,8 +813,14 @@ chatter_core_run(void *arg)
 
 	id = arg;
 
-	if (vigil_run(*id, -1, gospel, gospel_len, NULL, 0, datadir) == -1)
+	if (extra_len > 0) {
+		if (vigil_run(*id, -1, gospel, gospel_len,
+		    extra, extra_len + 1, datadir) == -1)
+			fatal("vigil_run failed");
+	} else if (vigil_run(*id, -1, gospel, gospel_len,
+	    NULL, 0, datadir) == -1) {
 		fatal("vigil_run failed");
+	}
 
 	return (NULL);
 }
@@ -768,7 +851,7 @@ chatter_events_handle(int *got, int *delivered)
 			fatal("failed to resync our desktop");
 	}
 
-	for (p = buf; (p = strstr(p, "{\"peer\":")) != NULL; p++) {
+	for (p = buf; (p = strstr(p, ",\"peer\":")) != NULL; p++) {
 		chatter_group_event(p);
 		chatter_safety_get(p);
 	}
@@ -845,7 +928,7 @@ chatter_safety_start(const char *arg)
 
 	printf("chatter: safety words %s\n", words);
 
-	if (vigil_safety_start(peer, own, theirs, sizeof(own)) == -1)
+	if (vigil_safety_start(flock, peer, own, theirs, sizeof(own)) == -1)
 		fatal("failed to start the safety code exchange");
 }
 
@@ -868,7 +951,7 @@ chatter_safety_get(const char *event)
 
 	peer = strtol(event + 9, NULL, 16);
 
-	if (vigil_safety_get(peer, input, sizeof(input)) == -1) {
+	if (vigil_safety_get(flock, peer, input, sizeof(input)) == -1) {
 		printf("chatter: safety input for %02lx is gone\n", peer);
 		return;
 	}
@@ -882,7 +965,7 @@ chatter_safety_get(const char *event)
 		fatal("failed to make the safety code");
 
 	printf("chatter: safety code %02lx %s\n", peer, code);
-	vigil_additional_input(peer, input, sizeof(input));
+	vigil_additional_input(flock, peer, input, sizeof(input));
 }
 
 /*
@@ -945,8 +1028,9 @@ chatter_roster_send(u_int8_t also, int *wanted)
 		if (idx != also && !(members[idx / 8] & (1 << (idx % 8))))
 			continue;
 
-		if (vigil_chat_group_roster(idx, ref, group, group_serial,
-		    state, members, group_name, strlen(group_name)) == -1)
+		if (vigil_chat_group_roster(flock, idx, ref, group,
+		    group_serial, state, members, group_name,
+		    strlen(group_name)) == -1)
 			fatal("vigil_chat_group_roster");
 
 		ref++;
@@ -973,7 +1057,7 @@ chatter_group_send(int *wanted)
 			continue;
 
 		if (topic != 0 && owner == local) {
-			if (vigil_chat_group_topic(peer, 1800, group,
+			if (vigil_chat_group_topic(flock, peer, 1800, group,
 			    group_serial, topic, CHATTER_TOPIC_COLOR,
 			    topic_name, strlen(topic_name)) == -1)
 				fatal("vigil_chat_group_topic");
@@ -981,8 +1065,8 @@ chatter_group_send(int *wanted)
 		}
 
 		for (idx = 0; idx < group_count; idx++) {
-			if (vigil_chat_group_send(peer, 1000 + idx, owner,
-			    group, group_serial, topic, reply_author,
+			if (vigil_chat_group_send(flock, peer, 1000 + idx,
+			    owner, group, group_serial, topic, reply_author,
 			    reply_hash, group_text[idx],
 			    strlen(group_text[idx])) == -1)
 				fatal("vigil_chat_group_send");
@@ -1012,7 +1096,7 @@ chatter_group_send(int *wanted)
 		return;
 	}
 
-	if (vigil_chat_group_leave(owner, 1900, group) == -1)
+	if (vigil_chat_group_leave(flock, owner, 1900, group) == -1)
 		fatal("vigil_chat_group_leave");
 
 	(*wanted)++;
@@ -1081,11 +1165,11 @@ chatter_group_event(const char *p)
 	}
 
 	group_known = 1;
-	vigil_chat_accept(owner, 1);
+	vigil_chat_accept(flock, owner, 1);
 
 	for (idx = 1; idx < KYRKA_PEERS_PER_FLOCK; idx++) {
 		if (members[idx / 8] & (1 << (idx % 8)))
-			vigil_chat_accept(idx, 1);
+			vigil_chat_accept(flock, idx, 1);
 	}
 
 	field = chatter_field(p, end, "\"serial\":");
@@ -1168,13 +1252,13 @@ chatter_data_send(u_int8_t peer, u_int64_t ref, int kind, const char *path,
 	fclose(fp);
 
 	if (ingroup) {
-		ret = vigil_chat_group_data_send(peer, ref, owner, group,
+		ret = vigil_chat_group_data_send(flock, peer, ref, owner, group,
 		    group_serial, topic, kind, name, data, st.st_size);
 	} else if (topic != 0) {
-		ret = vigil_chat_topic_data_send(peer, ref, topic, kind, name,
-		    data, st.st_size);
+		ret = vigil_chat_topic_data_send(flock, peer, ref, topic, kind,
+		    name, data, st.st_size);
 	} else {
-		ret = vigil_chat_data_send(peer, ref, kind, name,
+		ret = vigil_chat_data_send(flock, peer, ref, kind, name,
 		    data, st.st_size);
 	}
 
@@ -1329,6 +1413,10 @@ chatter_avatar_take(const char *p)
 		return (-1);
 
 	if (type > end)
+		return (-1);
+
+	start = strstr(start, ",\"peer\":\"");
+	if (start == NULL || start > end)
 		return (-1);
 
 	token = strtoull(p + 8, NULL, 10);

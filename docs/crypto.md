@@ -107,9 +107,8 @@ Notation, used for both platforms:
 GCM(k, aad, m) = nonce || AES256-GCM(k, nonce, aad, m) || tag
                  nonce is 96-bit, selected uniformly at random
 
-label(chat)    = the peer id as one byte for a one-to-one chat,
-                 the ASCII chat id ("g" owner id, "gfe1122334455667788")
-                 for a group chat
+label(chat)    = the ASCII chat id: "cafeba00-fe" for a one-to-one chat,
+                 "cafeba00-gfe1122334455667788" for a group chat
 seq            = position of a record in its log, 64-bit big endian
 ```
 
@@ -204,7 +203,7 @@ avatars/<id>.box          = seal(jpeg, "VIGIL.CHAT.AVATAR" || id)
 names/<id>.box            = seal(json, "VIGIL.CHAT.NAME" || id)
 ```
 
-`id` is the one byte device id of the peer. `avatar.box` is our own
+`id` is the ASCII peer id, "cafeba00-fe". `avatar.box` is our own
 picture. As with the inbox, Android before version 12 stores the peer
 files under the outbox key instead. `outbox-<ref>.dat` exists on iOS only,
 for data on its way out, and is wiped once it is delivered.

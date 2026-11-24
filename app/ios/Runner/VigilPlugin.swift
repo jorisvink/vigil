@@ -34,7 +34,7 @@ final class VigilPlugin: NSObject, FlutterPlugin, UIDocumentPickerDelegate,
     private let resyncWork = DispatchQueue(label: "se.sanctorum.vigil.resync")
     private var resyncing = false
     private var safetyHalf: [UInt8]?
-    private var safetyFor: UInt8 = 0
+    private var safetyFor = ""
     private var opened: String?
     private var last: String?
     private var silent: TimeInterval?
@@ -79,6 +79,7 @@ final class VigilPlugin: NSObject, FlutterPlugin, UIDocumentPickerDelegate,
         ) { note in cover(note.object as? UIWindowScene, on: false) }
 
         try? FileManager.default.removeItem(at: openFolder)
+        plugin.gospels()
         try? ChatVault.shared.prepare()
 
         TunnelLink.open(create: false)
@@ -120,7 +121,7 @@ final class VigilPlugin: NSObject, FlutterPlugin, UIDocumentPickerDelegate,
 
         if let chat = opened {
             if ChatVault.group(chat) != nil {
-                VigilCall.shared.send?("chat-group-typing 0 0 0")
+                VigilCall.shared.send?("chat-group-typing - 0")
             } else {
                 VigilCall.shared.send?("chat-open \(chat) 0")
                 VigilCall.shared.send?("chat-typing \(chat) 0 0")
@@ -193,7 +194,7 @@ final class VigilPlugin: NSObject, FlutterPlugin, UIDocumentPickerDelegate,
             let video = args?["video"] as? Bool ?? false
 
             withCamera(video, result: result) { granted in
-                VigilCall.shared.dial(UInt8(peer, radix: 16) ?? 0, video: granted)
+                VigilCall.shared.dial(peer, video: granted)
             }
         case "answer":
             withCamera(call.arguments as? Bool ?? false, result: result) { granted in
@@ -263,8 +264,8 @@ final class VigilPlugin: NSObject, FlutterPlugin, UIDocumentPickerDelegate,
 
                 if hex == ChatVault.selfAuthor {
                     data = try ChatVault.shared.ownAvatar()
-                } else if hex.count == 2, let peer = UInt8(hex, radix: 16) {
-                    data = try ChatVault.shared.peerAvatar(peer)
+                } else if Flock.valid(hex) {
+                    data = try ChatVault.shared.peerAvatar(hex)
                 }
 
                 return data.map { FlutterStandardTypedData(bytes: $0) }
@@ -483,7 +484,47 @@ final class VigilPlugin: NSObject, FlutterPlugin, UIDocumentPickerDelegate,
     }
 
     private func voiceTunnel() -> Stored? {
-        tunnels().first { $0.summary["mode"] as? String == "gospel" }
+        let first = gospels().first?["id"] as? String
+
+        return tunnels().first { $0.id == first }
+    }
+
+    @discardableResult
+    private func gospels() -> [[String: Any]] {
+        let before = ChatVault.defaults.array(forKey: "gospels") as? [[String: Any]] ?? []
+        let current = tunnels().filter { $0.summary["mode"] as? String == "gospel" }
+        let order = before.compactMap { $0["id"] as? String }
+        let kept = order.compactMap { id in current.first { $0.id == id } }
+        let added = current.reversed().filter { !order.contains($0.id) }
+        let list: [[String: Any]] = (kept + added).map {
+            ["id": $0.id, "ref": $0.ref, "flock": Flock.hex($0.summary["flock"] as? String ?? "0")]
+        }
+
+        if !NSArray(array: list).isEqual(to: before) {
+            ChatVault.defaults.set(list, forKey: "gospels")
+        }
+
+        return list
+    }
+
+    private func gospelChanged() {
+        gospels()
+
+        manager { manager in
+            guard let manager, let session = manager.connection as? NETunnelProviderSession,
+                  [.connected, .connecting, .reasserting].contains(session.status) else { return }
+
+            let id = self.tunnelId(manager)
+
+            if self.tunnels().contains(where: { $0.id == id }) {
+                TunnelLink.request(session, "gospel") { _ in }
+                return
+            }
+
+            guard let voice = self.voiceTunnel() else { return }
+
+            self.connect(voice.id) { _ in }
+        }
     }
 
     private func save(_ list: [[String: Any]]) {
@@ -523,9 +564,21 @@ final class VigilPlugin: NSObject, FlutterPlugin, UIDocumentPickerDelegate,
         let mode = (try? JSONSerialization.jsonObject(with: Data(summary.utf8))
             as? [String: Any])?["mode"] as? String
 
-        if mode == "gospel" && voiceTunnel() != nil {
+        let flock = Flock.hex((try? JSONSerialization.jsonObject(with: Data(summary.utf8))
+            as? [String: Any])?["flock"] as? String ?? "0")
+        let present = gospels()
+
+        if mode == "gospel" && present.contains(where: { $0["flock"] as? String == flock }) {
             result(FlutterError(code: "invalid",
-                                message: "There is already a Gospel configuration, remove it first.",
+                                message: "There is already a Gospel configuration for flock \(flock), " +
+                                    "remove it first.",
+                                details: nil))
+            return
+        }
+
+        if mode == "gospel" && present.count >= Int(VIGIL_GOSPEL_MAX) {
+            result(FlutterError(code: "invalid",
+                                message: "There can be at most \(VIGIL_GOSPEL_MAX) Gospel configurations.",
                                 details: nil))
             return
         }
@@ -542,6 +595,10 @@ final class VigilPlugin: NSObject, FlutterPlugin, UIDocumentPickerDelegate,
             var list = UserDefaults.standard.array(forKey: Self.tunnelsKey) as? [[String: Any]] ?? []
             list.insert(["id": id, "summary": summary, "ref": ref], at: 0)
             save(list)
+
+            if mode == "gospel" {
+                gospelChanged()
+            }
 
             let parsed = (try? JSONSerialization.jsonObject(with: Data(summary.utf8))) ?? [:]
             result(json(["id": id, "summary": parsed]))
@@ -613,6 +670,7 @@ final class VigilPlugin: NSObject, FlutterPlugin, UIDocumentPickerDelegate,
                 return entry
             }
         save(list)
+        gospels()
 
         let parsed = (try? JSONSerialization.jsonObject(with: Data(summary.utf8))) ?? [:]
         result(json(["id": id, "summary": parsed]))
@@ -663,15 +721,28 @@ final class VigilPlugin: NSObject, FlutterPlugin, UIDocumentPickerDelegate,
             return
         }
 
+        let gospel = gospels().contains { $0["id"] as? String == id }
         let list = (UserDefaults.standard.array(forKey: Self.tunnelsKey) as? [[String: Any]] ?? [])
             .filter { ($0["id"] as? String) != id }
         save(list)
 
         manager { manager in
             guard let manager, self.tunnelId(manager) == id else {
+                if gospel {
+                    self.gospelChanged()
+                }
+
                 result("")
                 return
             }
+
+            if gospel, let voice = self.voiceTunnel() {
+                self.gospels()
+                self.connect(voice.id, result: result)
+                return
+            }
+
+            self.gospels()
 
             manager.removeFromPreferences { error in
                 DispatchQueue.main.async { self.loaded = nil }
@@ -727,10 +798,7 @@ final class VigilPlugin: NSObject, FlutterPlugin, UIDocumentPickerDelegate,
             return
         }
 
-        let voice = voiceTunnel()
-        let alone = tunnel.summary["mode"] as? String == "gospel"
-
-        if voice != nil {
+        if voiceTunnel() != nil {
             AVAudioSession.sharedInstance().requestRecordPermission { _ in }
             UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound, .badge]) { _, _ in }
         }
@@ -742,9 +810,7 @@ final class VigilPlugin: NSObject, FlutterPlugin, UIDocumentPickerDelegate,
             proto.providerBundleIdentifier = Self.provider
             proto.serverAddress = (tunnel.summary["peer"] ?? tunnel.summary["cathedral"]) as? String ?? "sanctum"
             proto.passwordReference = tunnel.ref
-            var configuration: [String: Any] = ["id": id]
-            if let voice, !alone { configuration["voice"] = voice.ref }
-            proto.providerConfiguration = configuration
+            proto.providerConfiguration = ["id": id]
 
             manager.localizedDescription = "Vigil: \(tunnel.summary["instance"] as? String ?? id)"
             manager.protocolConfiguration = proto
@@ -948,7 +1014,7 @@ final class VigilPlugin: NSObject, FlutterPlugin, UIDocumentPickerDelegate,
         }
 
         let (ref, _) = try ChatVault.shared.sendData(hex, media: media, name: name, data: data, topic: topic,
-                                                      local: try Self.local())
+                                                      local: try Self.local(hex))
 
         VigilCall.shared.send?("chat")
         version += 1
@@ -956,33 +1022,38 @@ final class VigilPlugin: NSObject, FlutterPlugin, UIDocumentPickerDelegate,
         return "\(ref)"
     }
 
-    private static func local() throws -> String {
-        guard let local = ChatVault.defaults.string(forKey: "chatSelf"), !local.isEmpty else {
-            throw ChatVault.Failure(description: "Gospel is not running.")
+    private static func selves() -> [String: String] {
+        ChatVault.defaults.dictionary(forKey: "chatSelves") as? [String: String] ?? [:]
+    }
+
+    private static func local(_ chat: String) throws -> String {
+        guard let local = selves()[Flock.of(chat)], !local.isEmpty else {
+            throw ChatVault.Failure(description: "Gospel is not running for flock \(Flock.of(chat)).")
         }
 
         return local
     }
 
     private func groupCreate(_ args: [String: Any]) throws -> String {
-        let local = try Self.local()
-        let chat = try ChatVault.shared.groupCreate(name: args["name"] as? String ?? "",
-            members: ChatVault.picked(args["members"], without: local) ?? [], local: local)
+        let flock = Flock.hex(args["flock"] as? String ?? "0")
+        let local = try Self.local("\(flock)-")
+        let chat = try ChatVault.shared.groupCreate(flock: flock, name: args["name"] as? String ?? "",
+            members: ChatVault.picked(args["members"], flock: flock, without: local) ?? [], local: local)
 
         changed()
         return chat
     }
 
     private func groupEdit(_ chat: String, _ args: [String: Any]) throws {
-        let local = try Self.local()
+        let local = try Self.local(chat)
 
         Self.drop(try ChatVault.shared.groupEdit(chat, name: args["name"] as? String,
-            members: ChatVault.picked(args["members"], without: local), local: local))
+            members: ChatVault.picked(args["members"], flock: Flock.of(chat), without: local), local: local))
         changed()
     }
 
     private func groupLeave(_ chat: String) throws {
-        Self.drop(try ChatVault.shared.groupLeave(chat, local: try Self.local()))
+        Self.drop(try ChatVault.shared.groupLeave(chat, local: try Self.local(chat)))
         changed()
     }
 
@@ -1252,9 +1323,12 @@ final class VigilPlugin: NSObject, FlutterPlugin, UIDocumentPickerDelegate,
             }
 
             let id = self.tunnelId(manager)
-            let ref = self.voiceTunnel()?.ref
+            let refs = Dictionary(self.gospels().compactMap { entry -> (String, Data)? in
+                guard let flock = entry["flock"] as? String, let ref = entry["ref"] as? Data else { return nil }
+                return (flock, ref)
+            }, uniquingKeysWith: { first, _ in first })
 
-            VigilCall.shared.config = { ref.flatMap { try? TunnelKeychain.load(ref: $0) } }
+            VigilCall.shared.config = { flock in refs[flock].flatMap { try? TunnelKeychain.load(ref: $0) } }
 
             VigilCall.shared.send = { message in
                 TunnelLink.request(session, message) { reply in
@@ -1427,7 +1501,7 @@ final class VigilPlugin: NSObject, FlutterPlugin, UIDocumentPickerDelegate,
         }
 
         safetyHalf = nil
-        safetyFor = 0
+        safetyFor = ""
     }
 
     private static func asking() -> Set<String> {
@@ -1440,12 +1514,12 @@ final class VigilPlugin: NSObject, FlutterPlugin, UIDocumentPickerDelegate,
         }
     }
 
-    private static func safetyPeer(_ hex: String) throws -> UInt8 {
-        guard hex.count == 2, let peer = UInt8(hex, radix: 16), peer > 0, peer < 0xff else {
+    private static func safetyPeer(_ hex: String) throws -> String {
+        guard Flock.valid(hex) else {
             throw ChatVault.Failure(description: "There is no peer \(hex).")
         }
 
-        return peer
+        return hex
     }
 
     private func chat(_ call: FlutterMethodCall) throws -> String {
@@ -1482,8 +1556,8 @@ final class VigilPlugin: NSObject, FlutterPlugin, UIDocumentPickerDelegate,
 
             try vault.merge()
 
-            if let local = try? Self.local() {
-                try vault.topicsFill(local)
+            for (flock, local) in Self.selves() {
+                try vault.topicsFill(flock, local: local)
             }
 
             var list = try vault.conversations()
@@ -1533,7 +1607,7 @@ final class VigilPlugin: NSObject, FlutterPlugin, UIDocumentPickerDelegate,
                 throw ChatVault.Failure(description: "A message is at most \(max) bytes.")
             }
 
-            let local = try group == nil ? "" : Self.local()
+            let local = try group == nil ? "" : Self.local(hex)
             let ref = try vault.send(hex, text: text, quote: quote, topic: topic, local: local)
 
             VigilCall.shared.send?("chat")
@@ -1557,7 +1631,7 @@ final class VigilPlugin: NSObject, FlutterPlugin, UIDocumentPickerDelegate,
                 throw ChatVault.Failure(description: "There is no such image.")
             }
 
-            let local = try group == nil ? "" : Self.local()
+            let local = try group == nil ? "" : Self.local(hex)
 
             for (peer, dropped) in try vault.retract(hex, ref: ref, local: local) {
                 VigilCall.shared.send?("chat-drop \(peer) " + String(format: "%016llx", UInt64(bitPattern: dropped)))
@@ -1567,7 +1641,7 @@ final class VigilPlugin: NSObject, FlutterPlugin, UIDocumentPickerDelegate,
             version += 1
             return ""
         case "chatTopic":
-            let local = try group == nil ? "" : Self.local()
+            let local = try group == nil ? "" : Self.local(hex)
             let topic = try vault.topicSet(hex, topic: args["topic"], name: args["name"] as? String ?? "",
                                            color: (args["color"] as? NSNumber)?.intValue ?? 0, local: local)
 
@@ -1629,10 +1703,9 @@ final class VigilPlugin: NSObject, FlutterPlugin, UIDocumentPickerDelegate,
 
             if let group {
                 if on == 1 {
-                    VigilCall.shared.send?("chat-group-typing \(ChatVault.hex(group.owner)) " +
-                                           String(format: "%016llx", group.id) + " \(inside)")
+                    VigilCall.shared.send?("chat-group-typing \(hex) \(inside)")
                 } else {
-                    VigilCall.shared.send?("chat-group-typing 0 0 0")
+                    VigilCall.shared.send?("chat-group-typing - 0")
                 }
             } else {
                 VigilCall.shared.send?("chat-typing \(hex) \(on) \(inside)")
@@ -1683,7 +1756,7 @@ final class VigilPlugin: NSObject, FlutterPlugin, UIDocumentPickerDelegate,
                 return ""
             }
 
-            let local = try group == nil ? "" : Self.local()
+            let local = try group == nil ? "" : Self.local(hex)
 
             Self.drop(try vault.deleteChat(hex, local: local))
 

@@ -51,7 +51,7 @@ class VigilVpnService : VpnService() {
 
                 when (intent.action) {
                     ACTION_CALL -> Calls.dial(
-                        intent.getIntExtra(EXTRA_PEER, 0), intent.getBooleanExtra(EXTRA_VIDEO, false)
+                        intent.getStringExtra(EXTRA_PEER) ?: "", intent.getBooleanExtra(EXTRA_VIDEO, false)
                     )
                     ACTION_ANSWER -> Calls.answer(intent.getBooleanExtra(EXTRA_VIDEO, false))
                     ACTION_CAMERA -> Calls.camera(intent.getBooleanExtra(EXTRA_ON, false))
@@ -132,11 +132,11 @@ class VigilVpnService : VpnService() {
 
         val alone = voiceOnly(summary)
 
-        if (!alone && store.gospel) {
+        if (store.gospel) {
             try {
-                voice = store.voice()?.let { store.load(it) }
+                voice = store.gospelSet()
             } catch (e: Exception) {
-                Log.e(TAG, "failed to load the Gospel configuration", e)
+                Log.e(TAG, "failed to load the Gospel configurations", e)
             }
         }
 
@@ -215,21 +215,24 @@ class VigilVpnService : VpnService() {
             return START_NOT_STICKY
         }
 
-        if (running == voice) {
-            if (store.gospel) {
-                return START_STICKY
+        if (summary?.let { voiceOnly(it) } == true) {
+            if (!store.gospel || voice == null) {
+                disconnect()
+                idle()
+                return START_NOT_STICKY
             }
 
-            disconnect()
-            idle()
-            return START_NOT_STICKY
+            if (running != voice) {
+                connect(store, voice)
+                return START_STICKY
+            }
         }
 
         val config = if (store.gospel && voice != null) {
             try {
-                store.load(voice)
+                store.gospelSet()
             } catch (e: Exception) {
-                Log.e(TAG, "failed to load the Gospel configuration", e)
+                Log.e(TAG, "failed to load the Gospel configurations", e)
                 return START_STICKY
             }
         } else {

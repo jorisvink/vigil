@@ -321,7 +321,7 @@ class _ConversationState extends State<_Conversation> {
     final desk = Desk.instance;
     final found = [
       for (final m in _chat.members)
-        if (m != desk.self &&
+        if (m != desk.selfIn(_chat.id) &&
             desk.mentionName(m).toLowerCase().startsWith(part))
           m,
     ];
@@ -610,7 +610,7 @@ class _Header extends StatelessWidget {
 
   Future<void> _menu(BuildContext context, Offset at) async {
     final desk = Desk.instance;
-    final owner = chat.owner == desk.self;
+    final owner = chat.owner == desk.selfIn(chat.id);
 
     final what = await _popup(context, at, [
       if (desk.owns(chat) && !chat.closed) _item('topic', 'New topic'),
@@ -648,7 +648,7 @@ class _Header extends StatelessWidget {
   Widget build(BuildContext context) {
     final desk = Desk.instance;
 
-    final members = chat.members.where((m) => m != desk.self).toList()
+    final members = chat.members.where((m) => m != desk.selfIn(chat.id)).toList()
       ..sort((a, b) {
         final rank = _rank(b).compareTo(_rank(a));
 
@@ -670,7 +670,7 @@ class _Header extends StatelessWidget {
       } else if (state != null && state.present) {
         sub = 'Around';
       } else {
-        sub = 'Peer ${chat.id}';
+        sub = chat.id;
       }
     }
 
@@ -1201,7 +1201,7 @@ class _LineState extends State<_Line> {
     final quote = desk.quoted(widget.chat, message);
     final mention = !mine &&
         message.text.contains('@') &&
-        mentions(message.text, desk.selfNames).isNotEmpty;
+        mentions(message.text, desk.selfNames(widget.chat.id)).isNotEmpty;
 
     var bg = const Color(0x00000000);
     if (mention) {

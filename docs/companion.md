@@ -71,8 +71,8 @@ flowchart LR
 The desktop keeps a copy of the phone's chat store. Every change the phone
 platform makes to its store is sent to the desktop as an op with
 `vigil_chat_companion_sync()`, in the order the phone made the changes.
-The phone core adds one op of its own: a `self` op with the phone's id,
-nickname and signed name. It sends it the first time it hears from the
+The phone core adds one op of its own: a `self` op with the phone's
+nickname and, for each gospel, its flock, id and signed name. It sends it the first time it hears from the
 desktop, and again when the nickname or avatar changes, with the avatar
 as the data.
 
@@ -95,7 +95,8 @@ prefs   stars, compacts, mutes, order, names: the phone's chat settings
 answer  id, what, ok, reason if not ok: the answer to an ask. With what
         "send", chat and ref instead: a desktop send to a group the
         phone is no longer in, which the phone did not keep
-self    id, nick, signed, avatar if the data is the avatar
+self    nick, gospels: [{flock, id, signed}], avatar if the data is the
+        avatar
 reset   a full resync starts, see Resync
 avatars peers: the peers that have an avatar, sent in a resync
 chat    chat: the resync of this chat starts
@@ -339,6 +340,7 @@ The data of a request parcel, after `struct vigil_chat_data_head`:
 op       1 to send, 2 for a call, 3 to ask
 ref      the ref of a send or the id of an ask, with
          VIGIL_CHAT_COMPANION_REF set
+flock    the flock of the peer, or of the group's owner
 peer     who a send goes to (0 in a group), or the peer of a call
 kind     the kind of data of a send (0 for text), or the call op
 author   author of the quoted message in a reply, 0 for the phone
@@ -523,17 +525,25 @@ own. Only while it punches a hole for a new p2p path does the desktop
 send one every second by itself.
 
 ```
-phone    struct vigil_companion_phone: which peers are present, online
-         and typing; the group and topic of up to 8 of the typing peers;
-         which peers are calling the phone; the call the phone has: its
-         peer, its state, and whether it rings, is outgoing or is held
-         by the desktop; the peer, reason and count of the last call
-         that ended; last, the newest seq in the phone's journal
-desktop  struct vigil_companion_desktop: which peers the desktop types
-         to; the topic and group it types in; the chats it has open;
-         have, the seq up to which it stored the phone's journal; and
-         whether it is synced
+phone    struct vigil_companion_phone: the flock it is about; which peers
+         of that flock are present, online and typing; the group and
+         topic of up to 8 of the typing peers; which peers are calling
+         the phone; the call the phone has: its flock, peer, state, and
+         whether it rings, is outgoing or is held by the desktop; the
+         flock, peer, reason and count of the last call that ended;
+         last, the newest seq in the phone's journal
+desktop  struct vigil_companion_desktop: the flock it is about; which
+         peers of that flock the desktop types to; the topic and group
+         it types in; the chats of that flock it has open; have, the
+         seq up to which it stored the phone's journal; and whether it
+         is synced
 ```
+
+A state covers one flock. With several gospels the phone sends the
+state of one gospel per heartbeat and takes turns, and sends the gospel
+whose state changed right away. The desktop keeps the last state per
+flock. The desktop sends the state of the flock it types in or last
+opened a chat of; typing in a group goes before typing to a peer.
 
 Both states start with the magic `0x5643` and the sync version,
 `VIGIL_COMPANION_VERSION` at the top of `src/chat.c`, each a big endian

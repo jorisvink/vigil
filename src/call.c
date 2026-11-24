@@ -20,6 +20,7 @@
 #include <arpa/inet.h>
 #include <netinet/in.h>
 
+#include <inttypes.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
@@ -36,6 +37,7 @@
  */
 struct call_liturgy {
 	struct vigil_io		io;
+	u_int8_t		slot;
 	u_int16_t		group;
 	int			signaling;
 
@@ -46,36 +48,59 @@ struct call_liturgy {
 	KYRKA			*ctx;
 };
 
+/*
+ * The calls of one of our Gospel configurations.
+ */
+struct call_gospel {
+	int				running;
+
+	struct call_liturgy		signaling;
+	struct call_liturgy		discovery;
+
+	int				resolved;
+	u_int64_t			next_resolve;
+	struct sockaddr_in		configured;
+
+	struct vigil_remembrance	remembrance;
+
+	u_int64_t			last_notify;
+	u_int64_t			next_notify;
+
+	u_int64_t			pushed[KYRKA_PEERS_PER_FLOCK];
+	u_int8_t			sent[KYRKA_PEERS_PER_FLOCK];
+};
+
+/*
+ * The peers of one of our Gospel configurations that we want to call and
+ * with what call, from any thread. The peers the cathedral told us want to
+ * call us and with what call and those that are around to be called.
+ *
+ * Done holds the call we had with a peer that the cathedral still shows us,
+ * we don't report it as calling until it calls with another one or it is
+ * gone.
+ */
+struct call_marks {
+	volatile u_int8_t	wanted[KYRKA_PEERS_PER_FLOCK];
+	volatile u_int8_t	present[KYRKA_PEERS_PER_FLOCK];
+	volatile u_int8_t	online[KYRKA_PEERS_PER_FLOCK];
+	volatile u_int8_t	done[KYRKA_PEERS_PER_FLOCK];
+};
+
+static void	call_update(u_int8_t);
 static void	call_io_event(void *);
-static int	call_cathedral_resolve(void);
+static int	call_cathedral_resolve(u_int8_t);
 
 static void	call_liturgy_read(struct call_liturgy *);
 static void	call_liturgy_check(struct call_liturgy *);
 static void	call_liturgy_rebind(struct call_liturgy *);
 static void	call_liturgy_cleanup(struct call_liturgy *);
-static int	call_liturgy_init(struct call_liturgy *, int);
+static int	call_liturgy_init(struct call_liturgy *, u_int8_t, int);
 
 static void	call_kyrka_event(KYRKA *, union kyrka_event *, void *);
 static void	call_kyrka_send(struct kyrka_packet *, u_int64_t, void *);
 
-/* The signaling and discovery liturgies. */
-static struct call_liturgy		signaling;
-static struct call_liturgy		discovery;
-
-/* If we are running at all. */
-static int				running = 0;
-
-/* The configured cathedral and when try to resolve it again. */
-static struct sockaddr_in		configured;
-static int				resolved = 0;
-static u_int64_t			next_resolve = 0;
-
-/* The remembrance we get back from our main cathedral. */
-static struct vigil_remembrance		remembrance;
-
-/* The last and next time we should update the cathedral. */
-static u_int64_t			last_notify;
-static u_int64_t			next_notify;
+/* The calls of each of our Gospel configurations. */
+static struct call_gospel		gospels[VIGIL_GOSPEL_MAX];
 
 /*
  * Each call we make gets its own number that we signal to the peer, so it
@@ -83,242 +108,208 @@ static u_int64_t			next_notify;
  */
 static volatile u_int8_t		serial;
 
-/* The peers we want to call and with what call, from any thread. */
-static volatile u_int8_t		wanted[KYRKA_PEERS_PER_FLOCK];
-
-/* The peers the cathedral told us want to call us and with what call. */
-static volatile u_int8_t		present[KYRKA_PEERS_PER_FLOCK];
-
-/* When the cathedral last pushed each peer to us. */
-static u_int64_t			pushed[KYRKA_PEERS_PER_FLOCK];
-
-/* The peers the cathedral told us are around to be called. */
-static volatile u_int8_t		online[KYRKA_PEERS_PER_FLOCK];
+/* What we know about the peers of each of our Gospel configurations. */
+static struct call_marks		marks[VIGIL_GOSPEL_MAX];
 
 /*
- * The call we had with a peer that the cathedral still shows us, we don't
- * report it as calling until it calls with another one or it is gone.
- */
-static volatile u_int8_t		done[KYRKA_PEERS_PER_FLOCK];
-
-/* What we last sent to the cathedral. */
-static u_int8_t				sent[KYRKA_PEERS_PER_FLOCK];
-
-/*
- * Initialise a call by setting up the relevant liturgies.
+ * Set up the calls for the Gospel configuration in the given slot by
+ * setting up its liturgies.
  */
 void
-vigil_call_init(const char *datadir)
+vigil_call_attach(u_int8_t slot)
 {
-	int		idx;
-	u_int8_t	id;
+	u_int8_t		id;
+	int			idx;
+	struct vigil_config	*cfg;
+	struct call_gospel	*gospel;
 
-	PRECOND(datadir != NULL);
+	PRECOND(slot < VIGIL_GOSPEL_MAX);
+	PRECOND(vigil->gospels[slot] != NULL);
+	PRECOND(vigil->datadir != NULL);
 
-	VERIFY(running == 0);
-	VERIFY(vigil->gospel != NULL);
-	VERIFY(vigil->gospel->mode == VIGIL_MODE_GOSPEL);
+	cfg = vigil->gospels[slot];
+	gospel = &gospels[slot];
 
-	last_notify = 0;
-	next_notify = 0;
-	next_resolve = 0;
+	VERIFY(gospel->running == 0);
+	VERIFY(cfg->mode == VIGIL_MODE_GOSPEL);
 
-	memset(sent, 0, sizeof(sent));
-	memset(pushed, 0, sizeof(pushed));
-	memset(&configured, 0, sizeof(configured));
-	memset(&remembrance, 0, sizeof(remembrance));
+	memset(gospel, 0, sizeof(*gospel));
 
-	vigil_remembrance_init(&remembrance, datadir,
-	    vigil->gospel->cathedral_flock | VIGIL_CALL_FLOCK_DOMAIN);
-
-	vigil_call_hangup();
+	vigil_remembrance_init(&gospel->remembrance, vigil->datadir,
+	    cfg->cathedral_flock | VIGIL_CALL_FLOCK_DOMAIN);
 
 	for (idx = 0; idx < KYRKA_PEERS_PER_FLOCK; idx++) {
-		vigil_atomic_write(&done[idx], 0);
-		vigil_atomic_write(&online[idx], 0);
-		vigil_atomic_write(&present[idx], 0);
+		vigil_atomic_write(&marks[slot].wanted[idx], 0);
+		vigil_atomic_write(&marks[slot].done[idx], 0);
+		vigil_atomic_write(&marks[slot].online[idx], 0);
+		vigil_atomic_write(&marks[slot].present[idx], 0);
 	}
 
-	if (call_liturgy_init(&signaling, 1) == -1) {
+	if (call_liturgy_init(&gospel->signaling, slot, 1) == -1) {
 		vigil_log(LOG_NOTICE, "calls are not available");
-		call_liturgy_cleanup(&signaling);
+		call_liturgy_cleanup(&gospel->signaling);
+		vigil_remembrance_cleanup(&gospel->remembrance);
 		return;
 	}
 
-	if (call_liturgy_init(&discovery, 0) == -1) {
+	if (call_liturgy_init(&gospel->discovery, slot, 0) == -1) {
 		vigil_log(LOG_NOTICE, "calls are not available");
-		call_liturgy_cleanup(&signaling);
-		call_liturgy_cleanup(&discovery);
+		call_liturgy_cleanup(&gospel->signaling);
+		call_liturgy_cleanup(&gospel->discovery);
+		vigil_remembrance_cleanup(&gospel->remembrance);
 		return;
 	}
 
 	nyfe_random_bytes(&id, sizeof(id));
 	vigil_atomic_write(&serial, id);
 
-	running = 1;
+	gospel->running = 1;
 
-	if (call_cathedral_resolve() != -1)
-		resolved = 1;
+	if (call_cathedral_resolve(slot) != -1)
+		gospel->resolved = 1;
 
-	vigil_log(LOG_INFO, "calls running group %04x",
-	    vigil->gospel->liturgy_group);
+	vigil_log(LOG_INFO, "calls running for %" PRIx64 " group %04x",
+	    cfg->cathedral_flock, cfg->liturgy_group);
 }
 
 /*
- * Cleanup any resources allocated for a call.
+ * Cleanup any resources allocated for the calls in the given slot.
  */
 void
-vigil_call_cleanup(void)
+vigil_call_detach(u_int8_t slot)
 {
-	int		idx;
+	int			idx;
+	struct call_gospel	*gospel;
 
-	if (!running)
+	PRECOND(slot < VIGIL_GOSPEL_MAX);
+
+	gospel = &gospels[slot];
+
+	if (!gospel->running)
 		return;
 
-	call_liturgy_cleanup(&signaling);
-	call_liturgy_cleanup(&discovery);
-	vigil_remembrance_cleanup(&remembrance);
-
-	vigil_call_hangup();
+	call_liturgy_cleanup(&gospel->signaling);
+	call_liturgy_cleanup(&gospel->discovery);
+	vigil_remembrance_cleanup(&gospel->remembrance);
 
 	for (idx = 0; idx < KYRKA_PEERS_PER_FLOCK; idx++) {
-		vigil_atomic_write(&online[idx], 0);
-		vigil_atomic_write(&present[idx], 0);
+		vigil_atomic_write(&marks[slot].wanted[idx], 0);
+		vigil_atomic_write(&marks[slot].online[idx], 0);
+		vigil_atomic_write(&marks[slot].present[idx], 0);
 	}
 
-	running = 0;
-	resolved = 0;
+	gospel->running = 0;
+	gospel->resolved = 0;
 }
 
 /*
- * Update the cathedral with what we want right now.
+ * Update the cathedrals of all our Gospel configurations with what we
+ * want right now.
  */
 void
 vigil_call_update(void)
 {
-	int		idx;
-	u_int8_t	peers[KYRKA_PEERS_PER_FLOCK];
+	u_int8_t	slot;
 
-	if (!running)
-		return;
-
-	if (resolved == 0 && vigil->now >= next_resolve) {
-		if (call_cathedral_resolve() != -1)
-			resolved = 1;
-	}
-
-	for (idx = 1; idx < KYRKA_PEERS_PER_FLOCK; idx++) {
-		if (!vigil_atomic_read(&present[idx]))
-			continue;
-
-		if ((vigil->now - pushed[idx]) < VIGIL_CALL_PRESENT_EXPIRE)
-			continue;
-
-		vigil_atomic_write(&done[idx], 0);
-		vigil_atomic_write(&present[idx], 0);
-	}
-
-	for (idx = 0; idx < KYRKA_PEERS_PER_FLOCK; idx++)
-		peers[idx] = vigil_atomic_read(&wanted[idx]);
-
-	if (next_notify > 0 && vigil->now < next_notify) {
-		if (!memcmp(peers, sent, sizeof(peers)))
-			return;
-		if ((vigil->now - last_notify) < VIGIL_CALL_NOTIFY_MIN)
-			return;
-	}
-
-	memcpy(sent, peers, sizeof(sent));
-	last_notify = vigil->now;
-	next_notify = vigil->now + VIGIL_CALL_NOTIFY;
-
-	call_liturgy_check(&signaling);
-	call_liturgy_check(&discovery);
-
-	if (kyrka_cathedral_liturgy(signaling.ctx,
-	    peers, sizeof(peers)) == -1) {
-		vigil_log(LOG_NOTICE, "signaling kyrka_cathedral_liturgy: %d",
-		    kyrka_last_error(signaling.ctx));
-	}
-
-	if (kyrka_cathedral_liturgy(discovery.ctx, NULL, 0) == -1) {
-		vigil_log(LOG_NOTICE, "discovery kyrka_cathedral_liturgy: %d",
-		    kyrka_last_error(discovery.ctx));
+	for (slot = 0; slot < VIGIL_GOSPEL_MAX; slot++) {
+		if (gospels[slot].running)
+			call_update(slot);
 	}
 }
 
 /*
- * Give both liturgies a new socket and update the cathedral right away,
+ * Give all liturgies a new socket and update the cathedrals right away,
  * the network we were on changed.
  */
 void
 vigil_call_rebind(void)
 {
-	if (!running)
-		return;
+	u_int8_t	slot;
 
-	call_liturgy_rebind(&signaling);
-	call_liturgy_rebind(&discovery);
+	for (slot = 0; slot < VIGIL_GOSPEL_MAX; slot++) {
+		if (!gospels[slot].running)
+			continue;
 
-	next_notify = 0;
+		call_liturgy_rebind(&gospels[slot].signaling);
+		call_liturgy_rebind(&gospels[slot].discovery);
+
+		gospels[slot].next_notify = 0;
+	}
 }
 
 /*
- * Update both liturgies on immediately on the next update.
+ * Update all liturgies immediately on the next update.
  */
 void
 vigil_call_poke(void)
 {
-	next_notify = 0;
+	u_int8_t	slot;
+
+	for (slot = 0; slot < VIGIL_GOSPEL_MAX; slot++)
+		gospels[slot].next_notify = 0;
 }
 
 /*
- * Returns our current signaling cathedral.
+ * Returns the current signaling cathedral for the given slot.
  */
 struct sockaddr_in *
-vigil_call_cathedral(void)
+vigil_call_cathedral(u_int8_t slot)
 {
-	if (!running)
+	struct call_gospel	*gospel;
+
+	PRECOND(slot < VIGIL_GOSPEL_MAX);
+
+	gospel = &gospels[slot];
+
+	if (!gospel->running)
 		return (NULL);
 
-	if (signaling.cathedral.addr.sin_port == 0)
+	if (gospel->signaling.cathedral.addr.sin_port == 0)
 		return (NULL);
 
-	return (&signaling.cathedral.addr);
+	return (&gospel->signaling.cathedral.addr);
 }
 
 /*
- * Returns 1 if the signaling cathedral is alive.
+ * Returns 1 if the signaling cathedral for the given slot is alive.
  */
 int
-vigil_call_alive(void)
+vigil_call_alive(u_int8_t slot)
 {
-	if (!running)
+	PRECOND(slot < VIGIL_GOSPEL_MAX);
+
+	if (!gospels[slot].running)
 		return (0);
 
-	return (signaling.cathedral.alive);
+	return (gospels[slot].signaling.cathedral.alive);
 }
 
 /*
- * Select another cathedral from our remembrances, if possible.
+ * Select another cathedral from the remembrances of the given slot,
+ * if possible.
  */
 int
-vigil_call_cathedral_pick(struct vigil_cathedral *cat)
+vigil_call_cathedral_pick(u_int8_t slot, struct vigil_cathedral *cat)
 {
 	u_int32_t		idx;
 	struct sockaddr_in	sin;
+	struct call_gospel	*gospel;
 	int			count, attempts;
 
+	PRECOND(slot < VIGIL_GOSPEL_MAX);
 	PRECOND(cat != NULL);
 
-	if (!running)
+	gospel = &gospels[slot];
+
+	if (!gospel->running)
 		return (-1);
 
 	count = 0;
-	while (vigil_remembrance_address(&remembrance, count, &sin) != -1)
+	while (vigil_remembrance_address(&gospel->remembrance,
+	    count, &sin) != -1)
 		count++;
 
-	if (resolved)
+	if (gospel->resolved)
 		count++;
 
 	if (count == 0)
@@ -328,8 +319,9 @@ vigil_call_cathedral_pick(struct vigil_cathedral *cat)
 		nyfe_random_bytes(&idx, sizeof(idx));
 		idx = idx % count;
 
-		if (vigil_remembrance_address(&remembrance, idx, &sin) == -1)
-			memcpy(&sin, &configured, sizeof(sin));
+		if (vigil_remembrance_address(&gospel->remembrance,
+		    idx, &sin) == -1)
+			memcpy(&sin, &gospel->configured, sizeof(sin));
 
 		if (count == 1)
 			break;
@@ -348,136 +340,229 @@ vigil_call_cathedral_pick(struct vigil_cathedral *cat)
 }
 
 /*
- * Append our current selected cathedrals and their rx/tx statistics
- * to the given JSON buffer.
+ * Append the selected cathedrals of the liturgies in the given slot and
+ * their rx/tx statistics to the given JSON buffer.
  */
 void
-vigil_call_liturgies(struct vigil_buf *buf)
+vigil_call_liturgies(u_int8_t slot, struct vigil_buf *buf)
 {
+	struct call_gospel	*gospel;
+
+	PRECOND(slot < VIGIL_GOSPEL_MAX);
 	PRECOND(buf != NULL);
 
+	gospel = &gospels[slot];
 	vigil_buf_appendf(buf, ",\"liturgies\":[");
 
-	if (running) {
-		vigil_status_liturgy(buf, "signaling", signaling.group,
-		    &signaling.cathedral, signaling.rx, signaling.tx);
+	if (gospel->running) {
+		vigil_status_liturgy(buf, "signaling",
+		    gospel->signaling.group, &gospel->signaling.cathedral,
+		    gospel->signaling.rx, gospel->signaling.tx);
 		vigil_buf_appendf(buf, ",");
-		vigil_status_liturgy(buf, "discovery", discovery.group,
-		    &discovery.cathedral, discovery.rx, discovery.tx);
+		vigil_status_liturgy(buf, "discovery",
+		    gospel->discovery.group, &gospel->discovery.cathedral,
+		    gospel->discovery.rx, gospel->discovery.tx);
 	}
 
 	vigil_buf_appendf(buf, "]");
 }
 
 /*
- * Start signaling the peer we want to reach.
+ * Start signaling the peer we want to reach in the given flock, we stop
+ * signaling everyone else. May be called from any thread.
  */
 void
-vigil_call_dial(u_int8_t peer)
+vigil_call_dial(u_int64_t flock, u_int8_t peer)
 {
+	u_int8_t	slot;
 	u_int8_t	id;
 
 	PRECOND(peer > 0 && peer < KYRKA_PEERS_PER_FLOCK);
 
 	vigil_call_hangup();
 
+	if (vigil_gospel_slot(flock, &slot) == -1)
+		return;
+
 	do {
 		id = vigil_atomic_add(&serial, 1) + 1;
 	} while (id == 0);
 
-	vigil_atomic_write(&wanted[peer], id);
+	vigil_atomic_write(&marks[slot].wanted[peer], id);
+	vigil_gospel_release();
 }
 
 /*
- * Stop signaling all peers.
+ * Stop signaling all peers in all flocks.
  */
 void
 vigil_call_hangup(void)
 {
 	int		idx;
+	u_int8_t	slot;
 
-	for (idx = 0; idx < KYRKA_PEERS_PER_FLOCK; idx++)
-		vigil_atomic_write(&wanted[idx], 0);
+	for (slot = 0; slot < VIGIL_GOSPEL_MAX; slot++) {
+		for (idx = 0; idx < KYRKA_PEERS_PER_FLOCK; idx++)
+			vigil_atomic_write(&marks[slot].wanted[idx], 0);
+	}
 }
 
 /*
- * A call with the given peer is over, stop signaling it and ignore the
- * call it signals us with until it is gone.
+ * A call with the given peer in the given flock is over, stop signaling it
+ * and ignore the call it signals us with until it is gone.
  */
 void
-vigil_call_done(u_int8_t peer)
+vigil_call_done(u_int64_t flock, u_int8_t peer)
 {
+	u_int8_t	slot;
+
 	PRECOND(peer > 0 && peer < KYRKA_PEERS_PER_FLOCK);
 
-	vigil_atomic_write(&wanted[peer], 0);
-	vigil_atomic_write(&done[peer], vigil_atomic_read(&present[peer]));
+	if (vigil_gospel_slot(flock, &slot) == -1)
+		return;
+
+	vigil_atomic_write(&marks[slot].wanted[peer], 0);
+	vigil_atomic_write(&marks[slot].done[peer],
+	    vigil_atomic_read(&marks[slot].present[peer]));
+
+	vigil_gospel_release();
 }
 
 /*
- * Returns the current call state for the given peer.
+ * Returns the current call state for the given peer in the given slot.
  */
 int
-vigil_call_peer(u_int8_t peer)
+vigil_call_peer(u_int8_t slot, u_int8_t peer)
 {
 	int		state;
 	u_int8_t	call;
 
+	PRECOND(slot < VIGIL_GOSPEL_MAX);
 	PRECOND(peer > 0 && peer < KYRKA_PEERS_PER_FLOCK);
 
 	state = 0;
 
-	if (vigil_atomic_read(&wanted[peer]))
+	if (vigil_atomic_read(&marks[slot].wanted[peer]))
 		state |= VIGIL_CALL_PEER_WANTED;
 
-	call = vigil_atomic_read(&present[peer]);
+	call = vigil_atomic_read(&marks[slot].present[peer]);
 	if (call != 0) {
 		state |= VIGIL_CALL_PEER_PRESENT;
-		if (call == vigil_atomic_read(&done[peer]))
+		if (call == vigil_atomic_read(&marks[slot].done[peer]))
 			state |= VIGIL_CALL_PEER_DONE;
 	}
 
-	if (vigil_atomic_read(&online[peer]))
+	if (vigil_atomic_read(&marks[slot].online[peer]))
 		state |= VIGIL_CALL_PEER_ONLINE;
 
 	return (state);
 }
 
 /*
- * Helper function to attempt to resolve a cathedral.
+ * Update the cathedral of the given slot with what we want right now.
+ */
+static void
+call_update(u_int8_t slot)
+{
+	int			idx;
+	struct call_gospel	*gospel;
+	u_int8_t		peers[KYRKA_PEERS_PER_FLOCK];
+
+	PRECOND(slot < VIGIL_GOSPEL_MAX);
+
+	gospel = &gospels[slot];
+
+	if (gospel->resolved == 0 && vigil->now >= gospel->next_resolve) {
+		if (call_cathedral_resolve(slot) != -1)
+			gospel->resolved = 1;
+	}
+
+	for (idx = 1; idx < KYRKA_PEERS_PER_FLOCK; idx++) {
+		if (!vigil_atomic_read(&marks[slot].present[idx]))
+			continue;
+
+		if ((vigil->now - gospel->pushed[idx]) <
+		    VIGIL_CALL_PRESENT_EXPIRE)
+			continue;
+
+		vigil_atomic_write(&marks[slot].done[idx], 0);
+		vigil_atomic_write(&marks[slot].present[idx], 0);
+	}
+
+	for (idx = 0; idx < KYRKA_PEERS_PER_FLOCK; idx++)
+		peers[idx] = vigil_atomic_read(&marks[slot].wanted[idx]);
+
+	if (gospel->next_notify > 0 && vigil->now < gospel->next_notify) {
+		if (!memcmp(peers, gospel->sent, sizeof(peers)))
+			return;
+		if ((vigil->now - gospel->last_notify) < VIGIL_CALL_NOTIFY_MIN)
+			return;
+	}
+
+	memcpy(gospel->sent, peers, sizeof(gospel->sent));
+	gospel->last_notify = vigil->now;
+	gospel->next_notify = vigil->now + VIGIL_CALL_NOTIFY;
+
+	call_liturgy_check(&gospel->signaling);
+	call_liturgy_check(&gospel->discovery);
+
+	if (kyrka_cathedral_liturgy(gospel->signaling.ctx,
+	    peers, sizeof(peers)) == -1) {
+		vigil_log(LOG_NOTICE, "signaling kyrka_cathedral_liturgy: %d",
+		    kyrka_last_error(gospel->signaling.ctx));
+	}
+
+	if (kyrka_cathedral_liturgy(gospel->discovery.ctx, NULL, 0) == -1) {
+		vigil_log(LOG_NOTICE, "discovery kyrka_cathedral_liturgy: %d",
+		    kyrka_last_error(gospel->discovery.ctx));
+	}
+}
+
+/*
+ * Helper function to attempt to resolve the cathedral of the given slot.
  */
 static int
-call_cathedral_resolve(void)
+call_cathedral_resolve(u_int8_t slot)
 {
-	PRECOND(vigil->gospel != NULL);
+	struct call_gospel	*gospel;
+	struct vigil_config	*cfg;
 
-	next_resolve = vigil->now + CALL_RESOLVE_RETRY;
+	PRECOND(slot < VIGIL_GOSPEL_MAX);
+	PRECOND(vigil->gospels[slot] != NULL);
 
-	if (vigil_resolve(vigil->gospel->cathedral_host,
-	    vigil->gospel->cathedral_port, &configured) == -1)
+	cfg = vigil->gospels[slot];
+	gospel = &gospels[slot];
+
+	gospel->next_resolve = vigil->now + CALL_RESOLVE_RETRY;
+
+	if (vigil_resolve(cfg->cathedral_host, cfg->cathedral_port,
+	    &gospel->configured) == -1)
 		return (-1);
 
-	vigil_log(LOG_INFO, "gospel cathedral is %s",
-	    vigil_address(&configured));
+	vigil_log(LOG_INFO, "gospel cathedral for %" PRIx64 " is %s",
+	    cfg->cathedral_flock, vigil_address(&gospel->configured));
 
 	return (0);
 }
 
 /*
- * Helper function to setup a liturgy.
+ * Helper function to setup a liturgy for the given slot.
  */
 static int
-call_liturgy_init(struct call_liturgy *lit, int sig)
+call_liturgy_init(struct call_liturgy *lit, u_int8_t slot, int sig)
 {
 	struct kyrka_cathedral_cfg	cfg;
 	struct vigil_config		*gospel;
 
 	PRECOND(lit != NULL);
+	PRECOND(slot < VIGIL_GOSPEL_MAX);
 	PRECOND(sig == 0 || sig == 1);
-	PRECOND(vigil->gospel != NULL);
+	PRECOND(vigil->gospels[slot] != NULL);
 
-	gospel = vigil->gospel;
+	gospel = vigil->gospels[slot];
 
 	memset(lit, 0, sizeof(*lit));
+	lit->slot = slot;
 	lit->signaling = sig;
 
 	if ((lit->io.fd = vigil_socket_udp()) == -1)
@@ -525,7 +610,7 @@ call_liturgy_check(struct call_liturgy *lit)
 	PRECOND(lit != NULL);
 
 	if (lit->cathedral.addr.sin_port == 0) {
-		if (vigil_call_cathedral_pick(&lit->cathedral) == -1)
+		if (vigil_call_cathedral_pick(lit->slot, &lit->cathedral) == -1)
 			return;
 
 		if (lit->signaling)
@@ -548,10 +633,10 @@ call_liturgy_check(struct call_liturgy *lit)
 
 	if (!lit->signaling) {
 		for (idx = 0; idx < KYRKA_PEERS_PER_FLOCK; idx++)
-			vigil_atomic_write(&online[idx], 0);
+			vigil_atomic_write(&marks[lit->slot].online[idx], 0);
 	}
 
-	if (vigil_call_cathedral_pick(&lit->cathedral) == -1) {
+	if (vigil_call_cathedral_pick(lit->slot, &lit->cathedral) == -1) {
 		lit->cathedral.last = vigil->now;
 		return;
 	}
@@ -610,7 +695,7 @@ call_io_event(void *udata)
 {
 	struct call_liturgy	*lit;
 
-	PRECOND(udata == &signaling.io || udata == &discovery.io);
+	PRECOND(udata != NULL);
 
 	lit = udata;
 
@@ -673,7 +758,10 @@ static void
 call_kyrka_event(KYRKA *ctx, union kyrka_event *evt, void *udata)
 {
 	int			idx;
+	u_int8_t		slot;
+	struct call_marks	*mark;
 	struct call_liturgy	*lit;
+	struct call_gospel	*gospel;
 	u_int8_t		local, state;
 
 	PRECOND(ctx != NULL);
@@ -681,7 +769,10 @@ call_kyrka_event(KYRKA *ctx, union kyrka_event *evt, void *udata)
 	PRECOND(udata != NULL);
 
 	lit = udata;
-	local = vigil->gospel->spi & 0xff;
+	slot = lit->slot;
+	mark = &marks[slot];
+	gospel = &gospels[slot];
+	local = vigil->gospels[slot]->spi & 0xff;
 
 	if (evt->type == KYRKA_EVENT_LITURGY_RECEIVED ||
 	    evt->type == KYRKA_EVENT_REMEMBRANCE_RECEIVED) {
@@ -705,7 +796,8 @@ call_kyrka_event(KYRKA *ctx, union kyrka_event *evt, void *udata)
 			state = evt->liturgy.peers[idx];
 
 			if (!lit->signaling) {
-				vigil_atomic_write(&online[idx], state ? 1 : 0);
+				vigil_atomic_write(&mark->online[idx],
+				    state ? 1 : 0);
 				continue;
 			}
 
@@ -717,27 +809,29 @@ call_kyrka_event(KYRKA *ctx, union kyrka_event *evt, void *udata)
 			if (state == 0)
 				continue;
 
-			if (!vigil_chat_accepted(idx) &&
-			    !vigil_atomic_read(&wanted[idx]))
+			if (!vigil_chat_accepted(slot, idx) &&
+			    !vigil_atomic_read(&mark->wanted[idx]))
 				continue;
 
-			pushed[idx] = vigil->now;
+			gospel->pushed[idx] = vigil->now;
 
-			if (vigil_atomic_read(&present[idx]) == state)
+			if (vigil_atomic_read(&mark->present[idx]) == state)
 				continue;
 
-			if (!vigil_atomic_read(&wanted[idx])) {
+			if (!vigil_atomic_read(&mark->wanted[idx])) {
 				vigil_log(LOG_INFO,
 				    "[calls]: %02x is calling us (%02x)",
 				    idx, state);
 			}
 
-			vigil_atomic_write(&present[idx], state);
+			vigil_atomic_write(&mark->present[idx], state);
 		}
 		break;
 	case KYRKA_EVENT_REMEMBRANCE_RECEIVED:
-		if (lit->signaling)
-			vigil_remembrance_save(&remembrance, &evt->remembrance);
+		if (lit->signaling) {
+			vigil_remembrance_save(&gospel->remembrance,
+			    &evt->remembrance);
+		}
 		break;
 	case KYRKA_EVENT_LOGMSG:
 		vigil_log(LOG_INFO, "[calls]: libkyrka: %s", evt->logmsg.log);

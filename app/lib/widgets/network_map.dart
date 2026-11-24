@@ -459,7 +459,7 @@ class _MapPainter extends CustomPainter {
       if (labels) {
         _label(
           canvas,
-          p.id,
+          p.id.split('-').last,
           at + layout.outward(at) * 16,
           p.online ? Palette.fg : Palette.dim,
         );

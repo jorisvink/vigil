@@ -83,12 +83,15 @@ cathedral again.
 The core status carries a `call` object:
 
 ```
-{"alive":bool, "liturgies":[...], "cathedral":"ip:port",
- "peers":["05", ...],                     peers around to be called
- "dialing":"05", "reachable":bool,        the peer we call, null if none,
-                                          reachable if that peer signals
+{"alive":bool,                           any gospel is alive
+ "gospels":[{"flock":"cafeba00",
+             "alive":bool, "liturgies":[...],
+             "cathedral":"ip:port"}, ...],
+ "peers":["cafeba00-05", ...],            peers around to be called
+ "dialing":"cafeba00-05",                 the peer we call, null if none,
+ "reachable":bool,                        reachable if that peer signals
                                           us as well
- "incoming":["09", ...]}                  peers calling us, minus calls
+ "incoming":["cafeba00-09", ...]}         peers calling us, minus calls
                                           that ended and the peer we call
 ```
 
@@ -262,7 +265,7 @@ on for 150 ms every second.
 no session  {"running":false, "calls":n, "end":"local", "rx_bytes":n,
              "tx_bytes":n}
 
-session     {"running":true, "calls":n, "peer":"05",
+session     {"running":true, "calls":n, "peer":"cafeba00-05",
              "state":"connecting" | "online" | "talking",
              "muted":bool, "uptime":seconds talking, "rx":frames,
              "tx":frames, "p2p":bool, "path":"ip:port",

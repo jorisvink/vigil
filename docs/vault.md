@@ -226,6 +226,26 @@ Peer names you set in the app and your own nickname are stored in the
 normal app settings, not in the vault. Notification text is handled by
 the operating system, see [gospel.md](gospel.md).
 
+## Moving chats into their flock
+
+Before several gospels, chats were named by the plain peer id, "fe" or
+"gfe1122334455667788". The first time the app opens the vault after the
+update, it moves every chat into the flock of the oldest gospel
+configuration. It does this once, in two steps that it marks in
+`chats/flocked`:
+
+1. While the phone may still be locked: the outbox, the queued data, the
+   groups, the accepted and ignored peers, the receipts, the ambry
+   generations, the lost chats, the safety codes and the chat settings
+   get the new ids.
+2. Once the phone is unlocked: each conversation is opened with its old
+   id and sealed again under its new id, its log record by record and
+   each image and file, as the encryption is bound to the id. The inbox
+   entries, the names and the pictures of peers move the same way. The
+   old files and keys are then wiped.
+
+A conversation that can not be opened is left as it is.
+
 ## Where this lives in the code
 
 - `app/ios/Shared/ChatVault.swift` is the iOS vault.

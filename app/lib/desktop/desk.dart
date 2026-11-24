@@ -4,6 +4,8 @@ import 'dart:convert';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 
+import '../vigil.dart' show flockOf, localOf;
+
 const companionRef = 1 << 62;
 
 const topicColors = [
@@ -174,11 +176,15 @@ class Chat {
 
   Map<String, dynamic> get _info => Desk.instance._groups[id] ?? const {};
 
-  bool get isGroup => id.startsWith('g');
+  bool get isGroup => RegExp(r'^[0-9a-f]{1,16}-g[0-9a-f]{18}$').hasMatch(id);
 
-  String get owner => isGroup ? id.substring(1, 3) : '';
+  String get flock => flockOf(id);
 
-  String get group => isGroup ? id.substring(3) : '';
+  String get _local => localOf(id);
+
+  String get owner => isGroup ? '$flock-${_local.substring(1, 3)}' : '';
+
+  String get group => isGroup ? _local.substring(3) : '';
 
   String get name => _info['name'] as String? ?? '';
 
@@ -186,8 +192,10 @@ class Chat {
 
   int get serial => _info['serial'] as int? ?? 0;
 
-  Set<String> get members =>
-      (_info['members'] as List<dynamic>? ?? const []).cast<String>().toSet();
+  Set<String> get members => {
+    for (final m in _info['members'] as List<dynamic>? ?? const [])
+      '$flock-$m',
+  };
 
   bool get closed => isGroup && state != 'open';
 
@@ -313,9 +321,9 @@ class Desk {
   Map<String, dynamic> _labels = {};
   List<String> _order = [];
 
-  String self = '';
+  final Map<String, String> selves = {};
+  final Map<String, String> _selfSigned = {};
   String selfNick = '';
-  String selfSigned = '';
   String selfAvatar = '';
   bool linked = false;
   bool online = false;
@@ -619,10 +627,16 @@ class Desk {
 
   void _changed() => changes.value++;
 
+  String selfIn(String chat) => selves[flockOf(chat)] ?? '';
+
+  bool isSelf(String peer) => peer == '00' || selves.containsValue(peer);
+
+  String selfSigned(String peer) => _selfSigned[flockOf(peer)] ?? '';
+
   String name(String peer) {
-    if (peer == self || peer == '00') {
-      if (selfSigned.isNotEmpty) {
-        return selfSigned;
+    if (isSelf(peer)) {
+      if (selfSigned(peer).isNotEmpty) {
+        return selfSigned(peer);
       }
 
       if (selfNick.isEmpty) {
@@ -650,36 +664,37 @@ class Desk {
       return '~$nick';
     }
 
-    return 'Peer $peer';
+    return peer;
   }
 
   String mentionName(String peer) {
-    if (peer == self || peer == '00') {
-      if (selfSigned.isNotEmpty) {
-        return selfSigned;
+    if (isSelf(peer)) {
+      if (selfSigned(peer).isNotEmpty) {
+        return selfSigned(peer);
       }
 
       if (selfNick.isNotEmpty) {
         return selfNick;
       }
 
-      return self;
+      return localOf(peer);
     }
 
     return _signed[peer] ?? _nicks[peer] ?? peer;
   }
 
-  Set<String> get selfNames => {
-    if (self.isNotEmpty) self,
+  Set<String> selfNames(String chat) => {
+    if (selfIn(chat).isNotEmpty) localOf(selfIn(chat)),
     if (selfNick.isNotEmpty) selfNick,
-    if (selfSigned.isNotEmpty) selfSigned,
+    if (selfSigned(chat).isNotEmpty) selfSigned(chat),
   };
 
   Set<String> get mentionable => {
     ..._signed.values,
     ..._nicks.values,
-    ...selfNames,
-    for (final chat in chats.values) ...chat.members,
+    if (selfNick.isNotEmpty) selfNick,
+    ..._selfSigned.values,
+    for (final chat in chats.values) ...chat.members.map(localOf),
   };
 
   String title(Chat chat) {
@@ -694,15 +709,14 @@ class Desk {
     return chat.name;
   }
 
-  bool mine(Message message) =>
-      message.out || message.author == self || message.author == '00';
+  bool mine(Message message) => message.out || isSelf(message.author);
 
   bool owns(Chat chat) {
     if (!chat.isGroup) {
       return true;
     }
 
-    return chat.owner == self && !chat.closed;
+    return chat.owner == selfIn(chat.id) && !chat.closed;
   }
 
   List<Chat> get sorted {
@@ -754,10 +768,12 @@ class Desk {
       for (final chat in chats.values) ...chat.members,
     };
 
-    ids.remove(self);
+    ids.removeAll(selves.values);
     ids.remove('00');
 
-    final list = ids.where((id) => RegExp(r'^[0-9a-f]{2}$').hasMatch(id));
+    final list = ids.where(
+      (id) => RegExp(r'^[0-9a-f]{1,16}-[0-9a-f]{2}$').hasMatch(id),
+    );
     return list.toList()..sort((a, b) => name(a).compareTo(name(b)));
   }
 
@@ -776,7 +792,12 @@ class Desk {
 
     for (final peer in peers.values) {
       if (chat.isGroup) {
-        if (peer.owner != chat.owner || peer.group != chat.group) {
+        if (flockOf(peer.id) != chat.flock) {
+          continue;
+        }
+
+        if ('${chat.flock}-${peer.owner}' != chat.owner ||
+            peer.group != chat.group) {
           continue;
         }
       } else if (!peer.typing || peer.id != chat.id || peer.group.isNotEmpty) {
@@ -829,9 +850,16 @@ class Desk {
 
     switch (op['op']) {
       case 'self':
-        self = op['id'] as String? ?? self;
+        selves.clear();
+        _selfSigned.clear();
         selfNick = op['nick'] as String? ?? '';
-        selfSigned = op['signed'] as String? ?? '';
+        for (final g in op['gospels'] as List<dynamic>? ?? const []) {
+          final gospel = g as Map<String, dynamic>;
+          final flock = gospel['flock'] as String;
+
+          selves[flock] = '$flock-${gospel['id']}';
+          _selfSigned[flock] = gospel['signed'] as String? ?? '';
+        }
         if (op.containsKey('avatar') || file.isNotEmpty) {
           selfAvatar = file;
         }
@@ -1000,7 +1028,7 @@ class Desk {
       chat: chat.id,
       ref: rec['ref'] as int,
       out: out,
-      author: out ? '00' : rec['peer'] as String? ?? '',
+      author: out ? '00' : _from(chat, rec['peer'] as String? ?? ''),
       at: rec['time'] as int? ?? 0,
       text: rec['text'] as String? ?? '',
       kind: rec['media'] as String? ?? '',
@@ -1026,6 +1054,14 @@ class Desk {
     }
 
     return message;
+  }
+
+  String _from(Chat chat, String peer) {
+    if (peer.isEmpty || peer == '00') {
+      return peer;
+    }
+
+    return '${chat.flock}-$peer';
   }
 
   void _topic(Chat chat, Map<String, dynamic> rec, bool replay) {
@@ -1058,7 +1094,7 @@ class Desk {
   }
 
   void _retracted(Chat chat, Map<String, dynamic> rec, bool replay) {
-    final author = rec['peer'] as String? ?? '';
+    final author = _from(chat, rec['peer'] as String? ?? '');
     final target = rec['target'] as int?;
     Message? found;
 
@@ -1160,8 +1196,12 @@ class Desk {
     openTopic = topic;
     _changed();
 
-    if (was != null && was != chat?.id && !was.startsWith('g')) {
-      await _invoke<void>('open', {'peer': was, 'on': false});
+    if (was != null && was != chat?.id && !Chat(was).isGroup) {
+      await _invoke<void>('open', {
+        'flock': flockOf(was),
+        'peer': localOf(was),
+        'on': false,
+      });
     }
 
     if (chat == null) {
@@ -1169,7 +1209,11 @@ class Desk {
     }
 
     if (!chat.isGroup && was != chat.id) {
-      await _invoke<void>('open', {'peer': chat.id, 'on': true});
+      await _invoke<void>('open', {
+        'flock': chat.flock,
+        'peer': localOf(chat.id),
+        'on': true,
+      });
     }
 
     if (focused) {
@@ -1216,15 +1260,20 @@ class Desk {
       out['topic'] = topic;
     }
 
+    out['flock'] = chat.flock;
+
     if (!chat.isGroup) {
-      out['peer'] = chat.id;
+      out['peer'] = localOf(chat.id);
       return out;
     }
 
-    out['owner'] = chat.owner;
+    out['owner'] = localOf(chat.owner);
     out['group'] = chat.group;
     out['serial'] = chat.serial.toRadixString(16);
-    out['members'] = chat.members.where((m) => m != self).toList();
+    out['members'] = [
+      for (final m in chat.members)
+        if (m != selfIn(chat.id)) localOf(m),
+    ];
 
     return out;
   }
@@ -1258,7 +1307,10 @@ class Desk {
     );
 
     if (chat.isGroup) {
-      message.to.addAll(chat.members.where((m) => m != self));
+      message.to.addAll([
+        for (final m in chat.members)
+          if (m != selfIn(chat.id)) localOf(m),
+      ]);
     }
 
     _sending.add('${chat.id}:$ref');
@@ -1268,7 +1320,10 @@ class Desk {
 
   void _queued(Map<String, dynamic> event) {
     final group = event['group'] as String?;
-    final id = group == null ? event['peer'] as String : 'g${event['owner']}$group';
+    final flock = event['flock'] as String? ?? '';
+    final id = group == null
+        ? '$flock-${event['peer']}'
+        : '$flock-g${event['owner']}$group';
     final chat = chats[id];
     final ref = event['ref'] as int;
     final kind = event['kind'] as String? ?? '';
@@ -1330,7 +1385,7 @@ class Desk {
 
     if (reply != null) {
       hash = await digest(reply);
-      args['author'] = mine(reply) ? '00' : reply.author;
+      args['author'] = mine(reply) ? '00' : localOf(reply.author);
       args['hash'] = hash;
     }
 
@@ -1476,8 +1531,13 @@ class Desk {
     'color': 0,
   });
 
-  Future<void> createGroup(String name, List<String> members) =>
-      _ask({'what': 'group', 'name': name, 'members': members});
+  Future<void> createGroup(String flock, String name, List<String> members) =>
+      _ask({
+        'what': 'group',
+        'flock': flock,
+        'name': name,
+        'members': members,
+      });
 
   Future<void> editGroup(Chat chat, String name, List<String> members) =>
       _ask({
@@ -1535,19 +1595,25 @@ class Desk {
       _ask({'what': 'delete', 'chat': chat.id});
 
   Future<void> dial(String peer) =>
-      _invoke<void>('call', {'op': 'dial', 'peer': peer});
+      _invoke<void>('call', _call('dial', peer));
 
   Future<void> answer(String peer) =>
-      _invoke<void>('call', {'op': 'answer', 'peer': peer});
+      _invoke<void>('call', _call('answer', peer));
 
   Future<void> decline(String peer) =>
-      _invoke<void>('call', {'op': 'decline', 'peer': peer});
+      _invoke<void>('call', _call('decline', peer));
 
   Future<void> hangup(String peer) =>
-      _invoke<void>('call', {'op': 'hangup', 'peer': peer});
+      _invoke<void>('call', _call('hangup', peer));
 
   Future<void> muteCall(bool on, String peer) =>
-      _invoke<void>('call', {'op': on ? 'mute' : 'unmute', 'peer': peer});
+      _invoke<void>('call', _call(on ? 'mute' : 'unmute', peer));
+
+  Map<String, String> _call(String op, String peer) => {
+    'op': op,
+    'flock': flockOf(peer),
+    'peer': localOf(peer),
+  };
 
   List<Message> get favorites => [
     for (final chat in chats.values)
@@ -1598,7 +1664,7 @@ class Desk {
 
     final at = chat.messages.indexOf(message);
     final self = message.quoteAuthor == '00' ||
-        message.quoteAuthor == this.self;
+        message.quoteAuthor == localOf(selfIn(chat.id));
 
     for (var i = at - 1; i >= 0; i--) {
       final other = chat.messages[i];
@@ -1615,7 +1681,7 @@ class Desk {
         continue;
       }
 
-      if (!self && other.author != message.quoteAuthor) {
+      if (!self && localOf(other.author) != message.quoteAuthor) {
         continue;
       }
 
@@ -1645,7 +1711,7 @@ class Desk {
   }
 
   Future<Uint8List?> avatarOf(String peer) {
-    if (peer == self || peer == '00') {
+    if (isSelf(peer)) {
       return data(selfAvatar);
     }
 

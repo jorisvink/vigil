@@ -189,6 +189,9 @@ static FlMethodChannel	*channel = NULL;
 static pthread_t	core;
 static u_int64_t	run_id = 0;
 
+/* Set while we hold chats from before our phone ran more than one flock. */
+static int		legacy = 0;
+
 static guint		pump_interval = DESKTOP_PUMP;
 static gint64		pump_active = 0;
 
@@ -465,6 +468,8 @@ desktop_unlock_done(gpointer arg)
 		fl_method_call_respond_error(job->call, "passphrase",
 		    "That passphrase does not open Vigil.", NULL, NULL);
 	} else {
+		legacy = store_legacy();
+
 		if ((cfg = store_config(&len)) != NULL) {
 			memcpy(config, cfg, len);
 			config_len = len;
@@ -580,6 +585,9 @@ desktop_status(FlMethodCall *call)
 
 	if (run_id == 0 || vigil_status(buf, VIGIL_STATUS_MAX) == 0)
 		(void)snprintf(buf, VIGIL_STATUS_MAX, "{}");
+
+	if (legacy && run_id != 0 && vigil_chat_companion_unsync() == 0)
+		legacy = 0;
 
 	reply = fl_value_new_string(buf);
 	fl_method_call_respond_success(call, reply, NULL);
@@ -706,11 +714,14 @@ desktop_send_to(FlValue *args, u_int64_t ref, const char *text, size_t len,
 	long				idx;
 	struct vigil_chat_request	req;
 	int				sent;
-	u_int64_t			hash, topic;
+	u_int64_t			hash, topic, flock;
 	u_int8_t			targets[VIGIL_CHAT_GROUP_ROSTER];
 	u_int64_t			peer, owner, group, serial, author;
 
 	PRECOND(args != NULL);
+
+	if (desktop_hex(args, "flock", &flock) == -1 || flock == 0)
+		return (-1);
 
 	sent = 0;
 	peer = 0;
@@ -783,6 +794,7 @@ desktop_send_to(FlValue *args, u_int64_t ref, const char *text, size_t len,
 
 	req.ref = ref;
 	req.hash = hash;
+	req.flock = flock;
 	req.topic = topic;
 	req.author = author;
 	req.op = VIGIL_COMPANION_SEND;
@@ -1512,7 +1524,7 @@ desktop_op(const char *op, size_t len, const u_int8_t *data, size_t size,
 	int		ret;
 	const char	*end, *rec;
 	char		file[STORE_NAME_MAX];
-	char		kind[16], chat[24], peer[4];
+	char		kind[16], chat[STORE_CHAT_MAX], peer[STORE_PEER_MAX];
 
 	PRECOND(op != NULL);
 	PRECOND(data != NULL || size == 0);
@@ -1714,8 +1726,8 @@ desktop_unsent(const char *evt, size_t len)
 	int		ret;
 	u_int64_t	ref;
 	const char	*end, *field;
-	const char	*peer, *owner, *group;
-	char		chat[24], record[512];
+	const char	*flock, *peer, *owner, *group;
+	char		chat[STORE_CHAT_MAX], record[512];
 
 	PRECOND(evt != NULL);
 
@@ -1728,16 +1740,22 @@ desktop_unsent(const char *evt, size_t len)
 		return;
 	ref = strtoull(field, NULL, 10);
 
+	if ((flock = desktop_field(evt, end, "\"flock\":\"")) == NULL)
+		return;
+
 	if ((peer = desktop_field(evt, end, "\"peer\":\"")) == NULL)
 		return;
 
 	owner = desktop_field(evt, end, "\"owner\":\"");
 	group = desktop_field(evt, end, "\"group\":\"");
 
-	if (owner != NULL && group != NULL)
-		ret = snprintf(chat, sizeof(chat), "g%.2s%.16s", owner, group);
-	else
-		ret = snprintf(chat, sizeof(chat), "%.2s", peer);
+	if (owner != NULL && group != NULL) {
+		ret = snprintf(chat, sizeof(chat), "%.*s-g%.2s%.16s",
+		    (int)strcspn(flock, "\""), flock, owner, group);
+	} else {
+		ret = snprintf(chat, sizeof(chat), "%.*s-%.2s",
+		    (int)strcspn(flock, "\""), flock, peer);
+	}
 
 	if (ret < 0 || (size_t)ret >= sizeof(chat))
 		return;
@@ -2096,24 +2114,28 @@ desktop_keep(FlValue *args, u_int64_t ref, const u_int8_t *data, size_t len,
     char *name, size_t namelen)
 {
 	int		ret;
-	u_int64_t	peer, owner, group;
+	u_int64_t	flock, peer, owner, group;
 
 	PRECOND(args != NULL);
 	PRECOND(data != NULL);
 	PRECOND(name != NULL);
 
+	if (desktop_hex(args, "flock", &flock) == -1 || flock == 0)
+		return (-1);
+
 	if (desktop_hex(args, "group", &group) == 0 && group != 0) {
 		if (desktop_hex(args, "owner", &owner) == -1 ||
 		    owner == 0 || owner >= KYRKA_PEERS_PER_FLOCK)
 			return (-1);
-		ret = snprintf(name, namelen, "g%02" PRIx64 "%016" PRIx64
-		    "-%016" PRIx64 ".dat", owner, group, ref);
+		ret = snprintf(name, namelen, "%" PRIx64 "-g%02" PRIx64
+		    "%016" PRIx64 "-%016" PRIx64 ".dat", flock, owner,
+		    group, ref);
 	} else {
 		if (desktop_hex(args, "peer", &peer) == -1 ||
 		    peer == 0 || peer >= KYRKA_PEERS_PER_FLOCK)
 			return (-1);
-		ret = snprintf(name, namelen, "%02" PRIx64 "-%016" PRIx64
-		    ".dat", peer, ref);
+		ret = snprintf(name, namelen, "%" PRIx64 "-%02" PRIx64
+		    "-%016" PRIx64 ".dat", flock, peer, ref);
 	}
 
 	if (ret < 0 || (size_t)ret >= namelen)
@@ -2409,14 +2431,15 @@ static void
 desktop_typing(FlMethodCall *call)
 {
 	FlValue		*args, *on;
-	u_int64_t	peer, owner, group, topic;
 	u_int8_t	targets[VIGIL_CHAT_GROUP_ROSTER];
+	u_int64_t	peer, owner, group, topic, flock;
 
 	args = fl_method_call_get_args(call);
 
 	if (run_id == 0 || fl_value_get_type(args) != FL_VALUE_TYPE_MAP ||
 	    (on = fl_value_lookup_string(args, "on")) == NULL ||
-	    fl_value_get_type(on) != FL_VALUE_TYPE_BOOL) {
+	    fl_value_get_type(on) != FL_VALUE_TYPE_BOOL ||
+	    desktop_hex(args, "flock", &flock) == -1) {
 		fl_method_call_respond_success(call, NULL, NULL);
 		return;
 	}
@@ -2431,15 +2454,15 @@ desktop_typing(FlMethodCall *call)
 		    owner < KYRKA_PEERS_PER_FLOCK &&
 		    desktop_targets(args, targets) == 0) {
 			if (fl_value_get_bool(on)) {
-				vigil_chat_group_typing(owner, group, topic,
-				    targets);
+				vigil_chat_group_typing(flock, owner, group,
+				    topic, targets);
 			} else {
-				vigil_chat_group_typing(0, 0, 0, NULL);
+				vigil_chat_group_typing(0, 0, 0, 0, NULL);
 			}
 		}
 	} else if (desktop_hex(args, "peer", &peer) == 0 && peer > 0 &&
 	    peer < KYRKA_PEERS_PER_FLOCK) {
-		vigil_chat_typing(peer, topic, fl_value_get_bool(on));
+		vigil_chat_typing(flock, peer, topic, fl_value_get_bool(on));
 	}
 
 	fl_method_call_respond_success(call, NULL, NULL);
@@ -2451,17 +2474,18 @@ desktop_typing(FlMethodCall *call)
 static void
 desktop_open(FlMethodCall *call)
 {
-	u_int64_t	peer;
 	FlValue		*args, *on;
+	u_int64_t	peer, flock;
 
 	args = fl_method_call_get_args(call);
 
 	if (run_id != 0 && fl_value_get_type(args) == FL_VALUE_TYPE_MAP &&
 	    (on = fl_value_lookup_string(args, "on")) != NULL &&
 	    fl_value_get_type(on) == FL_VALUE_TYPE_BOOL &&
+	    desktop_hex(args, "flock", &flock) == 0 &&
 	    desktop_hex(args, "peer", &peer) == 0 && peer > 0 &&
 	    peer < KYRKA_PEERS_PER_FLOCK)
-		vigil_chat_open(peer, fl_value_get_bool(on));
+		vigil_chat_open(flock, peer, fl_value_get_bool(on));
 
 	fl_method_call_respond_success(call, NULL, NULL);
 }
@@ -2562,9 +2586,9 @@ static void
 desktop_call_op(FlMethodCall *call)
 {
 	int		op;
-	u_int64_t	peer;
 	const char	*what;
 	FlValue		*args, *val;
+	u_int64_t	peer, flock;
 
 	args = fl_method_call_get_args(call);
 
@@ -2577,6 +2601,7 @@ desktop_call_op(FlMethodCall *call)
 	if (fl_value_get_type(args) != FL_VALUE_TYPE_MAP ||
 	    (val = fl_value_lookup_string(args, "op")) == NULL ||
 	    fl_value_get_type(val) != FL_VALUE_TYPE_STRING ||
+	    desktop_hex(args, "flock", &flock) == -1 || flock == 0 ||
 	    desktop_hex(args, "peer", &peer) == -1 || peer == 0 ||
 	    peer >= KYRKA_PEERS_PER_FLOCK) {
 		fl_method_call_respond_error(call, "args", "Bad call.",
@@ -2615,7 +2640,7 @@ desktop_call_op(FlMethodCall *call)
 	if (op == VIGIL_COMPANION_DIAL || op == VIGIL_COMPANION_ANSWER)
 		memo_stop();
 
-	if (vigil_chat_call(op, peer) == -1) {
+	if (vigil_chat_call(op, flock, peer) == -1) {
 		fl_method_call_respond_error(call, "call",
 		    "Vigil could not ask your phone.", NULL, NULL);
 		return;

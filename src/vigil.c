@@ -60,18 +60,26 @@ static void	vigil_kyrka_fatal(const char *, va_list);
 static void	vigil_wake_init(void);
 static void	vigil_wake_read(void *);
 
-static void			vigil_gospel_drop(void);
-static void			vigil_gospel_handle(void);
-static void			vigil_gospel_detach(void);
+static void	vigil_gospel_drop(void);
+static void	vigil_gospel_handle(void);
+static void	vigil_gospel_detach(u_int8_t);
+static void	vigil_gospel_detach_all(void);
+static void	vigil_gospel_set(const char *, size_t);
+static void	vigil_gospel_attach(struct vigil_config *, const u_int8_t *);
+static void	vigil_gospel_digest(const char *, size_t, u_int8_t *, size_t);
+
 static struct vigil_config	*vigil_gospel_parse(const char *, size_t);
 
+/* The length of the digest we keep of each Gospel configuration. */
+#define VIGIL_DIGEST_LEN	32
+
 /*
- * A Gospel configuration handed to us by vigil_gospel() to attach to
- * the running core, an empty one detaches the one we have.
+ * The set of Gospel configurations handed to us by vigil_gospel() for the
+ * running core, each one ends in a NUL. An empty set detaches them all.
  */
 struct vigil_gospel {
 	size_t		len;
-	char		cfg[VIGIL_CONFIG_MAX];
+	char		set[VIGIL_GOSPEL_SET_MAX];
 };
 
 /*
@@ -80,6 +88,15 @@ struct vigil_gospel {
 struct vigil_input {
 	int		set;
 	u_int8_t	ikm[VIGIL_ADDITIONAL_INPUT_LEN];
+};
+
+/*
+ * The additional kdf inputs for all peers in a flock, a flock of 0 means
+ * the entry is free.
+ */
+struct vigil_inputs {
+	u_int64_t		flock;
+	struct vigil_input	peers[KYRKA_PEERS_PER_FLOCK];
 };
 
 /* The global vigil state. */
@@ -115,8 +132,15 @@ static u_int64_t		next_rebind = 0;
 /* Where the running core keeps its remembrances. */
 static const char		*datadir_run = NULL;
 
-/* The Gospel configuration the event loop should pick up, if any. */
+/* The Gospel configurations the event loop should pick up, if any. */
 static struct vigil_gospel	*gospel = NULL;
+
+/* The digest of the configuration in each Gospel slot. */
+static u_int8_t			digests[VIGIL_GOSPEL_MAX][VIGIL_DIGEST_LEN];
+
+/* The flock in each Gospel slot, 0 if free, see vigil_gospel_slot(). */
+static u_int64_t		flocks[VIGIL_GOSPEL_MAX];
+static pthread_mutex_t		flock_lock = PTHREAD_MUTEX_INITIALIZER;
 
 /* Our wakeup pipe, created by the first run and never closed. */
 static volatile int		wake[2] = { -1, -1 };
@@ -128,7 +152,7 @@ static pthread_mutex_t		kyrka_lock = PTHREAD_MUTEX_INITIALIZER;
 static __thread int		kyrka_held = 0;
 
 /* The additional kdf input per peer, see vigil_additional_input(). */
-static struct vigil_input	inputs[KYRKA_PEERS_PER_FLOCK];
+static struct vigil_inputs	inputs[VIGIL_GOSPEL_MAX];
 static pthread_mutex_t		input_lock = PTHREAD_MUTEX_INITIALIZER;
 
 /*
@@ -151,10 +175,10 @@ vigil_version(void)
  * Each run needs an id from vigil_run_id(), vigil_stop() stops the run
  * with that id and all runs before it, even if they did not start yet.
  *
- * If a Gospel configuration is given we call and chat with it next to
- * the tunnel, a broken Gospel configuration does not stop the tunnel.
- * A Gospel configuration can also run on its own, without a tunnel
- * interface (fd -1).
+ * If a set of Gospel configurations is given we call and chat with them
+ * next to the tunnel, each one ends in a NUL. A broken Gospel configuration
+ * does not stop the tunnel. A Gospel configuration can also run on its own,
+ * without a tunnel interface (fd -1), the set then holds the others.
  *
  * This blocks until vigil_stop() is called or an unrecoverable error
  * occurred during setup. Returns 0 on a normal stop, -1 on error.
@@ -165,6 +189,7 @@ vigil_run(u_int64_t id, int fd, const char *cfg, size_t cfglen,
 {
 	int		running;
 	char		err[128];
+	u_int8_t	digest[VIGIL_DIGEST_LEN];
 
 	PRECOND(id > 0);
 	PRECOND(fd >= 0 || fd == -1);
@@ -222,22 +247,6 @@ vigil_run(u_int64_t id, int fd, const char *cfg, size_t cfglen,
 		if (vigil_chat_companion(cfg, cfglen) == -1) {
 			vigil_cleanup();
 			return (-1);
-		}
-	}
-
-	if (vigil->config->mode == VIGIL_MODE_GOSPEL) {
-		vigil->gospel = vigil->config;
-	} else if (gcfg != NULL) {
-		vigil->gospel = vigil_config_parse(gcfg, gcfglen,
-		    err, sizeof(err));
-
-		if (vigil->gospel == NULL) {
-			vigil_log(LOG_ERR, "invalid gospel configuration: %s",
-			    err);
-		} else if (vigil->gospel->mode != VIGIL_MODE_GOSPEL) {
-			vigil_log(LOG_ERR, "not a gospel configuration");
-			vigil_config_free(vigil->gospel);
-			vigil->gospel = NULL;
 		}
 	}
 
@@ -308,13 +317,17 @@ vigil_run(u_int64_t id, int fd, const char *cfg, size_t cfglen,
 			break;
 		}
 
-		if (vigil->gospel != NULL) {
-			vigil_call_init(datadir);
-			vigil_chat_init();
-		}
-
 		if (vigil->config->mode == VIGIL_MODE_COMPANION)
 			vigil_chat_init();
+
+		if (vigil->config->mode == VIGIL_MODE_GOSPEL) {
+			vigil_gospel_digest(cfg, cfglen,
+			    digest, sizeof(digest));
+			vigil_gospel_attach(vigil->config, digest);
+		}
+
+		if (gcfg != NULL)
+			vigil_gospel_set(gcfg, gcfglen);
 
 		vigil_log(LOG_INFO, "up and running");
 	}
@@ -336,14 +349,9 @@ vigil_run(u_int64_t id, int fd, const char *cfg, size_t cfglen,
 			if (vigil->config->mode == VIGIL_MODE_LITURGY)
 				vigil_liturgy_rebind();
 
-			if (vigil->gospel != NULL) {
-				vigil_call_rebind();
-				vigil_chat_rebind();
-				vigil_voice_rebind();
-			}
-
-			if (vigil->config->mode == VIGIL_MODE_COMPANION)
-				vigil_chat_rebind();
+			vigil_call_rebind();
+			vigil_chat_rebind();
+			vigil_voice_rebind();
 		}
 
 		vigil_poke_handle();
@@ -353,14 +361,9 @@ vigil_run(u_int64_t id, int fd, const char *cfg, size_t cfglen,
 		if (vigil->config->mode == VIGIL_MODE_LITURGY)
 			vigil_liturgy_update();
 
-		if (vigil->gospel != NULL) {
-			vigil_call_update();
-			vigil_chat_update();
-			vigil_voice_update();
-		}
-
-		if (vigil->config->mode == VIGIL_MODE_COMPANION)
-			vigil_chat_update();
+		vigil_call_update();
+		vigil_chat_update();
+		vigil_voice_update();
 
 		vigil_peer_prune();
 	}
@@ -611,19 +614,20 @@ vigil_poke(void)
 }
 
 /*
- * Attach the given Gospel configuration to the running core, or detach
- * the one it has if len is 0, without touching the tunnel. May be called
- * from any thread, returns -1 if no core runs or the configuration is
- * too large.
+ * Hand the running core the set of Gospel configurations it should run,
+ * each one ends in a NUL. The core keeps those it runs already, detaches
+ * the ones that are not in the set and attaches the new ones, without
+ * touching the tunnel. An empty set detaches them all. May be called
+ * from any thread, returns -1 if no core runs or the set is too large.
  */
 int
-vigil_gospel(const char *cfg, size_t len)
+vigil_gospel(const char *set, size_t len)
 {
 	struct vigil_gospel	*req, *old;
 
-	PRECOND(cfg != NULL || len == 0);
+	PRECOND(set != NULL || len == 0);
 
-	if (len > VIGIL_CONFIG_MAX)
+	if (len > VIGIL_GOSPEL_SET_MAX)
 		return (-1);
 
 	if (!vigil_atomic_read(&active))
@@ -635,7 +639,7 @@ vigil_gospel(const char *cfg, size_t len)
 
 	req->len = len;
 	if (len > 0)
-		memcpy(req->cfg, cfg, len);
+		memcpy(req->set, set, len);
 
 	old = vigil_atomic_read(&gospel);
 
@@ -659,23 +663,61 @@ gospel_again:
  * down so the next one uses the new input.
  */
 void
-vigil_additional_input(u_int8_t peer, const void *ikm, size_t len)
+vigil_additional_input(u_int64_t flock, u_int8_t peer, const void *ikm,
+    size_t len)
 {
+	struct vigil_inputs	*entry;
+	int			idx, used;
+
+	PRECOND(flock != 0);
 	PRECOND(peer > 0 && peer < KYRKA_PEERS_PER_FLOCK);
 	PRECOND(ikm != NULL || len == 0);
 	PRECOND(ikm == NULL || len == VIGIL_ADDITIONAL_INPUT_LEN);
 
+	entry = NULL;
 	vigil_lock(&input_lock);
 
+	for (idx = 0; idx < VIGIL_GOSPEL_MAX; idx++) {
+		if (inputs[idx].flock == flock) {
+			entry = &inputs[idx];
+			break;
+		}
+	}
+
+	if (entry == NULL && ikm != NULL) {
+		for (idx = 0; idx < VIGIL_GOSPEL_MAX; idx++) {
+			if (inputs[idx].flock == 0) {
+				entry = &inputs[idx];
+				entry->flock = flock;
+				break;
+			}
+		}
+	}
+
+	if (entry == NULL) {
+		vigil_unlock(&input_lock);
+		if (ikm != NULL)
+			vigil_log(LOG_NOTICE, "no room for the input of %02x",
+			    peer);
+		return;
+	}
+
 	if (ikm == NULL) {
-		nyfe_mem_zero(&inputs[peer], sizeof(inputs[peer]));
+		nyfe_mem_zero(&entry->peers[peer], sizeof(entry->peers[peer]));
+
+		used = 0;
+		for (idx = 0; idx < KYRKA_PEERS_PER_FLOCK; idx++)
+			used |= entry->peers[idx].set;
+
+		if (used == 0)
+			entry->flock = 0;
 	} else {
-		inputs[peer].set = 1;
-		memcpy(inputs[peer].ikm, ikm, len);
+		entry->peers[peer].set = 1;
+		memcpy(entry->peers[peer].ikm, ikm, len);
 	}
 
 	vigil_unlock(&input_lock);
-	vigil_chat_additional_input(peer);
+	vigil_chat_additional_input(flock, peer);
 }
 
 /*
@@ -973,7 +1015,7 @@ vigil_cleanup(void)
 	    vigil->config->mode == VIGIL_MODE_LITURGY)
 		vigil_liturgy_cleanup();
 
-	vigil_gospel_detach();
+	vigil_gospel_detach_all();
 
 	if (vigil->config != NULL &&
 	    vigil->config->mode == VIGIL_MODE_COMPANION)
@@ -1078,13 +1120,8 @@ vigil_poke_handle(void)
 	if (vigil->config->mode == VIGIL_MODE_LITURGY)
 		vigil_liturgy_poke();
 
-	if (vigil->gospel != NULL) {
-		vigil_call_poke();
-		vigil_chat_poke();
-	}
-
-	if (vigil->config->mode == VIGIL_MODE_COMPANION)
-		vigil_chat_poke();
+	vigil_call_poke();
+	vigil_chat_poke();
 }
 
 /*
@@ -1109,14 +1146,12 @@ vigil_wake_signal(void)
 }
 
 /*
- * If vigil_gospel() handed us a configuration, detach the Gospel parts
- * we run and attach the new ones. An invalid configuration changes
- * nothing, a Gospel configuration that runs on its own cannot be swapped.
+ * If vigil_gospel() handed us a set of configurations, run that set. A
+ * companion runs without Gospel.
  */
 static void
 vigil_gospel_handle(void)
 {
-	struct vigil_config	*cfg;
 	struct vigil_gospel	*req, *none;
 
 	none = NULL;
@@ -1128,29 +1163,293 @@ vigil_gospel_handle(void)
 	if (!vigil_atomic_cas(&gospel, &req, &none))
 		return;
 
-	if (vigil->config->mode == VIGIL_MODE_GOSPEL ||
-	    vigil->config->mode == VIGIL_MODE_COMPANION) {
-		vigil_log(LOG_NOTICE, "[gospel] runs on its own, not swapped");
-	} else if (req->len == 0) {
-		vigil_gospel_detach();
-		vigil_log(LOG_INFO, "[gospel] detached");
-	} else {
-		cfg = vigil_gospel_parse(req->cfg, req->len);
-
-		if (cfg != NULL) {
-			vigil_gospel_detach();
-
-			vigil->gospel = cfg;
-			vigil_call_init(datadir_run);
-			vigil_chat_init();
-
-			vigil_log(LOG_INFO, "[gospel] attached '%s'",
-			    cfg->instance);
-		}
-	}
+	if (vigil->config->mode == VIGIL_MODE_COMPANION)
+		vigil_log(LOG_NOTICE, "[gospel] a companion runs without it");
+	else
+		vigil_gospel_set(req->set, req->len);
 
 	nyfe_mem_zero(req, sizeof(*req));
 	free(req);
+}
+
+/*
+ * Run the given set of Gospel configurations. We detach the ones we run
+ * that are not in the set or that changed, then attach the new ones. An
+ * invalid configuration in the set is skipped, a Gospel configuration
+ * that runs on its own always stays.
+ */
+static void
+vigil_gospel_set(const char *set, size_t len)
+{
+	struct vigil_config	*cfg;
+	const char		*end;
+	size_t			off, cfglen;
+	int			idx, count;
+	u_int8_t		slot;
+	u_int8_t		digest[VIGIL_DIGEST_LEN];
+	struct vigil_config	*cfgs[VIGIL_GOSPEL_MAX];
+	u_int8_t		sums[VIGIL_GOSPEL_MAX][VIGIL_DIGEST_LEN];
+
+	PRECOND(set != NULL || len == 0);
+
+	off = 0;
+	count = 0;
+
+	while (off < len) {
+		end = memchr(set + off, '\0', len - off);
+		if (end == NULL) {
+			vigil_log(LOG_ERR, "[gospel] the set does not end");
+			break;
+		}
+
+		cfglen = end - (set + off);
+		if (cfglen == 0) {
+			off++;
+			continue;
+		}
+
+		cfg = vigil_gospel_parse(set + off, cfglen);
+		if (cfg == NULL) {
+			off += cfglen + 1;
+			continue;
+		}
+
+		for (idx = 0; idx < count; idx++) {
+			if (cfgs[idx]->cathedral_flock == cfg->cathedral_flock)
+				break;
+		}
+
+		if (idx != count || count == VIGIL_GOSPEL_MAX) {
+			vigil_log(LOG_ERR,
+			    "[gospel] skipping '%s', flock %" PRIx64
+			    " is in the set already or the set is full",
+			    cfg->instance, cfg->cathedral_flock);
+			vigil_config_free(cfg);
+			off += cfglen + 1;
+			continue;
+		}
+
+		vigil_gospel_digest(set + off, cfglen,
+		    sums[count], sizeof(sums[count]));
+
+		cfgs[count++] = cfg;
+		off += cfglen + 1;
+	}
+
+	for (slot = 0; slot < VIGIL_GOSPEL_MAX; slot++) {
+		if (vigil->gospels[slot] == NULL)
+			continue;
+
+		if (vigil->gospels[slot] == vigil->config)
+			continue;
+
+		for (idx = 0; idx < count; idx++) {
+			if (cfgs[idx]->cathedral_flock !=
+			    vigil->gospels[slot]->cathedral_flock)
+				continue;
+
+			if (!memcmp(sums[idx], digests[slot],
+			    sizeof(sums[idx])))
+				break;
+		}
+
+		if (idx == count)
+			vigil_gospel_detach(slot);
+	}
+
+	for (idx = 0; idx < count; idx++) {
+		if (vigil_gospel_find(cfgs[idx]->cathedral_flock, NULL) != -1) {
+			vigil_config_free(cfgs[idx]);
+			continue;
+		}
+
+		memcpy(digest, sums[idx], sizeof(digest));
+		vigil_gospel_attach(cfgs[idx], digest);
+	}
+
+	nyfe_mem_zero(sums, sizeof(sums));
+	nyfe_mem_zero(digest, sizeof(digest));
+}
+
+/*
+ * Attach the given Gospel configuration in a free slot, the slot owns the
+ * configuration from here on.
+ */
+static void
+vigil_gospel_attach(struct vigil_config *cfg, const u_int8_t *digest)
+{
+	int		first;
+	u_int8_t	slot;
+
+	PRECOND(cfg != NULL);
+	PRECOND(digest != NULL);
+	PRECOND(cfg->mode == VIGIL_MODE_GOSPEL);
+
+	first = 1;
+
+	for (slot = 0; slot < VIGIL_GOSPEL_MAX; slot++) {
+		if (vigil->gospels[slot] != NULL)
+			first = 0;
+	}
+
+	for (slot = 0; slot < VIGIL_GOSPEL_MAX; slot++) {
+		if (vigil->gospels[slot] == NULL)
+			break;
+	}
+
+	VERIFY(slot < VIGIL_GOSPEL_MAX);
+
+	vigil->gospels[slot] = cfg;
+	memcpy(digests[slot], digest, sizeof(digests[slot]));
+
+	if (first && vigil->config->mode != VIGIL_MODE_COMPANION)
+		vigil_chat_init();
+
+	vigil_call_attach(slot);
+	vigil_chat_attach(slot);
+
+	vigil_lock(&flock_lock);
+	flocks[slot] = cfg->cathedral_flock;
+	vigil_unlock(&flock_lock);
+
+	vigil_log(LOG_INFO, "[gospel] attached '%s' for flock %" PRIx64,
+	    cfg->instance, cfg->cathedral_flock);
+}
+
+/*
+ * Stop the Gospel parts of the core for the given slot and drop its
+ * configuration. Once the last one is gone our chats stop too.
+ */
+static void
+vigil_gospel_detach(u_int8_t slot)
+{
+	int		idx, last;
+
+	PRECOND(slot < VIGIL_GOSPEL_MAX);
+	PRECOND(vigil->gospels[slot] != NULL);
+
+	vigil_log(LOG_INFO, "[gospel] detaching flock %" PRIx64,
+	    vigil->gospels[slot]->cathedral_flock);
+
+	vigil_lock(&flock_lock);
+	flocks[slot] = 0;
+	vigil_unlock(&flock_lock);
+
+	vigil_voice_detach(slot);
+	vigil_safety_detach(slot);
+	vigil_chat_detach(slot);
+	vigil_call_detach(slot);
+
+	if (vigil->gospels[slot] != vigil->config)
+		vigil_config_free(vigil->gospels[slot]);
+
+	vigil->gospels[slot] = NULL;
+	nyfe_mem_zero(digests[slot], sizeof(digests[slot]));
+
+	last = 1;
+
+	for (idx = 0; idx < VIGIL_GOSPEL_MAX; idx++) {
+		if (vigil->gospels[idx] != NULL)
+			last = 0;
+	}
+
+	if (last && vigil->config->mode != VIGIL_MODE_COMPANION)
+		vigil_chat_cleanup();
+}
+
+/*
+ * Detach all Gospel configurations we run.
+ */
+static void
+vigil_gospel_detach_all(void)
+{
+	u_int8_t	slot;
+
+	for (slot = 0; slot < VIGIL_GOSPEL_MAX; slot++) {
+		if (vigil->gospels[slot] != NULL)
+			vigil_gospel_detach(slot);
+	}
+}
+
+/*
+ * Find the slot of the Gospel configuration we run for the given flock,
+ * returns -1 if we do not run one. Only called from the event loop.
+ */
+int
+vigil_gospel_find(u_int64_t flock, u_int8_t *out)
+{
+	u_int8_t	slot;
+
+	for (slot = 0; slot < VIGIL_GOSPEL_MAX; slot++) {
+		if (vigil->gospels[slot] == NULL)
+			continue;
+
+		if (vigil->gospels[slot]->cathedral_flock == flock) {
+			if (out != NULL)
+				*out = slot;
+			return (0);
+		}
+	}
+
+	return (-1);
+}
+
+/*
+ * Find the slot of the Gospel configuration that runs for the given
+ * flock and keep our flock lock held, so the slot cannot change under
+ * the caller until it calls vigil_gospel_release(). Returns -1 without
+ * the lock if no Gospel configuration runs for the flock. May be called
+ * from any thread.
+ */
+int
+vigil_gospel_slot(u_int64_t flock, u_int8_t *out)
+{
+	u_int8_t	slot;
+
+	PRECOND(out != NULL);
+
+	if (flock == 0)
+		return (-1);
+
+	vigil_lock(&flock_lock);
+
+	for (slot = 0; slot < VIGIL_GOSPEL_MAX; slot++) {
+		if (flocks[slot] == flock) {
+			*out = slot;
+			return (0);
+		}
+	}
+
+	vigil_unlock(&flock_lock);
+
+	return (-1);
+}
+
+/*
+ * Release the flock lock that vigil_gospel_slot() took.
+ */
+void
+vigil_gospel_release(void)
+{
+	vigil_unlock(&flock_lock);
+}
+
+/*
+ * Write the digest of the given configuration into out.
+ */
+static void
+vigil_gospel_digest(const char *cfg, size_t len, u_int8_t *out, size_t outlen)
+{
+	struct nyfe_sha3	ctx;
+
+	PRECOND(cfg != NULL);
+	PRECOND(len > 0);
+	PRECOND(out != NULL);
+	PRECOND(outlen == VIGIL_DIGEST_LEN);
+
+	nyfe_sha3_init256(&ctx);
+	nyfe_sha3_update(&ctx, cfg, len);
+	nyfe_sha3_final(&ctx, out, outlen);
 }
 
 /*
@@ -1205,25 +1504,6 @@ drop_again:
 }
 
 /*
- * Stop the Gospel parts of the core and drop its configuration.
- */
-static void
-vigil_gospel_detach(void)
-{
-	if (vigil->gospel == NULL)
-		return;
-
-	vigil_voice_cleanup();
-	vigil_chat_cleanup();
-	vigil_call_cleanup();
-
-	if (vigil->gospel != vigil->config)
-		vigil_config_free(vigil->gospel);
-
-	vigil->gospel = NULL;
-}
-
-/*
  * Callback for when someone wrote to our wakeup pipe.
  */
 static void
@@ -1259,21 +1539,32 @@ vigil_wake_read(void *udata)
  * if we have one. Returns 1 if we loaded an input, 0 if not.
  */
 int
-vigil_kyrka_additional_input(KYRKA *ctx, u_int8_t peer)
+vigil_kyrka_additional_input(KYRKA *ctx, u_int64_t flock, u_int8_t peer)
 {
-	int		ret, set;
+	struct vigil_input	*input;
+	int			idx, ret, set;
 
 	PRECOND(ctx != NULL);
+	PRECOND(flock != 0);
 	PRECOND(peer > 0 && peer < KYRKA_PEERS_PER_FLOCK);
 
 	ret = 0;
+	set = 0;
+
 	vigil_lock(&input_lock);
 
-	set = inputs[peer].set;
+	for (idx = 0; idx < VIGIL_GOSPEL_MAX; idx++) {
+		if (inputs[idx].flock != flock)
+			continue;
 
-	if (set) {
-		ret = kyrka_additional_kdf_input(ctx,
-		    inputs[peer].ikm, sizeof(inputs[peer].ikm));
+		input = &inputs[idx].peers[peer];
+		set = input->set;
+
+		if (set) {
+			ret = kyrka_additional_kdf_input(ctx,
+			    input->ikm, sizeof(input->ikm));
+		}
+		break;
 	}
 
 	vigil_unlock(&input_lock);

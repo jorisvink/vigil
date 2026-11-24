@@ -49,17 +49,41 @@ class TunnelStore(context: Context) {
         }
     }
 
-    fun voice(): String? {
+    fun voice(): String? = gospels().firstOrNull()
+
+    fun gospels(): List<String> {
         val list = list()
+        val out = mutableListOf<Pair<String, Long>>()
 
         for (i in 0 until list.length()) {
             val entry = list.getJSONObject(i)
+            val id = entry.getString("id")
+
             if (entry.getJSONObject("summary").optString("mode") == "gospel") {
-                return entry.getString("id")
+                out.add(id to file(id, SUMMARY).lastModified())
             }
         }
 
-        return null
+        return out.sortedWith(compareBy({ it.second }, { it.first })).map { it.first }
+    }
+
+    fun flock(id: String): String = Flock.hex(summary(id).getString("cathedral_flock"))
+
+    fun firstFlock(): String? = voice()?.let { flock(it) }
+
+    /** The caller must wipe the set. */
+    fun gospelSet(): ByteArray {
+        val parts = gospels().map { load(it) }
+        val out = ByteArray(parts.sumOf { it.size + 1 })
+        var at = 0
+
+        for (part in parts) {
+            part.copyInto(out, at)
+            at += part.size + 1
+            part.fill(0)
+        }
+
+        return out
     }
 
     /** The caller must wipe the configuration. */
@@ -73,8 +97,19 @@ class TunnelStore(context: Context) {
             throw Invalid(summary.getString("error"))
         }
 
-        if (summary.optString("mode") == "gospel" && voice() != null) {
-            throw Invalid("There is already a Gospel configuration, remove it first.")
+        if (summary.optString("mode") == "gospel") {
+            val flock = Flock.hex(summary.getString("cathedral_flock"))
+            val gospels = gospels()
+
+            if (gospels.any { flock(it) == flock }) {
+                throw Invalid("There is already a Gospel configuration for flock $flock, remove it first.")
+            }
+
+            val max = Vigil.gospelMax()
+
+            if (gospels.size >= max) {
+                throw Invalid("There can be at most $max Gospel configurations.")
+            }
         }
 
         if (summary.optString("mode") == "companion") {

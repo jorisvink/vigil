@@ -22,7 +22,13 @@
 #include <flutter_linux/flutter_linux.h>
 
 /* The longest name a piece of data in the store has, with its NUL. */
-#define STORE_NAME_MAX		48
+#define STORE_NAME_MAX		64
+
+/* The longest chat id, a flock in hex, a dash and a group, with its NUL. */
+#define STORE_CHAT_MAX		37
+
+/* The longest peer id, a flock in hex, a dash and a peer, with its NUL. */
+#define STORE_PEER_MAX		20
 
 /* desktop.c */
 int	runner_single(void);
@@ -57,6 +63,8 @@ void	store_reset(void);
 void	store_avatars(const char *, size_t);
 void	store_chat_drop(const char *);
 int	store_chat_valid(const char *);
+int	store_legacy(void);
+int	store_peer_valid(const char *);
 int	store_chat_exists(const char *);
 void	store_chat_delete(const char *);
 int	store_chat_append(const char *, const char *, size_t);

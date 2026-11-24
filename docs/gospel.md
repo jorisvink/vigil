@@ -7,8 +7,9 @@ files. All of this runs over sanctum tunnels. The protocol is called gospel.
 
 Calls and messages use their own configuration, with mode `gospel`. It
 has the same keys as a cathedral configuration: a KEK, a cathedral
-secret, a COSK, a flock and a device id. There can only be one gospel
-configuration on a device.
+secret, a COSK, a flock and a device id. A device holds up to
+`VIGIL_GOSPEL_MAX` (16) gospel configurations, one per flock. A second
+configuration for a flock that already has one is refused on import.
 
 A gospel configuration can run on its own. In that case the VPN interface
 has no routes and carries no traffic, it only keeps Vigil running. It can
@@ -18,6 +19,37 @@ keys.
 
 Each device in the flock has an id from 1 to 254. That id is how other
 devices address you. It is also how Vigil knows who sent a message.
+
+## Several gospels
+
+Up to `VIGIL_GOSPEL_MAX` gospel configurations, each for a different
+flock, run side by side. `vigil_gospel()` and `vigil_run()` take the
+whole set: the configurations one after the other, each ended by a NUL.
+The core compares the set by flock and by a SHA3-256 digest of each
+configuration. A gospel whose configuration did not change keeps
+running, a new one is attached and a removed one is detached. When the
+gospel runs on its own, the configuration it was started with can not
+be detached, the platform starts again with another one.
+
+Gospels share nothing but the nickname, the picture and whether anyone
+may reach us. Each has its own cathedrals, liturgies, remembrances, call
+state and chat tunnels.
+
+Device ids are only unique within a flock, so the platforms name a peer
+by its flock and its id: `<flock>-<id>`, the flock in hex without
+leading zeros, for example `cafeba00-fe`. A group is named after the
+flock of its owner, `<flock>-g<owner><group>`, for example
+`cafeba00-gfe1122334455667788`. A group holds members of one flock only.
+Within a chat, in its records, its roster and its quotes, peers keep
+their plain id.
+
+Every call of the core API that names a peer or a group takes the flock
+first, for example `vigil_chat_send(flock, peer, ref, text, len)` and
+`vigil_call_dial(flock, peer)`. Each chat event carries a `flock`
+field with the flock in hex.
+
+The chat lists of the app show the chats of all gospels together. The
+peers page groups the peers per flock.
 
 ## Separate keys for each purpose
 

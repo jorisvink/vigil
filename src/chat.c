@@ -38,7 +38,7 @@
  * whenever anything in the companion sync changes, a phone and its
  * desktop only sync when they run the same version.
  */
-#define VIGIL_COMPANION_VERSION		2
+#define VIGIL_COMPANION_VERSION		3
 
 /* The magic in front of the version, older builds do not have it. */
 #define VIGIL_COMPANION_MAGIC		0x5643
@@ -232,6 +232,7 @@
  */
 struct chat_blob {
 	int			held;
+	u_int64_t		flock;
 	u_int8_t		peer;
 	u_int64_t		ref;
 	size_t			size;
@@ -442,10 +443,13 @@ struct chat_tunnel {
 };
 
 /*
- * A chat peer.
+ * A chat peer, in the flock of the Gospel configuration in its slot. The
+ * other side of our companion tunnel has no slot.
  */
 struct chat_peer {
 	u_int8_t		id;
+	u_int8_t		slot;
+	u_int64_t		flock;
 	u_int64_t		active;
 	u_int64_t		pushed;
 	u_int64_t		avatar_held;
@@ -465,11 +469,12 @@ struct chat_peer {
 };
 
 /*
- * The signaling liturgy.
+ * The signaling liturgy of one of our Gospel configurations.
  */
 struct chat_liturgy {
 	struct vigil_io		io;
 
+	u_int8_t		slot;
 	KYRKA			*ctx;
 	u_int64_t		last;
 	u_int16_t		group;
@@ -483,10 +488,37 @@ struct chat_liturgy {
 };
 
 /*
+ * The chats of one of our Gospel configurations. We send our instance to
+ * peers once its flock signed it.
+ */
+struct chat_gospel {
+	int			running;
+	int			named;
+	u_int8_t		local;
+	u_int64_t		flock;
+	u_int64_t		session;
+	struct chat_liturgy	signaling;
+	u_int8_t		sent[KYRKA_PEERS_PER_FLOCK];
+	struct chat_peer	peers[KYRKA_PEERS_PER_FLOCK];
+};
+
+/*
+ * The peers of one of our Gospel configurations that we accept or ignore,
+ * whose chat is open and those we type to, set from any thread.
+ */
+struct chat_marks {
+	volatile u_int8_t	opened[KYRKA_PEERS_PER_FLOCK];
+	volatile u_int8_t	ignored[KYRKA_PEERS_PER_FLOCK];
+	volatile u_int8_t	accepted[KYRKA_PEERS_PER_FLOCK];
+	volatile u_int8_t	typing[KYRKA_PEERS_PER_FLOCK];
+};
+
+/*
  * A command the platform sent to us.
  */
 struct chat_command {
 	int				type;
+	u_int64_t			flock;
 	u_int8_t			peer;
 	u_int64_t			value;
 
@@ -509,6 +541,7 @@ struct chat_event {
 	int				type;
 	size_t				size;
 	u_int8_t			kind;
+	u_int64_t			flock;
 	u_int8_t			peer;
 	u_int64_t			value;
 	u_int64_t			token;
@@ -529,11 +562,13 @@ struct chat_event {
 
 TAILQ_HEAD(chat_event_list, chat_event);
 
+static void	chat_update(struct chat_gospel *);
+
 static void	chat_liturgy_read(void *);
-static void	chat_liturgy_signal(void);
 static void	chat_liturgy_rebind(struct chat_liturgy *);
 static void	chat_liturgy_cleanup(struct chat_liturgy *);
-static int	chat_liturgy_init(struct chat_liturgy *, u_int16_t);
+static void	chat_liturgy_signal(struct chat_gospel *);
+static int	chat_liturgy_init(struct chat_liturgy *, u_int8_t, u_int16_t);
 static void	chat_liturgy_cathedral_check(struct chat_liturgy *);
 static void	chat_liturgy_event(KYRKA *, union kyrka_event *, void *);
 static void	chat_liturgy_send(struct kyrka_packet *, u_int64_t, void *);
@@ -581,8 +616,6 @@ static void	chat_avatar_check(struct chat_peer *, u_int8_t);
 
 static u_int64_t	chat_avatar_hash(const u_int8_t *, size_t);
 
-static u_int8_t		chat_local(void);
-
 static void	chat_token_ack(u_int64_t);
 static int	chat_nick_valid(const char *);
 static void	chat_ask_check(struct chat_peer *);
@@ -590,7 +623,8 @@ static void	chat_name_report(struct chat_peer *);
 static int	chat_signal_check(struct chat_peer *);
 static void	chat_utf8_normalize(u_int8_t *, size_t);
 static void	chat_ambry_report(struct chat_tunnel *, u_int32_t);
-static void	chat_typing_state(u_int8_t, u_int8_t *, u_int64_t *,
+static int	chat_typed(struct chat_peer *);
+static void	chat_typing_state(struct chat_peer *, u_int8_t *, u_int64_t *,
 		    u_int64_t *);
 static void	chat_heaven_input(struct kyrka_packet *, u_int64_t, void *);
 static void	chat_hb_recv(struct chat_tunnel *, struct vigil_chat_frame *);
@@ -635,7 +669,7 @@ static void	chat_command_next(struct chat_command **);
 static int	chat_command_insert(struct chat_command *);
 static int	chat_command_blob(int, u_int64_t, const char *, size_t,
 		    const void *, size_t);
-static int	chat_command_queue(int, u_int8_t, u_int64_t,
+static int	chat_command_queue(int, u_int64_t, u_int8_t, u_int64_t,
 		    const struct chat_quote *, const struct chat_topic *,
 		    const struct chat_group *, const void *, size_t);
 
@@ -652,7 +686,7 @@ static void	chat_topic_text_recv(struct chat_tunnel *, u_int64_t,
 		    const struct chat_group *, u_int8_t *, u_int16_t);
 
 static void	chat_blob_release(struct chat_blob *);
-static int	chat_blob_room(u_int8_t, u_int64_t, size_t);
+static int	chat_blob_room(u_int64_t, u_int8_t, u_int64_t, size_t);
 
 static void	chat_parcels_free(void);
 static void	chat_parcels_expire(void);
@@ -668,8 +702,9 @@ static void	chat_data_hold(struct chat_tunnel *, struct chat_rxfer *,
 static int	chat_data_report(struct chat_tunnel *, struct chat_parcel *);
 static void	chat_data_ack(struct chat_tunnel *, u_int64_t,
 		    struct chat_rxfer *, u_int32_t);
-static int	chat_data_queue(u_int8_t, u_int64_t, const struct chat_group *,
-		    u_int64_t, int, const char *, const void *, size_t);
+static int	chat_data_queue(u_int64_t, u_int8_t, u_int64_t,
+		    const struct chat_group *, u_int64_t, int, const char *,
+		    const void *, size_t);
 static int	chat_data_tags(const u_int8_t *, size_t, size_t *,
 		    struct chat_group *, u_int64_t *);
 
@@ -724,8 +759,7 @@ static void	chat_companion_push(struct chat_blob *);
 static void	chat_companion_status(struct vigil_buf *);
 static int	chat_companion_mismatch(void);
 static void	chat_companion_version(const u_int8_t *);
-static void	chat_companion_peers(struct vigil_buf *,
-		    const struct vigil_companion_phone *);
+static void	chat_companion_peers(struct vigil_buf *);
 static void	chat_companion_hb_recv(struct chat_tunnel *,
 		    const struct vigil_chat_frame *);
 static void	chat_companion_heartbeat(struct chat_tunnel *,
@@ -742,7 +776,8 @@ static void	chat_phone_release(size_t);
 static void	chat_phone_acked(u_int64_t);
 static size_t	chat_phone_need(size_t, size_t);
 static void	chat_phone_sync(struct chat_command *);
-static void	chat_phone_state(struct vigil_companion_phone *);
+static int	chat_phone_changed(void);
+static void	chat_phone_state(u_int8_t, struct vigil_companion_phone *);
 static void	chat_phone_call(const struct vigil_chat_request *);
 static int	chat_phone_entry(const u_int8_t *, size_t, u_int32_t *);
 static void	chat_phone_desktop(const struct vigil_companion_desktop *);
@@ -761,6 +796,7 @@ static int	chat_phone_queue(const char *, size_t, const u_int8_t *,
 		    size_t);
 
 static void	chat_desktop_told(void);
+static void	chat_desktop_bit(u_int8_t *, u_int64_t, u_int8_t, int);
 static void	chat_desktop_pump(void);
 static void	chat_desktop_head(void);
 static void	chat_desktop_recall(void);
@@ -796,20 +832,11 @@ static volatile int			accepting = 0;
 /* Incremental token id for the messages we receive. */
 static u_int64_t			tokens = 0;
 
-/* The signaling liturgy for the chat. */
-static struct chat_liturgy		signaling;
+/* The chats of each of our Gospel configurations. */
+static struct chat_gospel		gospels[VIGIL_GOSPEL_MAX];
 
-/* What we last told the cathedral in the signaling liturgy. */
-static u_int8_t				sent[KYRKA_PEERS_PER_FLOCK];
-
-/* All peers we can chat with, populated from discovery. */
-static struct chat_peer			peers[KYRKA_PEERS_PER_FLOCK];
-
-/* The peers we accept or ignore, whose chat is open and those we type to. */
-static volatile u_int8_t		opened[KYRKA_PEERS_PER_FLOCK];
-static volatile u_int8_t		ignored[KYRKA_PEERS_PER_FLOCK];
-static volatile u_int8_t		accepted[KYRKA_PEERS_PER_FLOCK];
-static volatile u_int8_t		typing[KYRKA_PEERS_PER_FLOCK];
+/* The marks on the peers of each of our Gospel configurations. */
+static struct chat_marks		marks[VIGIL_GOSPEL_MAX];
 
 /* Protects our commands, events, parcels and blobs. */
 static pthread_mutex_t			lock = PTHREAD_MUTEX_INITIALIZER;
@@ -819,15 +846,13 @@ static char				nick[VIGIL_CHAT_NICK_MAX + 1];
 
 /*
  * The group and topic we are typing in, an id of 0 means none. Only the
- * owner and members of that group learn about it.
+ * owner and members of that group in its flock learn about it.
  */
 static u_int8_t				typing_owner = 0;
+static u_int64_t			typing_flock = 0;
 static u_int64_t			typing_group = 0;
 static u_int64_t			typing_topic = 0;
 static u_int8_t				typing_members[VIGIL_CHAT_GROUP_ROSTER];
-
-/* Set when our flock signed our instance, we then send it to peers. */
-static int				named = 0;
 
 /* Our avatar as the platform gave it, the serial counts its changes. */
 static size_t				avatar_len = 0;
@@ -945,53 +970,45 @@ static volatile u_int64_t		companion_queued = 0;
 static volatile u_int64_t		companion_limit = 0;
 static u_int64_t			companion_measure = 0;
 
-/* The last state of our phone and of our desktop, sent or received. */
+/*
+ * The last state of our phone and of our desktop, sent or received. As a
+ * phone we also keep the last state we sent for each slot and the slot our
+ * next heartbeat is for, as a desktop the last state for each flock.
+ */
 static struct vigil_companion_phone	companion_phone;
 static struct vigil_companion_desktop	companion_desktop;
+static struct vigil_companion_phone	companion_phones[VIGIL_GOSPEL_MAX];
+static u_int8_t				companion_turn = 0;
+
+/* Bumped when a Gospel configuration comes or goes, and what we told. */
+static u_int64_t			attached = 0;
+static u_int64_t			companion_attached = 0;
 
 /*
- * Setup the chat part of gospel, or only our companion tunnel on a
- * desktop that runs without gospel.
+ * As a desktop, the flock of the chat our platform has open or types in
+ * and which peers in it, for our phone.
+ */
+static u_int64_t			desktop_flock = 0;
+static u_int8_t				desktop_opened[VIGIL_CHAT_GROUP_ROSTER];
+static u_int8_t				desktop_typing[VIGIL_CHAT_GROUP_ROSTER];
+
+/*
+ * Setup the chat part of gospel before the first Gospel configuration is
+ * attached, or only our companion tunnel on a desktop that runs without
+ * gospel.
  */
 void
 vigil_chat_init(void)
 {
-	int		idx;
-
 	PRECOND(running == 0);
-	PRECOND(vigil->gospel != NULL ||
-	    vigil->config->mode == VIGIL_MODE_COMPANION);
-
-	memset(sent, 0, sizeof(sent));
-	memset(&signaling, 0, sizeof(signaling));
-
-	for (idx = 0; idx < KYRKA_PEERS_PER_FLOCK; idx++) {
-		memset(&peers[idx], 0, sizeof(peers[idx]));
-		TAILQ_INIT(&peers[idx].outbox);
-		peers[idx].id = idx;
-	}
 
 	memset(&companion, 0, sizeof(companion));
 	TAILQ_INIT(&companion.outbox);
 
+	companion.slot = VIGIL_GOSPEL_MAX;
 	companion_role = 0;
 	companion_cfg = NULL;
 	companion_loaded = 0;
-
-	named = 0;
-
-	if (vigil->gospel != NULL &&
-	    (vigil->gospel->keys & VIGIL_CONFIG_KEY_NAME_SIGNATURE)) {
-		if (vigil_config_name_verify(vigil->gospel,
-		    vigil->gospel->spi & 0xff, vigil->gospel->instance,
-		    vigil->gospel->name_signature,
-		    sizeof(vigil->gospel->name_signature)) == 0) {
-			named = 1;
-		} else {
-			vigil_log(LOG_NOTICE,
-			    "[chat] our instance does not match its signature");
-		}
-	}
 
 	portrait = NULL;
 	portrait_serial = 0;
@@ -1011,12 +1028,6 @@ vigil_chat_init(void)
 
 	vigil_unlock(&lock);
 
-	if (vigil->gospel != NULL &&
-	    chat_liturgy_init(&signaling, VIGIL_CHAT_SIGNAL_GROUP) == -1) {
-		vigil_log(LOG_NOTICE, "chats are not available");
-		return;
-	}
-
 	session++;
 	running = 1;
 
@@ -1025,23 +1036,116 @@ vigil_chat_init(void)
 }
 
 /*
+ * Set up the chats of the Gospel configuration in the given slot.
+ */
+void
+vigil_chat_attach(u_int8_t slot)
+{
+	int			idx;
+	struct chat_gospel	*gospel;
+	struct vigil_config	*cfg;
+
+	PRECOND(slot < VIGIL_GOSPEL_MAX);
+	PRECOND(vigil->gospels[slot] != NULL);
+
+	if (!running)
+		return;
+
+	cfg = vigil->gospels[slot];
+	gospel = &gospels[slot];
+
+	VERIFY(gospel->running == 0);
+
+	memset(gospel, 0, sizeof(*gospel));
+
+	gospel->local = cfg->spi & 0xff;
+	gospel->flock = cfg->cathedral_flock;
+
+	for (idx = 0; idx < KYRKA_PEERS_PER_FLOCK; idx++) {
+		TAILQ_INIT(&gospel->peers[idx].outbox);
+		gospel->peers[idx].id = idx;
+		gospel->peers[idx].slot = slot;
+		gospel->peers[idx].flock = gospel->flock;
+
+		vigil_atomic_write(&marks[slot].opened[idx], 0);
+		vigil_atomic_write(&marks[slot].ignored[idx], 0);
+		vigil_atomic_write(&marks[slot].accepted[idx], 0);
+		vigil_atomic_write(&marks[slot].typing[idx], 0);
+	}
+
+	if (cfg->keys & VIGIL_CONFIG_KEY_NAME_SIGNATURE) {
+		if (vigil_config_name_verify(cfg, gospel->local,
+		    cfg->instance, cfg->name_signature,
+		    sizeof(cfg->name_signature)) == 0) {
+			gospel->named = 1;
+		} else {
+			vigil_log(LOG_NOTICE, "[chat] our instance in %"
+			    PRIx64 " does not match its signature",
+			    gospel->flock);
+		}
+	}
+
+	if (chat_liturgy_init(&gospel->signaling, slot,
+	    VIGIL_CHAT_SIGNAL_GROUP) == -1) {
+		vigil_log(LOG_NOTICE, "chats are not available for %" PRIx64,
+		    gospel->flock);
+		return;
+	}
+
+	gospel->session = ++session;
+	gospel->running = 1;
+
+	attached++;
+
+	vigil_log(LOG_INFO, "chats running for %" PRIx64, gospel->flock);
+}
+
+/*
+ * Tear down the chats of the Gospel configuration in the given slot.
+ */
+void
+vigil_chat_detach(u_int8_t slot)
+{
+	int			idx;
+	struct chat_gospel	*gospel;
+
+	PRECOND(slot < VIGIL_GOSPEL_MAX);
+
+	gospel = &gospels[slot];
+
+	if (!gospel->running)
+		return;
+
+	for (idx = 0; idx < KYRKA_PEERS_PER_FLOCK; idx++) {
+		if (gospel->peers[idx].tunnel != NULL)
+			chat_tunnel_free(gospel->peers[idx].tunnel);
+		chat_outbox_free(&gospel->peers[idx]);
+	}
+
+	chat_liturgy_cleanup(&gospel->signaling);
+
+	if (typing_flock == gospel->flock)
+		vigil_chat_group_typing(0, 0, 0, 0, NULL);
+
+	gospel->running = 0;
+	attached++;
+}
+
+/*
  * Cleanup any resources allocated by the chat.
  */
 void
 vigil_chat_cleanup(void)
 {
-	int		idx;
+	u_int8_t	slot;
 
 	if (!running)
 		return;
 
 	vigil_atomic_write(&accepting, 0);
 
-	for (idx = 0; idx < KYRKA_PEERS_PER_FLOCK; idx++) {
-		if (peers[idx].tunnel != NULL)
-			chat_tunnel_free(peers[idx].tunnel);
-		chat_outbox_free(&peers[idx]);
-	}
+	for (slot = 0; slot < VIGIL_GOSPEL_MAX; slot++)
+		vigil_chat_detach(slot);
 
 	if (portrait != NULL) {
 		chat_blob_release(portrait);
@@ -1051,9 +1155,6 @@ vigil_chat_cleanup(void)
 
 	chat_companion_free();
 	vigil_safety_cleanup();
-
-	if (vigil->gospel != NULL)
-		chat_liturgy_cleanup(&signaling);
 
 	chat_commands_free();
 	chat_parcels_free();
@@ -1068,8 +1169,7 @@ vigil_chat_cleanup(void)
 void
 vigil_chat_update(void)
 {
-	int			idx;
-	u_int8_t		local;
+	u_int8_t	slot;
 
 	if (!running)
 		return;
@@ -1080,31 +1180,49 @@ vigil_chat_update(void)
 	chat_parcels_expire();
 	chat_companion_check();
 
-	if (vigil->gospel == NULL)
+	if (vigil->config->mode == VIGIL_MODE_COMPANION)
 		return;
 
-	local = vigil->gospel->spi & 0xff;
-
 	vigil_safety_update();
-	chat_liturgy_cathedral_check(&signaling);
+
+	for (slot = 0; slot < VIGIL_GOSPEL_MAX; slot++) {
+		if (gospels[slot].running)
+			chat_update(&gospels[slot]);
+	}
+}
+
+/*
+ * Manage the peers and the signaling of the given Gospel configuration.
+ */
+static void
+chat_update(struct chat_gospel *gospel)
+{
+	int			idx;
+	struct chat_peer	*peer;
+
+	PRECOND(gospel != NULL);
+	PRECOND(gospel->running);
+
+	chat_liturgy_cathedral_check(&gospel->signaling);
 
 	for (idx = 1; idx < KYRKA_PEERS_PER_FLOCK; idx++) {
-		if (idx == local)
+		if (idx == gospel->local)
 			continue;
 
-		if (peers[idx].present &&
-		    (vigil->now - peers[idx].pushed) >=
-		    VIGIL_CALL_PRESENT_EXPIRE) {
+		peer = &gospel->peers[idx];
+
+		if (peer->present &&
+		    (vigil->now - peer->pushed) >= VIGIL_CALL_PRESENT_EXPIRE) {
 			vigil_log(LOG_INFO, "[chat] %02x is gone", idx);
-			peers[idx].asked = 0;
-			peers[idx].present = 0;
+			peer->asked = 0;
+			peer->present = 0;
 		}
 
-		chat_ask_check(&peers[idx]);
-		chat_tunnel_check(&peers[idx]);
+		chat_ask_check(peer);
+		chat_tunnel_check(peer);
 	}
 
-	chat_liturgy_signal();
+	chat_liturgy_signal(gospel);
 }
 
 /*
@@ -1113,19 +1231,27 @@ vigil_chat_update(void)
 void
 vigil_chat_rebind(void)
 {
-	int		idx;
+	int			idx;
+	u_int8_t		slot;
+	struct chat_gospel	*gospel;
 
 	if (!running)
 		return;
 
-	if (vigil->gospel != NULL) {
-		vigil_safety_rebind();
-		chat_liturgy_rebind(&signaling);
-	}
+	vigil_safety_rebind();
 
-	for (idx = 0; idx < KYRKA_PEERS_PER_FLOCK; idx++) {
-		if (peers[idx].tunnel != NULL)
-			chat_tunnel_rebind(peers[idx].tunnel);
+	for (slot = 0; slot < VIGIL_GOSPEL_MAX; slot++) {
+		gospel = &gospels[slot];
+
+		if (!gospel->running)
+			continue;
+
+		chat_liturgy_rebind(&gospel->signaling);
+
+		for (idx = 0; idx < KYRKA_PEERS_PER_FLOCK; idx++) {
+			if (gospel->peers[idx].tunnel != NULL)
+				chat_tunnel_rebind(gospel->peers[idx].tunnel);
+		}
 	}
 
 	if (companion.tunnel != NULL)
@@ -1138,16 +1264,25 @@ vigil_chat_rebind(void)
 void
 vigil_chat_poke(void)
 {
-	int		idx;
+	int			idx;
+	u_int8_t		slot;
+	struct chat_gospel	*gospel;
 
 	if (!running)
 		return;
 
-	signaling.notify = 0;
+	for (slot = 0; slot < VIGIL_GOSPEL_MAX; slot++) {
+		gospel = &gospels[slot];
 
-	for (idx = 0; idx < KYRKA_PEERS_PER_FLOCK; idx++) {
-		if (peers[idx].tunnel != NULL)
-			chat_tunnel_poke(peers[idx].tunnel);
+		if (!gospel->running)
+			continue;
+
+		gospel->signaling.notify = 0;
+
+		for (idx = 0; idx < KYRKA_PEERS_PER_FLOCK; idx++) {
+			if (gospel->peers[idx].tunnel != NULL)
+				chat_tunnel_poke(gospel->peers[idx].tunnel);
+		}
 	}
 
 	if (companion.tunnel != NULL)
@@ -1158,7 +1293,8 @@ vigil_chat_poke(void)
  * Queue a message for the given peer to be sent.
  */
 int
-vigil_chat_send(u_int8_t peer, u_int64_t ref, const char *text, size_t len)
+vigil_chat_send(u_int64_t flock, u_int8_t peer, u_int64_t ref, const char *text,
+    size_t len)
 {
 	int		ret;
 
@@ -1167,7 +1303,7 @@ vigil_chat_send(u_int8_t peer, u_int64_t ref, const char *text, size_t len)
 	PRECOND(len > 0 && len <= VIGIL_CHAT_MESSAGE_MAX);
 
 	ret = chat_command_queue(CHAT_COMMAND_SEND,
-	    peer, ref, NULL, NULL, NULL, text, len);
+	    flock, peer, ref, NULL, NULL, NULL, text, len);
 
 	return (ret);
 }
@@ -1177,8 +1313,8 @@ vigil_chat_send(u_int8_t peer, u_int64_t ref, const char *text, size_t len)
  * message we reply to (0 for us) and hash is the hash of that message.
  */
 int
-vigil_chat_reply(u_int8_t peer, u_int64_t ref, u_int8_t author,
-    u_int64_t hash, const char *text, size_t len)
+vigil_chat_reply(u_int64_t flock, u_int8_t peer, u_int64_t ref,
+    u_int8_t author, u_int64_t hash, const char *text, size_t len)
 {
 	int			ret;
 	struct chat_quote	quote;
@@ -1194,7 +1330,7 @@ vigil_chat_reply(u_int8_t peer, u_int64_t ref, u_int8_t author,
 	quote.author = author;
 
 	ret = chat_command_queue(CHAT_COMMAND_SEND,
-	    peer, ref, &quote, NULL, NULL, text, len);
+	    flock, peer, ref, &quote, NULL, NULL, text, len);
 
 	return (ret);
 }
@@ -1203,8 +1339,8 @@ vigil_chat_reply(u_int8_t peer, u_int64_t ref, u_int8_t author,
  * Queue the given topic for the given peer, no name removes the topic.
  */
 int
-vigil_chat_topic(u_int8_t peer, u_int64_t ref, u_int64_t id, u_int32_t color,
-    const char *name, size_t len)
+vigil_chat_topic(u_int64_t flock, u_int8_t peer, u_int64_t ref, u_int64_t id,
+    u_int32_t color, const char *name, size_t len)
 {
 	int			ret;
 	struct chat_topic	topic;
@@ -1221,7 +1357,7 @@ vigil_chat_topic(u_int8_t peer, u_int64_t ref, u_int64_t id, u_int32_t color,
 	topic.color = color & 0xffffff;
 
 	ret = chat_command_queue(CHAT_COMMAND_SEND,
-	    peer, ref, NULL, &topic, NULL, name, len);
+	    flock, peer, ref, NULL, &topic, NULL, name, len);
 
 	return (ret);
 }
@@ -1231,8 +1367,9 @@ vigil_chat_topic(u_int8_t peer, u_int64_t ref, u_int64_t id, u_int32_t color,
  * are as in vigil_chat_reply() and a hash of 0 means it replies to nothing.
  */
 int
-vigil_chat_topic_send(u_int8_t peer, u_int64_t ref, u_int64_t id,
-    u_int8_t author, u_int64_t hash, const char *text, size_t len)
+vigil_chat_topic_send(u_int64_t flock, u_int8_t peer, u_int64_t ref,
+    u_int64_t id, u_int8_t author, u_int64_t hash, const char *text,
+    size_t len)
 {
 	int			ret;
 	struct chat_quote	quote;
@@ -1251,7 +1388,7 @@ vigil_chat_topic_send(u_int8_t peer, u_int64_t ref, u_int64_t id,
 	quote.author = author;
 
 	ret = chat_command_queue(CHAT_COMMAND_SEND,
-	    peer, ref, &quote, &topic, NULL, text, len);
+	    flock, peer, ref, &quote, &topic, NULL, text, len);
 
 	return (ret);
 }
@@ -1261,9 +1398,9 @@ vigil_chat_topic_send(u_int8_t peer, u_int64_t ref, u_int64_t id,
  * in members for every member. A peer that is not in it is no longer.
  */
 int
-vigil_chat_group_roster(u_int8_t peer, u_int64_t ref, u_int64_t id,
-    u_int32_t serial, int state, const u_int8_t *members, const char *name,
-    size_t len)
+vigil_chat_group_roster(u_int64_t flock, u_int8_t peer, u_int64_t ref,
+    u_int64_t id, u_int32_t serial, int state, const u_int8_t *members,
+    const char *name, size_t len)
 {
 	int			ret;
 	struct chat_group	group;
@@ -1281,12 +1418,11 @@ vigil_chat_group_roster(u_int8_t peer, u_int64_t ref, u_int64_t id,
 	group.id = id;
 	group.state = state;
 	group.serial = serial;
-	group.owner = chat_local();
 	group.type = VIGIL_CHAT_TYPE_ROSTER;
 	memcpy(group.members, members, sizeof(group.members));
 
 	ret = chat_command_queue(CHAT_COMMAND_SEND,
-	    peer, ref, NULL, NULL, &group, name, len);
+	    flock, peer, ref, NULL, NULL, &group, name, len);
 
 	return (ret);
 }
@@ -1295,7 +1431,8 @@ vigil_chat_group_roster(u_int8_t peer, u_int64_t ref, u_int64_t id,
  * Queue a leave for the group with the given id that the given peer owns.
  */
 int
-vigil_chat_group_leave(u_int8_t owner, u_int64_t ref, u_int64_t id)
+vigil_chat_group_leave(u_int64_t flock, u_int8_t owner, u_int64_t ref,
+    u_int64_t id)
 {
 	int			ret;
 	struct chat_group	group;
@@ -1310,7 +1447,7 @@ vigil_chat_group_leave(u_int8_t owner, u_int64_t ref, u_int64_t id)
 	group.type = VIGIL_CHAT_TYPE_LEAVE;
 
 	ret = chat_command_queue(CHAT_COMMAND_SEND,
-	    owner, ref, NULL, NULL, &group, NULL, 0);
+	    flock, owner, ref, NULL, NULL, &group, NULL, 0);
 
 	return (ret);
 }
@@ -1321,9 +1458,9 @@ vigil_chat_group_leave(u_int8_t owner, u_int64_t ref, u_int64_t id)
  * as in vigil_chat_reply() and a hash of 0 means it replies to nothing.
  */
 int
-vigil_chat_group_send(u_int8_t peer, u_int64_t ref, u_int8_t owner,
-    u_int64_t id, u_int32_t serial, u_int64_t tid, u_int8_t author,
-    u_int64_t hash, const char *text, size_t len)
+vigil_chat_group_send(u_int64_t flock, u_int8_t peer, u_int64_t ref,
+    u_int8_t owner, u_int64_t id, u_int32_t serial, u_int64_t tid,
+    u_int8_t author, u_int64_t hash, const char *text, size_t len)
 {
 	int			ret;
 	size_t			max;
@@ -1360,7 +1497,7 @@ vigil_chat_group_send(u_int8_t peer, u_int64_t ref, u_int8_t owner,
 	quote.author = author;
 
 	ret = chat_command_queue(CHAT_COMMAND_SEND,
-	    peer, ref, &quote, &topic, &group, text, len);
+	    flock, peer, ref, &quote, &topic, &group, text, len);
 
 	return (ret);
 }
@@ -1370,9 +1507,9 @@ vigil_chat_group_send(u_int8_t peer, u_int64_t ref, u_int8_t owner,
  * the given peer, no name removes the topic. Serial is that of our roster.
  */
 int
-vigil_chat_group_topic(u_int8_t peer, u_int64_t ref, u_int64_t id,
-    u_int32_t serial, u_int64_t tid, u_int32_t color, const char *name,
-    size_t len)
+vigil_chat_group_topic(u_int64_t flock, u_int8_t peer, u_int64_t ref,
+    u_int64_t id, u_int32_t serial, u_int64_t tid, u_int32_t color,
+    const char *name, size_t len)
 {
 	int			ret;
 	struct chat_group	group;
@@ -1389,7 +1526,6 @@ vigil_chat_group_topic(u_int8_t peer, u_int64_t ref, u_int64_t id,
 
 	group.id = id;
 	group.serial = serial;
-	group.owner = chat_local();
 	group.type = VIGIL_CHAT_TYPE_TEXT;
 
 	topic.id = tid;
@@ -1397,7 +1533,7 @@ vigil_chat_group_topic(u_int8_t peer, u_int64_t ref, u_int64_t id,
 	topic.color = color & 0xffffff;
 
 	ret = chat_command_queue(CHAT_COMMAND_SEND,
-	    peer, ref, NULL, &topic, &group, name, len);
+	    flock, peer, ref, NULL, &topic, &group, name, len);
 
 	return (ret);
 }
@@ -1406,8 +1542,8 @@ vigil_chat_group_topic(u_int8_t peer, u_int64_t ref, u_int64_t id,
  * Queue a retract for the data with the given hash for the given peer.
  */
 int
-vigil_chat_retract(u_int8_t peer, u_int64_t ref, u_int64_t tid,
-    u_int64_t hash)
+vigil_chat_retract(u_int64_t flock, u_int8_t peer, u_int64_t ref,
+    u_int64_t tid, u_int64_t hash)
 {
 	int			ret;
 	struct chat_quote	quote;
@@ -1424,7 +1560,7 @@ vigil_chat_retract(u_int8_t peer, u_int64_t ref, u_int64_t tid,
 	quote.retract = 1;
 
 	ret = chat_command_queue(CHAT_COMMAND_SEND,
-	    peer, ref, &quote, &topic, NULL, NULL, 0);
+	    flock, peer, ref, &quote, &topic, NULL, NULL, 0);
 
 	return (ret);
 }
@@ -1433,8 +1569,9 @@ vigil_chat_retract(u_int8_t peer, u_int64_t ref, u_int64_t tid,
  * Queue a retract for the data with the given hash in the given group.
  */
 int
-vigil_chat_group_retract(u_int8_t peer, u_int64_t ref, u_int8_t owner,
-    u_int64_t id, u_int32_t serial, u_int64_t tid, u_int64_t hash)
+vigil_chat_group_retract(u_int64_t flock, u_int8_t peer, u_int64_t ref,
+    u_int8_t owner, u_int64_t id, u_int32_t serial, u_int64_t tid,
+    u_int64_t hash)
 {
 	int			ret;
 	struct chat_quote	quote;
@@ -1460,30 +1597,33 @@ vigil_chat_group_retract(u_int8_t peer, u_int64_t ref, u_int8_t owner,
 	group.type = VIGIL_CHAT_TYPE_TEXT;
 
 	ret = chat_command_queue(CHAT_COMMAND_SEND,
-	    peer, ref, &quote, &topic, &group, NULL, 0);
+	    flock, peer, ref, &quote, &topic, &group, NULL, 0);
 
 	return (ret);
 }
 
 /*
- * Tell the owner and the given members of the given group we are typing
- * in it and the given topic, an id of 0 means we are not typing in any
- * group and a topic of 0 in none of its topics.
+ * Tell the owner and the given members of the given group in the given
+ * flock we are typing in it and the given topic, an id of 0 means we are
+ * not typing in any group and a topic of 0 in none of its topics.
  */
 void
-vigil_chat_group_typing(u_int8_t owner, u_int64_t id, u_int64_t topic,
-    const u_int8_t *members)
+vigil_chat_group_typing(u_int64_t flock, u_int8_t owner, u_int64_t id,
+    u_int64_t topic, const u_int8_t *members)
 {
 	PRECOND(id == 0 || (owner > 0 && owner < KYRKA_PEERS_PER_FLOCK));
 	PRECOND(id == 0 || members != NULL);
 
 	if (id == 0) {
+		flock = 0;
 		owner = 0;
 		topic = 0;
 	}
 
 	vigil_lock(&lock);
+
 	typing_owner = owner;
+	typing_flock = flock;
 	typing_group = id;
 	typing_topic = topic;
 
@@ -1492,8 +1632,8 @@ vigil_chat_group_typing(u_int8_t owner, u_int64_t id, u_int64_t topic,
 	} else {
 		memcpy(typing_members, members, sizeof(typing_members));
 	}
-	vigil_unlock(&lock);
 
+	vigil_unlock(&lock);
 	vigil_wake_signal();
 }
 
@@ -1501,8 +1641,8 @@ vigil_chat_group_typing(u_int8_t owner, u_int64_t id, u_int64_t topic,
  * Send data to our peer.
  */
 int
-vigil_chat_data_send(u_int8_t peer, u_int64_t ref, int kind, const char *name,
-    const void *data, size_t len)
+vigil_chat_data_send(u_int64_t flock, u_int8_t peer, u_int64_t ref, int kind,
+    const char *name, const void *data, size_t len)
 {
 	int		ret;
 
@@ -1511,7 +1651,7 @@ vigil_chat_data_send(u_int8_t peer, u_int64_t ref, int kind, const char *name,
 	PRECOND(data != NULL);
 	PRECOND(len > 0 && len <= VIGIL_CHAT_DATA_MAX);
 
-	ret = chat_data_queue(peer, ref, NULL, 0, kind, name, data, len);
+	ret = chat_data_queue(flock, peer, ref, NULL, 0, kind, name, data, len);
 
 	return (ret);
 }
@@ -1521,8 +1661,8 @@ vigil_chat_data_send(u_int8_t peer, u_int64_t ref, int kind, const char *name,
  * not 0, serial is that of the roster we know.
  */
 int
-vigil_chat_group_data_send(u_int8_t peer, u_int64_t ref, u_int8_t owner,
-    u_int64_t id, u_int32_t serial, u_int64_t topic, int kind,
+vigil_chat_group_data_send(u_int64_t flock, u_int8_t peer, u_int64_t ref,
+    u_int8_t owner, u_int64_t id, u_int32_t serial, u_int64_t topic, int kind,
     const char *name, const void *data, size_t len)
 {
 	int			ret;
@@ -1541,7 +1681,8 @@ vigil_chat_group_data_send(u_int8_t peer, u_int64_t ref, u_int8_t owner,
 	group.owner = owner;
 	group.serial = serial;
 
-	ret = chat_data_queue(peer, ref, &group, topic, kind, name, data, len);
+	ret = chat_data_queue(flock,
+	    peer, ref, &group, topic, kind, name, data, len);
 
 	return (ret);
 }
@@ -1550,8 +1691,8 @@ vigil_chat_group_data_send(u_int8_t peer, u_int64_t ref, u_int8_t owner,
  * Send data to our peer in the given topic.
  */
 int
-vigil_chat_topic_data_send(u_int8_t peer, u_int64_t ref, u_int64_t id,
-    int kind, const char *name, const void *data, size_t len)
+vigil_chat_topic_data_send(u_int64_t flock, u_int8_t peer, u_int64_t ref,
+    u_int64_t id, int kind, const char *name, const void *data, size_t len)
 {
 	int		ret;
 
@@ -1561,7 +1702,8 @@ vigil_chat_topic_data_send(u_int8_t peer, u_int64_t ref, u_int64_t id,
 	PRECOND(data != NULL);
 	PRECOND(len > 0 && len <= VIGIL_CHAT_DATA_MAX);
 
-	ret = chat_data_queue(peer, ref, NULL, id, kind, name, data, len);
+	ret = chat_data_queue(flock,
+	    peer, ref, NULL, id, kind, name, data, len);
 
 	return (ret);
 }
@@ -1630,7 +1772,7 @@ vigil_chat_busy(void)
  * Drop any and all messages we hold for the given peer.
  */
 int
-vigil_chat_forget(u_int8_t peer)
+vigil_chat_forget(u_int64_t flock, u_int8_t peer)
 {
 	int		ret;
 
@@ -1640,32 +1782,41 @@ vigil_chat_forget(u_int8_t peer)
 		return (0);
 
 	ret = chat_command_queue(CHAT_COMMAND_FORGET,
-	    peer, 0, NULL, NULL, NULL, NULL, 0);
+	    flock, peer, 0, NULL, NULL, NULL, NULL, 0);
 
 	return (ret);
 }
 
 /*
- * Tell the platform the safety code exchange with the given peer gave
- * us its input, the platform obtains the input with vigil_safety_get().
+ * Tell the platform the safety code exchange with the given peer in the
+ * given slot gave us its input, the platform obtains the input with
+ * vigil_safety_get().
  */
 void
-vigil_chat_safety(u_int8_t peer)
+vigil_chat_safety(u_int8_t slot, u_int8_t peer)
 {
+	struct chat_peer	*who;
+
+	PRECOND(slot < VIGIL_GOSPEL_MAX);
 	PRECOND(peer > 0 && peer < KYRKA_PEERS_PER_FLOCK);
 
-	if (chat_event_queue(CHAT_EVENT_SAFETY, &peers[peer], 0, NULL, 0) == -1) {
+	if (!gospels[slot].running)
+		return;
+
+	who = &gospels[slot].peers[peer];
+
+	if (chat_event_queue(CHAT_EVENT_SAFETY, who, 0, NULL, 0) == -1) {
 		vigil_log(LOG_NOTICE, "[chat] %02x no room to tell our "
 		    "platform about the safety code", peer);
 	}
 }
 
 /*
- * Our additional kdf input for the given peer changed, tear down our
- * tunnel with it.
+ * Our additional kdf input for the given peer in the given flock changed,
+ * tear down our tunnel with it.
  */
 void
-vigil_chat_additional_input(u_int8_t peer)
+vigil_chat_additional_input(u_int64_t flock, u_int8_t peer)
 {
 	int		ret;
 
@@ -1675,7 +1826,7 @@ vigil_chat_additional_input(u_int8_t peer)
 		return;
 
 	ret = chat_command_queue(CHAT_COMMAND_INPUT,
-	    peer, 0, NULL, NULL, NULL, NULL, 0);
+	    flock, peer, 0, NULL, NULL, NULL, NULL, 0);
 	if (ret == -1) {
 		vigil_log(LOG_NOTICE,
 		    "[chat] %02x no room, tunnel keeps the old input", peer);
@@ -1686,7 +1837,7 @@ vigil_chat_additional_input(u_int8_t peer)
  * Drop the message with the given ref we hold for the given peer.
  */
 int
-vigil_chat_drop(u_int8_t peer, u_int64_t ref)
+vigil_chat_drop(u_int64_t flock, u_int8_t peer, u_int64_t ref)
 {
 	int		ret;
 
@@ -1696,7 +1847,7 @@ vigil_chat_drop(u_int8_t peer, u_int64_t ref)
 		return (0);
 
 	ret = chat_command_queue(CHAT_COMMAND_DROP,
-	    peer, ref, NULL, NULL, NULL, NULL, 0);
+	    flock, peer, ref, NULL, NULL, NULL, NULL, 0);
 
 	return (ret);
 }
@@ -1710,83 +1861,125 @@ vigil_chat_stored(u_int64_t token)
 	int		ret;
 
 	ret = chat_command_queue(CHAT_COMMAND_STORED,
-	    0, token, NULL, NULL, NULL, NULL, 0);
+	    0, 0, token, NULL, NULL, NULL, NULL, 0);
 
 	return (ret);
 }
 
 /*
- * Mark the chat with the given peer as open or closed, we keep signaling
- * the peer while it is open.
+ * Mark the chat with the given peer in the given flock as open or closed,
+ * we keep signaling the peer while it is open.
  */
 void
-vigil_chat_open(u_int8_t peer, int on)
+vigil_chat_open(u_int64_t flock, u_int8_t peer, int on)
 {
+	u_int8_t	slot;
+
 	PRECOND(peer > 0 && peer < KYRKA_PEERS_PER_FLOCK);
 	PRECOND(on == 0 || on == 1);
 
-	vigil_atomic_write(&opened[peer], on);
+	if (vigil_gospel_slot(flock, &slot) == -1) {
+		chat_desktop_bit(desktop_opened, flock, peer, on);
+		vigil_wake_signal();
+		return;
+	}
+
+	vigil_atomic_write(&marks[slot].opened[peer], on);
+	vigil_gospel_release();
+
 	vigil_wake_signal();
 }
 
 /*
- * Accept the given peer or not, we ignore a peer we did not accept.
+ * Accept the given peer in the given flock or not, we ignore a peer we did
+ * not accept.
  */
 void
-vigil_chat_accept(u_int8_t peer, int on)
+vigil_chat_accept(u_int64_t flock, u_int8_t peer, int on)
 {
+	u_int8_t	slot;
+
 	PRECOND(peer > 0 && peer < KYRKA_PEERS_PER_FLOCK);
 	PRECOND(on == 0 || on == 1);
 
-	vigil_atomic_write(&accepted[peer], on);
+	if (vigil_gospel_slot(flock, &slot) == -1)
+		return;
+
+	vigil_atomic_write(&marks[slot].accepted[peer], on);
+	vigil_gospel_release();
+
 	vigil_wake_signal();
 }
 
 /*
- * Ignore the given peer or not. We never talk to a peer we ignore and never
- * ask our platform about it, even if we accepted it.
+ * Ignore the given peer in the given flock or not. We never talk to a peer
+ * we ignore and never ask our platform about it, even if we accepted it.
  */
 void
-vigil_chat_ignore(u_int8_t peer, int on)
+vigil_chat_ignore(u_int64_t flock, u_int8_t peer, int on)
 {
+	u_int8_t	slot;
+
 	PRECOND(peer > 0 && peer < KYRKA_PEERS_PER_FLOCK);
 	PRECOND(on == 0 || on == 1);
 
-	vigil_atomic_write(&ignored[peer], on);
+	if (vigil_gospel_slot(flock, &slot) == -1)
+		return;
+
+	vigil_atomic_write(&marks[slot].ignored[peer], on);
+	vigil_gospel_release();
+
 	vigil_wake_signal();
 }
 
 /*
- * Returns 1 if we accepted the given peer, may be called from any thread.
+ * Returns 1 if we accepted the given peer in the given slot, may be called
+ * from any thread.
  */
 int
-vigil_chat_accepted(u_int8_t peer)
+vigil_chat_accepted(u_int8_t slot, u_int8_t peer)
 {
+	PRECOND(slot < VIGIL_GOSPEL_MAX);
 	PRECOND(peer > 0 && peer < KYRKA_PEERS_PER_FLOCK);
 
-	if (vigil_atomic_read(&ignored[peer]))
+	if (vigil_atomic_read(&marks[slot].ignored[peer]))
 		return (0);
 
-	return (vigil_atomic_read(&accepted[peer]));
+	return (vigil_atomic_read(&marks[slot].accepted[peer]));
 }
 
 /*
- * Tell the given peer if we are typing, in the given topic if it is not 0.
+ * Tell the given peer in the given flock if we are typing, in the given
+ * topic if it is not 0.
  */
 void
-vigil_chat_typing(u_int8_t peer, u_int64_t topic, int on)
+vigil_chat_typing(u_int64_t flock, u_int8_t peer, u_int64_t topic, int on)
 {
+	u_int8_t	slot;
+
 	PRECOND(peer > 0 && peer < KYRKA_PEERS_PER_FLOCK);
 	PRECOND(on == 0 || on == 1);
 
 	if (on == 0)
 		topic = 0;
 
+	if (vigil_gospel_slot(flock, &slot) == -1) {
+		vigil_lock(&lock);
+		typing_topic = topic;
+		vigil_unlock(&lock);
+
+		chat_desktop_bit(desktop_typing, flock, peer, on);
+		vigil_wake_signal();
+		return;
+	}
+
 	vigil_lock(&lock);
 	typing_topic = topic;
 	vigil_unlock(&lock);
 
-	vigil_atomic_write(&typing[peer], on);
+	vigil_atomic_write(&marks[slot].typing[peer], on);
+	vigil_gospel_release();
+
 	vigil_wake_signal();
 }
 
@@ -1851,7 +2044,7 @@ vigil_chat_avatar(const void *data, size_t len)
  * up a call with the given peer.
  */
 int
-vigil_chat_call(int op, u_int8_t peer)
+vigil_chat_call(int op, u_int64_t flock, u_int8_t peer)
 {
 	int		ret;
 
@@ -1862,7 +2055,7 @@ vigil_chat_call(int op, u_int8_t peer)
 	PRECOND(peer > 0 && peer < KYRKA_PEERS_PER_FLOCK);
 
 	ret = chat_command_queue(CHAT_COMMAND_CALL,
-	    peer, op, NULL, NULL, NULL, NULL, 0);
+	    flock, peer, op, NULL, NULL, NULL, NULL, 0);
 
 	return (ret);
 }
@@ -1912,7 +2105,7 @@ vigil_chat_companion_resync(int done)
 	if (companion_role != VIGIL_COMPANION_PHONE)
 		return (-1);
 
-	ret = chat_command_queue(CHAT_COMMAND_SYNC, 0,
+	ret = chat_command_queue(CHAT_COMMAND_SYNC, 0, 0,
 	    done ? CHAT_SYNC_DONE : CHAT_SYNC_RESET, NULL, NULL, NULL, NULL, 0);
 
 	return (ret);
@@ -1930,7 +2123,7 @@ vigil_chat_companion_unsync(void)
 	if (companion_role != VIGIL_COMPANION_DESKTOP)
 		return (-1);
 
-	ret = chat_command_queue(CHAT_COMMAND_SYNC, 0, CHAT_SYNC_RESET,
+	ret = chat_command_queue(CHAT_COMMAND_SYNC, 0, 0, CHAT_SYNC_RESET,
 	    NULL, NULL, NULL, NULL, 0);
 
 	return (ret);
@@ -2042,17 +2235,20 @@ vigil_chat_events(char *buf, size_t len)
 }
 
 /*
- * Append the state of our chats to the status, this includes our peers and
- * our tunnels.
+ * Append the state of our chats to the status, this includes the chats of
+ * each Gospel configuration, our peers and our tunnels.
  */
 void
 vigil_chat_status(struct vigil_buf *buf)
 {
 	int			idx;
+	u_int8_t		slot;
 	struct chat_tunnel	*tun;
 	struct chat_msg		*msg;
 	struct chat_peer	*peer;
 	const char		*link;
+	struct chat_gospel	*gospel;
+	struct vigil_config	*cfg;
 	size_t			queued;
 	int			first, online, p2p;
 	char			name[VIGIL_CHAT_NICK_MAX + 1];
@@ -2062,18 +2258,13 @@ vigil_chat_status(struct vigil_buf *buf)
 	if (!running)
 		return;
 
-	if (vigil->gospel == NULL) {
-		vigil_buf_appendf(buf, ",\"chat\":{\"session\":%" PRIu64,
-		    session);
+	vigil_buf_appendf(buf, ",\"chat\":{\"session\":%" PRIu64, session);
+
+	if (vigil->config->mode == VIGIL_MODE_COMPANION) {
 		chat_companion_status(buf);
 		vigil_buf_appendf(buf, "}");
 		return;
 	}
-
-	vigil_buf_appendf(buf,
-	    ",\"chat\":{\"session\":%" PRIu64 ",\"alive\":%s,\"id\":\"%02x\"",
-	    session, signaling.last != 0 ? "true" : "false",
-	    vigil->gospel->spi & 0xff);
 
 	vigil_lock(&lock);
 	memcpy(name, nick, sizeof(name));
@@ -2081,59 +2272,89 @@ vigil_chat_status(struct vigil_buf *buf)
 
 	vigil_buf_appendf(buf, ",\"nick\":");
 	vigil_buf_quote(buf, name);
-	vigil_buf_appendf(buf, ",\"signed\":");
-	vigil_buf_quote(buf, named ? vigil->gospel->instance : "");
 	vigil_safety_status(buf);
-	vigil_buf_appendf(buf, ",\"liturgies\":[");
 
-	vigil_status_liturgy(buf, "chat", signaling.group,
-	    &signaling.cathedral, signaling.rx, signaling.tx);
+	first = 1;
+	vigil_buf_appendf(buf, ",\"gospels\":[");
+
+	for (slot = 0; slot < VIGIL_GOSPEL_MAX; slot++) {
+		gospel = &gospels[slot];
+		cfg = vigil->gospels[slot];
+
+		if (!gospel->running)
+			continue;
+
+		vigil_buf_appendf(buf,
+		    "%s{\"flock\":\"%" PRIx64 "\",\"session\":%" PRIu64
+		    ",\"alive\":%s,\"id\":\"%" PRIx64 "-%02x\",\"signed\":",
+		    first ? "" : ",", gospel->flock, gospel->session,
+		    gospel->signaling.last != 0 ? "true" : "false",
+		    gospel->flock, gospel->local);
+		vigil_buf_quote(buf, gospel->named ? cfg->instance : "");
+
+		vigil_buf_appendf(buf, ",\"liturgies\":[");
+		vigil_status_liturgy(buf, "chat", gospel->signaling.group,
+		    &gospel->signaling.cathedral, gospel->signaling.rx,
+		    gospel->signaling.tx);
+		vigil_buf_appendf(buf, "]}");
+
+		first = 0;
+	}
 
 	first = 1;
 	vigil_buf_appendf(buf, "],\"peers\":[");
 
-	for (idx = 1; idx < KYRKA_PEERS_PER_FLOCK; idx++) {
-		peer = &peers[idx];
-		tun = peer->tunnel;
+	for (slot = 0; slot < VIGIL_GOSPEL_MAX; slot++) {
+		gospel = &gospels[slot];
 
-		queued = 0;
-		TAILQ_FOREACH(msg, &peer->outbox, wlist)
-			queued++;
-
-		if (peer->present == 0 && tun == NULL && queued == 0)
+		if (!gospel->running)
 			continue;
 
-		chat_tunnel_state(tun, &link, &online, &p2p);
-		vigil_buf_appendf(buf,
-		    "%s{\"id\":\"%02x\",\"present\":%s,\"online\":%s",
-		    first ? "" : ",", idx, peer->present ? "true" : "false",
-		    online ? "true" : "false");
+		for (idx = 1; idx < KYRKA_PEERS_PER_FLOCK; idx++) {
+			peer = &gospel->peers[idx];
+			tun = peer->tunnel;
 
-		vigil_buf_appendf(buf,
-		    ",\"link\":\"%s\",\"typing\":%s,\"p2p\":%s"
-		    ",\"queued\":%zu,\"nick\":", link,
-		    online && tun->typing ? "true" : "false",
-		    p2p ? "true" : "false", queued);
+			queued = 0;
+			TAILQ_FOREACH(msg, &peer->outbox, wlist)
+				queued++;
 
-		vigil_buf_quote(buf, peer->nick);
-		vigil_buf_appendf(buf, ",\"signed\":");
-		vigil_buf_quote(buf, peer->name);
+			if (peer->present == 0 && tun == NULL && queued == 0)
+				continue;
 
-		if (online && tun->typing_group != 0) {
-			vigil_buf_appendf(buf, ",\"typing_owner\":\"%02x\""
-			    ",\"typing_group\":\"%016" PRIx64 "\"",
-			    tun->typing_owner, tun->typing_group);
-		}
-
-		if (online && tun->typing_topic != 0) {
+			chat_tunnel_state(tun, &link, &online, &p2p);
 			vigil_buf_appendf(buf,
-			    ",\"typing_topic\":\"%016" PRIx64 "\"",
-			    tun->typing_topic);
+			    "%s{\"id\":\"%" PRIx64 "-%02x\",\"present\":%s"
+			    ",\"online\":%s", first ? "" : ",", gospel->flock,
+			    idx, peer->present ? "true" : "false",
+			    online ? "true" : "false");
+
+			vigil_buf_appendf(buf,
+			    ",\"link\":\"%s\",\"typing\":%s,\"p2p\":%s"
+			    ",\"queued\":%zu,\"nick\":", link,
+			    online && tun->typing ? "true" : "false",
+			    p2p ? "true" : "false", queued);
+
+			vigil_buf_quote(buf, peer->nick);
+			vigil_buf_appendf(buf, ",\"signed\":");
+			vigil_buf_quote(buf, peer->name);
+
+			if (online && tun->typing_group != 0) {
+				vigil_buf_appendf(buf,
+				    ",\"typing_owner\":\"%02x\""
+				    ",\"typing_group\":\"%016" PRIx64 "\"",
+				    tun->typing_owner, tun->typing_group);
+			}
+
+			if (online && tun->typing_topic != 0) {
+				vigil_buf_appendf(buf,
+				    ",\"typing_topic\":\"%016" PRIx64 "\"",
+				    tun->typing_topic);
+			}
+
+			vigil_buf_appendf(buf, "}");
+
+			first = 0;
 		}
-
-		vigil_buf_appendf(buf, "}");
-
-		first = 0;
 	}
 
 	vigil_buf_appendf(buf, "]");
@@ -2142,19 +2363,23 @@ vigil_chat_status(struct vigil_buf *buf)
 }
 
 /*
- * Setup a liturgy.
+ * Setup a liturgy for the Gospel configuration in the given slot.
  */
 static int
-chat_liturgy_init(struct chat_liturgy *lit, u_int16_t id)
+chat_liturgy_init(struct chat_liturgy *lit, u_int8_t slot, u_int16_t id)
 {
 	struct kyrka_cathedral_cfg	cfg;
 	struct vigil_config		*gospel;
 
 	PRECOND(lit != NULL);
 	PRECOND(lit->ctx == NULL);
+	PRECOND(slot < VIGIL_GOSPEL_MAX);
+	PRECOND(vigil->gospels[slot] != NULL);
 
-	gospel = vigil->gospel;
+	gospel = vigil->gospels[slot];
 	memset(lit, 0, sizeof(*lit));
+
+	lit->slot = slot;
 
 	lit->io.fd = vigil_socket_udp();
 	if (lit->io.fd == -1)
@@ -2187,34 +2412,40 @@ chat_liturgy_init(struct chat_liturgy *lit, u_int16_t id)
 }
 
 /*
- * Let the cathedral know which peers we are interested in.
+ * Let the cathedral of the given Gospel configuration know which peers we
+ * are interested in.
  */
 static void
-chat_liturgy_signal(void)
+chat_liturgy_signal(struct chat_gospel *gospel)
 {
-	int		idx;
-	u_int8_t	want[KYRKA_PEERS_PER_FLOCK];
+	int			idx;
+	struct chat_liturgy	*lit;
+	u_int8_t		want[KYRKA_PEERS_PER_FLOCK];
 
-	if (signaling.cathedral.addr.sin_port == 0)
+	PRECOND(gospel != NULL);
+
+	lit = &gospel->signaling;
+
+	if (lit->cathedral.addr.sin_port == 0)
 		return;
 
 	for (idx = 0; idx < KYRKA_PEERS_PER_FLOCK; idx++)
-		want[idx] = chat_signal_check(&peers[idx]);
+		want[idx] = chat_signal_check(&gospel->peers[idx]);
 
-	if (signaling.notify != 0 && vigil->now < signaling.notify) {
-		if (!memcmp(want, sent, sizeof(want)))
+	if (lit->notify != 0 && vigil->now < lit->notify) {
+		if (!memcmp(want, gospel->sent, sizeof(want)))
 			return;
-		if ((vigil->now - signaling.updated) < VIGIL_CALL_NOTIFY_MIN)
+		if ((vigil->now - lit->updated) < VIGIL_CALL_NOTIFY_MIN)
 			return;
 	}
 
-	signaling.updated = vigil->now;
-	signaling.notify = vigil->now + VIGIL_CALL_NOTIFY;
-	memcpy(sent, want, sizeof(sent));
+	lit->updated = vigil->now;
+	lit->notify = vigil->now + VIGIL_CALL_NOTIFY;
+	memcpy(gospel->sent, want, sizeof(gospel->sent));
 
-	if (kyrka_cathedral_liturgy(signaling.ctx, want, sizeof(want)) == -1) {
+	if (kyrka_cathedral_liturgy(lit->ctx, want, sizeof(want)) == -1) {
 		vigil_log(LOG_NOTICE, "[chat] kyrka_cathedral_liturgy: %d",
-		    kyrka_last_error(signaling.ctx));
+		    kyrka_last_error(lit->ctx));
 	}
 }
 
@@ -2232,10 +2463,10 @@ chat_liturgy_cathedral_check(struct chat_liturgy *lit)
 		return;
 
 	if (lit->cathedral.addr.sin_port == 0) {
-		if (vigil_call_cathedral_pick(&lit->cathedral) == -1)
+		if (vigil_call_cathedral_pick(lit->slot, &lit->cathedral) == -1)
 			return;
 
-		if (lit == &signaling)
+		if (lit->group == VIGIL_CHAT_SIGNAL_GROUP)
 			lit->cathedral.timeout = VIGIL_CALL_TIMEOUT_INIT;
 
 		vigil_log(LOG_INFO, "[chat] liturgy %04x via %s", lit->group,
@@ -2255,17 +2486,17 @@ chat_liturgy_cathedral_check(struct chat_liturgy *lit)
 	lit->last = 0;
 	lit->cathedral.alive = 0;
 
-	if (lit == &signaling) {
+	if (lit->group == VIGIL_CHAT_SIGNAL_GROUP) {
 		for (idx = 0; idx < KYRKA_PEERS_PER_FLOCK; idx++)
-			peers[idx].present = 0;
+			gospels[lit->slot].peers[idx].present = 0;
 	}
 
-	if (vigil_call_cathedral_pick(&lit->cathedral) == -1) {
+	if (vigil_call_cathedral_pick(lit->slot, &lit->cathedral) == -1) {
 		lit->cathedral.last = vigil->now;
 		return;
 	}
 
-	if (lit == &signaling)
+	if (lit->group == VIGIL_CHAT_SIGNAL_GROUP)
 		lit->cathedral.timeout = VIGIL_CALL_TIMEOUT_INIT;
 
 	vigil_log(LOG_NOTICE, "[chat] liturgy %04x switching to %s",
@@ -2377,14 +2608,15 @@ chat_liturgy_event(KYRKA *ctx, union kyrka_event *evt, void *udata)
 {
 	struct chat_liturgy	*lit;
 	int			idx;
-	u_int8_t		local;
+	struct chat_peer	*peer;
+	struct chat_gospel	*gospel;
 
 	PRECOND(ctx != NULL);
 	PRECOND(evt != NULL);
 	PRECOND(udata != NULL);
 
 	lit = udata;
-	local = vigil->gospel->spi & 0xff;
+	gospel = &gospels[lit->slot];
 
 	if (evt->type == KYRKA_EVENT_LITURGY_RECEIVED ||
 	    evt->type == KYRKA_EVENT_REMEMBRANCE_RECEIVED) {
@@ -2402,23 +2634,25 @@ chat_liturgy_event(KYRKA *ctx, union kyrka_event *evt, void *udata)
 	switch (evt->type) {
 	case KYRKA_EVENT_LITURGY_RECEIVED:
 		for (idx = 1; idx < KYRKA_PEERS_PER_FLOCK; idx++) {
-			if (idx == local)
+			if (idx == gospel->local)
 				continue;
 
 			/*
 			 * The cathedral pushes us each peer that signals us
-			 * on its own, peers expire in vigil_chat_update().
+			 * on its own, peers expire in chat_update().
 			 */
 			if (evt->liturgy.peers[idx] == 0)
 				continue;
 
-			if (peers[idx].present == 0) {
+			peer = &gospel->peers[idx];
+
+			if (peer->present == 0) {
 				vigil_log(LOG_INFO,
 				    "[chat] %02x is around", idx);
 			}
 
-			peers[idx].present = 1;
-			peers[idx].pushed = vigil->now;
+			peer->present = 1;
+			peer->pushed = vigil->now;
 		}
 		break;
 	case KYRKA_EVENT_LOGMSG:
@@ -2488,7 +2722,7 @@ chat_tunnel_check(struct chat_peer *peer)
 	if (chat_tunnel_online(tun) && chat_signal_check(peer))
 		want = 1;
 
-	if (!vigil_chat_accepted(peer->id))
+	if (!vigil_chat_accepted(peer->slot, peer->id))
 		want = 0;
 
 	if (want == 0) {
@@ -2500,7 +2734,7 @@ chat_tunnel_check(struct chat_peer *peer)
 	if (tun == NULL) {
 		memset(&cat, 0, sizeof(cat));
 
-		if (vigil_call_cathedral_pick(&cat) == -1)
+		if (vigil_call_cathedral_pick(peer->slot, &cat) == -1)
 			return;
 
 		tun = chat_tunnel_new(peer, &cat);
@@ -2529,7 +2763,7 @@ chat_tunnel_new(struct chat_peer *peer, struct vigil_cathedral *cathedral)
 	if (peer == &companion)
 		gospel = companion_cfg;
 	else
-		gospel = vigil->gospel;
+		gospel = vigil->gospels[peer->slot];
 
 	tun = calloc(1, sizeof(*tun));
 	if (tun == NULL)
@@ -2555,8 +2789,10 @@ chat_tunnel_new(struct chat_peer *peer, struct vigil_cathedral *cathedral)
 	if (tun->ctx == NULL)
 		fatal("failed to create chat context");
 
-	if (peer != &companion)
-		tun->safety = vigil_kyrka_additional_input(tun->ctx, peer->id);
+	if (peer != &companion) {
+		tun->safety = vigil_kyrka_additional_input(tun->ctx,
+		    peer->flock, peer->id);
+	}
 
 	nyfe_random_bytes(&tun->local_uid, sizeof(tun->local_uid));
 
@@ -2649,7 +2885,8 @@ chat_cathedral_check(struct chat_tunnel *tun)
 		return;
 	}
 
-	if (vigil_call_cathedral_pick(&tun->cathedral) == -1) {
+	if (vigil_call_cathedral_pick(tun->peer->slot,
+	    &tun->cathedral) == -1) {
 		tun->cathedral.last = vigil->now;
 		return;
 	}
@@ -2814,8 +3051,8 @@ chat_tunnel_manage(struct chat_tunnel *tun)
 	chat_xfer_run(tun);
 	chat_rxfer_check(tun);
 
-	typed = vigil_atomic_read(&typing[tun->peer->id]);
-	chat_typing_state(tun->peer->id, &owner, &group, &topic);
+	typed = chat_typed(tun->peer);
+	chat_typing_state(tun->peer, &owner, &group, &topic);
 
 	if (!tun->greeted || typed != tun->typed ||
 	    owner != tun->typed_owner || group != tun->typed_group ||
@@ -3526,12 +3763,12 @@ chat_frame_send(struct chat_tunnel *tun, struct chat_msg *msg)
 		    VIGIL_CHAT_FEATURE_REPLY | VIGIL_CHAT_FEATURE_TOPIC |
 		    VIGIL_CHAT_FEATURE_GROUP | VIGIL_CHAT_FEATURE_RETRACT;
 
-		if (named) {
+		if (tun->peer != &companion &&
+		    gospels[tun->peer->slot].named) {
 			hb->features |= VIGIL_CHAT_FEATURE_NAME;
-			memcpy(hb->instance, vigil->gospel->instance,
+			memcpy(hb->instance, tun->cfg->instance,
 			    sizeof(hb->instance));
-			memcpy(hb->signature,
-			    vigil->gospel->name_signature,
+			memcpy(hb->signature, tun->cfg->name_signature,
 			    sizeof(hb->signature));
 		}
 
@@ -3539,9 +3776,9 @@ chat_frame_send(struct chat_tunnel *tun, struct chat_msg *msg)
 			hb->features |= VIGIL_CHAT_FEATURE_AVATAR;
 
 		hb->avatar_have = htobe64(tun->peer->avatar_held);
-		hb->typing = vigil_atomic_read(&typing[tun->peer->id]);
+		hb->typing = chat_typed(tun->peer);
 
-		chat_typing_state(tun->peer->id, &tun->typed_owner,
+		chat_typing_state(tun->peer, &tun->typed_owner,
 		    &tun->typed_group, &tun->typed_topic);
 		hb->typing_owner = tun->typed_owner;
 		hb->typing_group = htobe64(tun->typed_group);
@@ -3713,8 +3950,10 @@ chat_hb_recv(struct chat_tunnel *tun, struct vigil_chat_frame *frame)
 	if (tun->remote_uid == hb->uid)
 		return;
 
-	if (peer == &companion && companion_role == VIGIL_COMPANION_PHONE)
+	if (peer == &companion && companion_role == VIGIL_COMPANION_PHONE) {
 		memset(&companion_phone, 0, sizeof(companion_phone));
+		memset(companion_phones, 0, sizeof(companion_phones));
+	}
 
 	if (peer == &companion && companion_role == VIGIL_COMPANION_DESKTOP)
 		memset(&companion_desktop, 0, sizeof(companion_desktop));
@@ -3760,7 +3999,7 @@ chat_hb_name(struct chat_peer *peer, const struct vigil_chat_hb *hb)
 	if (name[0] == '\0')
 		return;
 
-	if (vigil_config_name_verify(vigil->gospel, peer->id, name,
+	if (vigil_config_name_verify(vigil->gospels[peer->slot], peer->id, name,
 	    hb->signature, sizeof(hb->signature)) == -1) {
 		vigil_log(LOG_NOTICE,
 		    "[chat] %02x sent a name that does not verify", peer->id);
@@ -3906,7 +4145,7 @@ chat_reply_recv(struct chat_tunnel *tun, u_int64_t id,
 	quote.author = reply->author;
 	quote.hash = be64toh(reply->hash);
 
-	if (quote.author == (vigil->gospel->spi & 0xff))
+	if (quote.author == (tun->cfg->spi & 0xff))
 		quote.author = 0;
 
 	if (quote.hash == 0) {
@@ -4024,7 +4263,7 @@ chat_topic_text_recv(struct chat_tunnel *tun, u_int64_t id,
 		return;
 	}
 
-	if (quote.author == (vigil->gospel->spi & 0xff))
+	if (quote.author == (tun->cfg->spi & 0xff))
 		quote.author = 0;
 
 	if (quote.hash == 0) {
@@ -4173,7 +4412,7 @@ chat_group_recv(struct chat_tunnel *tun, u_int64_t id, u_int8_t *data,
 		chat_group_roster(tun, id, &group, wire->data, len);
 		break;
 	case VIGIL_CHAT_TYPE_LEAVE:
-		if (group.owner != (vigil->gospel->spi & 0xff)) {
+		if (group.owner != (tun->cfg->spi & 0xff)) {
 			chat_ack_queue(tun, id);
 			return;
 		}
@@ -4429,6 +4668,7 @@ chat_text_report(struct chat_tunnel *tun, u_int64_t token,
 
 	evt->value = token;
 	evt->peer = tun->peer->id;
+	evt->flock = tun->peer->flock;
 	evt->type = CHAT_EVENT_MESSAGE;
 
 	if (quote != NULL)
@@ -4477,13 +4717,13 @@ chat_signal_check(struct chat_peer *peer)
 	if (peer->id == 0)
 		return (0);
 
-	if (!vigil_chat_accepted(peer->id))
+	if (!vigil_chat_accepted(peer->slot, peer->id))
 		return (0);
 
 	if (chat_outbox_signal(peer))
 		return (1);
 
-	if (vigil_atomic_read(&opened[peer->id]))
+	if (vigil_atomic_read(&marks[peer->slot].opened[peer->id]))
 		return (1);
 
 	if (peer->active != 0 && (vigil->now - peer->active) < CHAT_IDLE)
@@ -4506,7 +4746,7 @@ chat_tunnel_accepted(struct chat_tunnel *tun)
 	if (tun->peer == &companion)
 		return (1);
 
-	return (vigil_chat_accepted(tun->peer->id));
+	return (vigil_chat_accepted(tun->peer->slot, tun->peer->id));
 }
 
 /*
@@ -4518,8 +4758,8 @@ chat_ask_check(struct chat_peer *peer)
 {
 	PRECOND(peer != NULL);
 
-	if (vigil_atomic_read(&ignored[peer->id]) ||
-	    vigil_atomic_read(&accepted[peer->id])) {
+	if (vigil_atomic_read(&marks[peer->slot].ignored[peer->id]) ||
+	    vigil_atomic_read(&marks[peer->slot].accepted[peer->id])) {
 		peer->asked = 0;
 		return;
 	}
@@ -4685,7 +4925,7 @@ chat_outbox_signal(struct chat_peer *peer)
 	if (chat_tunnel_online(peer->tunnel))
 		return (1);
 
-	if (vigil_call_peer(peer->id) & VIGIL_CALL_PEER_ONLINE)
+	if (vigil_call_peer(peer->slot, peer->id) & VIGIL_CALL_PEER_ONLINE)
 		return (1);
 
 	TAILQ_FOREACH(msg, &peer->outbox, wlist) {
@@ -4754,14 +4994,24 @@ chat_outbox_free(struct chat_peer *peer)
 static void
 chat_token_ack(u_int64_t token)
 {
-	int		idx;
+	int			idx;
+	u_int8_t		slot;
+	struct chat_gospel	*gospel;
 
 	if (token == 0)
 		return;
 
-	for (idx = 0; idx < KYRKA_PEERS_PER_FLOCK; idx++) {
-		if (chat_tunnel_ack(peers[idx].tunnel, token) != -1)
-			return;
+	for (slot = 0; slot < VIGIL_GOSPEL_MAX; slot++) {
+		gospel = &gospels[slot];
+
+		if (!gospel->running)
+			continue;
+
+		for (idx = 0; idx < KYRKA_PEERS_PER_FLOCK; idx++) {
+			if (chat_tunnel_ack(gospel->peers[idx].tunnel,
+			    token) != -1)
+				return;
+		}
 	}
 
 	(void)chat_tunnel_ack(companion.tunnel, token);
@@ -4805,7 +5055,7 @@ chat_tunnel_ack(struct chat_tunnel *tun, u_int64_t token)
  * commands or have too many queued up.
  */
 static int
-chat_command_queue(int type, u_int8_t peer, u_int64_t value,
+chat_command_queue(int type, u_int64_t flock, u_int8_t peer, u_int64_t value,
     const struct chat_quote *quote, const struct chat_topic *topic,
     const struct chat_group *group, const void *data, size_t len)
 {
@@ -4818,6 +5068,8 @@ chat_command_queue(int type, u_int8_t peer, u_int64_t value,
 	    type == CHAT_COMMAND_CALL ||
 	    type == CHAT_COMMAND_SYNC ||
 	    type == CHAT_COMMAND_INPUT);
+	PRECOND(flock != 0 || type == CHAT_COMMAND_STORED ||
+	    type == CHAT_COMMAND_SYNC);
 	PRECOND(data != NULL || len == 0);
 	PRECOND(len <= VIGIL_CHAT_MESSAGE_MAX);
 
@@ -4828,6 +5080,7 @@ chat_command_queue(int type, u_int8_t peer, u_int64_t value,
 	cmd->len = len;
 	cmd->type = type;
 	cmd->peer = peer;
+	cmd->flock = flock;
 	cmd->value = value;
 
 	if (quote != NULL)
@@ -4893,8 +5146,9 @@ chat_command_blob(int type, u_int64_t value, const char *json, size_t len,
  * Data we already hold is not copied again.
  */
 static int
-chat_data_queue(u_int8_t peer, u_int64_t value, const struct chat_group *group,
-    u_int64_t topic, int kind, const char *name, const void *data, size_t len)
+chat_data_queue(u_int64_t flock, u_int8_t peer, u_int64_t value,
+    const struct chat_group *group, u_int64_t topic, int kind,
+    const char *name, const void *data, size_t len)
 {
 	int				ret;
 	u_int64_t			id;
@@ -4905,6 +5159,7 @@ chat_data_queue(u_int8_t peer, u_int64_t value, const struct chat_group *group,
 	struct vigil_chat_data_head	head;
 	struct chat_blob		*blob;
 
+	PRECOND(flock != 0);
 	PRECOND(name != NULL);
 	PRECOND(data != NULL);
 	PRECOND(len > 0 && len <= VIGIL_CHAT_DATA_MAX);
@@ -4930,7 +5185,7 @@ chat_data_queue(u_int8_t peer, u_int64_t value, const struct chat_group *group,
 		size += sizeof(topic);
 
 	vigil_lock(&lock);
-	ret = chat_blob_room(peer, value, size);
+	ret = chat_blob_room(flock, peer, value, size);
 	vigil_unlock(&lock);
 
 	if (ret == 1)
@@ -4957,6 +5212,7 @@ chat_data_queue(u_int8_t peer, u_int64_t value, const struct chat_group *group,
 	blob->refs = 1;
 	blob->size = size;
 	blob->peer = peer;
+	blob->flock = flock;
 	blob->ref = value;
 	blob->count = (blob->size + VIGIL_CHAT_CHUNK_DATA - 1) /
 	    VIGIL_CHAT_CHUNK_DATA;
@@ -4992,6 +5248,7 @@ chat_data_queue(u_int8_t peer, u_int64_t value, const struct chat_group *group,
 
 	cmd->peer = peer;
 	cmd->blob = blob;
+	cmd->flock = flock;
 	cmd->value = value;
 	cmd->type = CHAT_COMMAND_DATA;
 
@@ -5020,7 +5277,7 @@ chat_command_insert(struct chat_command *cmd)
 	}
 
 	if (cmd->blob != NULL) {
-		ret = chat_blob_room(cmd->blob->peer,
+		ret = chat_blob_room(cmd->blob->flock, cmd->blob->peer,
 		    cmd->blob->ref, cmd->blob->size);
 
 		if (ret != 0) {
@@ -5076,19 +5333,16 @@ chat_commands_run(void)
 {
 	struct chat_command	*cmd;
 	u_int8_t		local;
+	u_int8_t		slot;
 	struct chat_peer	*peer;
-
-	local = chat_local();
 
 	for (;;) {
 		chat_command_next(&cmd);
 		if (cmd == NULL)
 			break;
 
-		peer = &peers[cmd->peer];
-
 		/* Without gospel we are a desktop, all goes via our phone. */
-		if (vigil->gospel == NULL) {
+		if (vigil->config->mode == VIGIL_MODE_COMPANION) {
 			if (cmd->type == CHAT_COMMAND_STORED)
 				chat_token_ack(cmd->value);
 			else if (cmd->type == CHAT_COMMAND_SYNC)
@@ -5098,6 +5352,26 @@ chat_commands_run(void)
 
 			chat_command_free(cmd);
 			continue;
+		}
+
+		peer = NULL;
+		local = 0;
+
+		if (cmd->flock != 0) {
+			if (vigil_gospel_find(cmd->flock, &slot) == -1 ||
+			    !gospels[slot].running) {
+				vigil_log(LOG_NOTICE, "[chat] dropped a command"
+				    " for %" PRIx64 ", it does not run",
+				    cmd->flock);
+				chat_command_free(cmd);
+				continue;
+			}
+
+			local = gospels[slot].local;
+			peer = &gospels[slot].peers[cmd->peer];
+
+			if (cmd->group.id != 0 && cmd->group.owner == 0)
+				cmd->group.owner = local;
 		}
 
 		switch (cmd->type) {
@@ -5188,6 +5462,7 @@ chat_event_queue(int type, struct chat_peer *peer, u_int64_t value,
 	evt->type = type;
 	evt->value = value;
 	evt->peer = peer->id;
+	evt->flock = peer->flock;
 
 	memcpy(evt->name, peer->name, sizeof(evt->name));
 	memcpy(evt->nick, peer->nick, sizeof(evt->nick));
@@ -5220,33 +5495,57 @@ chat_ambry_report(struct chat_tunnel *tun, u_int32_t generation)
 }
 
 /*
+ * Returns 1 if we are typing to the given peer.
+ */
+static int
+chat_typed(struct chat_peer *peer)
+{
+	PRECOND(peer != NULL);
+
+	if (peer->slot == VIGIL_GOSPEL_MAX)
+		return (0);
+
+	return (vigil_atomic_read(&marks[peer->slot].typing[peer->id]));
+}
+
+/*
  * Take the group and topic we are typing in that the given peer may know
- * about, an id of 0 means none. A peer outside the group learns nothing,
- * a topic outside a group only goes to the peer we type to.
+ * about, an id of 0 means none. A peer outside the group or its flock
+ * learns nothing, a topic outside a group only goes to the peer we type to.
  */
 static void
-chat_typing_state(u_int8_t peer, u_int8_t *owner, u_int64_t *id,
+chat_typing_state(struct chat_peer *peer, u_int8_t *owner, u_int64_t *id,
     u_int64_t *topic)
 {
-	PRECOND(peer > 0 && peer < KYRKA_PEERS_PER_FLOCK);
+	u_int8_t	who;
+
+	PRECOND(peer != NULL);
 	PRECOND(owner != NULL);
 	PRECOND(id != NULL);
 	PRECOND(topic != NULL);
+
+	who = peer->id;
 
 	vigil_lock(&lock);
 	*id = typing_group;
 	*topic = typing_topic;
 	*owner = typing_owner;
 
-	if (*id != 0 && peer != *owner &&
-	    !(typing_members[peer / 8] & (1 << (peer % 8)))) {
+	if (*id != 0 && peer->flock != typing_flock) {
+		*id = 0;
+		*owner = 0;
+		*topic = 0;
+	}
+
+	if (*id != 0 && who != *owner &&
+	    !(typing_members[who / 8] & (1 << (who % 8)))) {
 		*id = 0;
 		*owner = 0;
 		*topic = 0;
 	}
 	vigil_unlock(&lock);
 
-	if (*id == 0 && vigil_atomic_read(&typing[peer]) == 0)
+	if (*id == 0 && chat_typed(peer) == 0)
 		*topic = 0;
 }
 
@@ -5353,8 +5652,8 @@ chat_event_render(struct vigil_buf *buf, struct chat_event *evt, int first)
 	PRECOND(buf != NULL);
 	PRECOND(evt != NULL);
 
-	vigil_buf_appendf(buf, "%s{\"peer\":\"%02x\"",
-	    first ? "" : ",", evt->peer);
+	vigil_buf_appendf(buf, "%s{\"flock\":\"%" PRIx64 "\",\"peer\":\"%02x\"",
+	    first ? "" : ",", evt->flock, evt->peer);
 
 	if (evt->group.id != 0) {
 		vigil_buf_appendf(buf,
@@ -5663,6 +5962,7 @@ chat_events_free(void)
 static void
 chat_mention_check(struct chat_event *evt)
 {
+	u_int8_t	slot;
 	char		id[3];
 	char		name[VIGIL_CHAT_NICK_MAX + 1];
 
@@ -5671,17 +5971,21 @@ chat_mention_check(struct chat_event *evt)
 	if (evt->group.id == 0)
 		return;
 
+	if (vigil_gospel_find(evt->flock, &slot) == -1)
+		return;
+
 	vigil_lock(&lock);
 	memcpy(name, nick, sizeof(name));
 	vigil_unlock(&lock);
 
-	(void)snprintf(id, sizeof(id), "%02x", vigil->gospel->spi & 0xff);
+	(void)snprintf(id, sizeof(id), "%02x", gospels[slot].local);
 
 	if (chat_mention_name(evt->text, name) ||
 	    chat_mention_name(evt->text, id))
 		evt->mention = 1;
 
-	if (named && chat_mention_name(evt->text, vigil->gospel->instance))
+	if (gospels[slot].named &&
+	    chat_mention_name(evt->text, vigil->gospels[slot]->instance))
 		evt->mention = 1;
 }
 
@@ -5953,12 +6257,13 @@ chat_blob_release(struct chat_blob *blob)
  * is. Must be called with our lock held.
  */
 static int
-chat_blob_room(u_int8_t peer, u_int64_t ref, size_t size)
+chat_blob_room(u_int64_t flock, u_int8_t peer, u_int64_t ref, size_t size)
 {
 	struct chat_blob	*blob;
 
 	TAILQ_FOREACH(blob, &blobs, list) {
-		if (blob->peer == peer && blob->ref == ref)
+		if (blob->flock == flock && blob->peer == peer &&
+		    blob->ref == ref)
 			return (1);
 	}
 
@@ -6948,6 +7253,7 @@ chat_data_report(struct chat_tunnel *tun, struct chat_parcel *parcel)
 		fatal("calloc: failed to allocate chat event");
 
 	evt->peer = tun->peer->id;
+	evt->flock = tun->peer->flock;
 	evt->value = parcel->token;
 	evt->type = CHAT_EVENT_DATA;
 	evt->topic.id = parcel->topic;
@@ -7210,13 +7516,15 @@ chat_companion_load(void)
 
 	role = cfg->spi >> 8;
 
-	if (vigil->gospel != NULL && role != VIGIL_COMPANION_PHONE) {
+	if (vigil->config->mode != VIGIL_MODE_COMPANION &&
+	    role != VIGIL_COMPANION_PHONE) {
 		vigil_log(LOG_ERR, "[companion] only a phone runs gospel");
 		vigil_config_free(cfg);
 		return;
 	}
 
-	if (vigil->gospel == NULL && role != VIGIL_COMPANION_DESKTOP) {
+	if (vigil->config->mode == VIGIL_MODE_COMPANION &&
+	    role != VIGIL_COMPANION_DESKTOP) {
 		vigil_log(LOG_ERR, "[companion] only a desktop runs alone");
 		vigil_config_free(cfg);
 		return;
@@ -7238,8 +7546,12 @@ chat_companion_load(void)
 	companion_resolve = 0;
 	companion_resolved = 0;
 
+	companion_turn = 0;
+	companion_attached = 0;
+
 	memset(companion_nick, 0, sizeof(companion_nick));
 	memset(&companion_phone, 0, sizeof(companion_phone));
+	memset(companion_phones, 0, sizeof(companion_phones));
 	memset(&companion_desktop, 0, sizeof(companion_desktop));
 
 	vigil_log(LOG_INFO, "[companion] we are %s '%s'",
@@ -7373,12 +7685,10 @@ chat_companion_free(void)
 static void
 chat_companion_check(void)
 {
-	int				idx;
 	struct vigil_cathedral		cat;
 	struct chat_tunnel		*tun;
 	u_int64_t			next;
 	struct vigil_companion_phone	phone;
-	u_int64_t			last;
 	int				ringing;
 	struct vigil_companion_desktop	desktop;
 
@@ -7422,29 +7732,21 @@ chat_companion_check(void)
 		chat_phone_self();
 		chat_phone_pump();
 		chat_phone_resync();
-		chat_phone_state(&phone);
 
 		if (!chat_tunnel_online(tun)) {
 			journal_heard = 0;
 			chat_phone_desktop(&desktop);
+			memset(companion_phones, 0, sizeof(companion_phones));
 		}
 
-		/* A new entry in our journal alone needs no heartbeat now. */
-		last = phone.last;
-		phone.last = companion_phone.last;
+		ringing = chat_phone_changed();
 
-		if (memcmp(&phone, &companion_phone, sizeof(phone)))
+		if (ringing == -1)
 			tun->next_heartbeat = vigil->now;
-
-		phone.last = last;
-
-		ringing = phone.call_peer != 0;
-		for (idx = 0; idx < VIGIL_CHAT_GROUP_ROSTER; idx++)
-			ringing |= phone.incoming[idx];
 
 		next = vigil->now + CHAT_COMPANION_CALL_HEARTBEAT;
 
-		if (ringing && tun->next_heartbeat > next)
+		if (ringing == 1 && tun->next_heartbeat > next)
 			tun->next_heartbeat = next;
 	} else {
 		chat_desktop_told();
@@ -7527,7 +7829,7 @@ chat_companion_status(struct vigil_buf *buf)
 
 		vigil_buf_appendf(buf, ",\"sync\":\"%s\",\"behind\":%" PRIu64,
 		    sync, behind);
-		chat_companion_peers(buf, &companion_phone);
+		chat_companion_peers(buf);
 	}
 
 	vigil_buf_appendf(buf, "}");
@@ -7631,11 +7933,13 @@ chat_companion_push(struct chat_blob *blob)
 static void
 chat_phone_self(void)
 {
-	int			ret;
 	struct vigil_buf	out;
 	size_t			len;
 	u_int8_t		*face;
 	u_int32_t		serial;
+	struct chat_gospel	*gospel;
+	int			ret, first;
+	u_int8_t		slot;
 	char			json[CHAT_EVENT_JSON_MAX];
 	char			name[VIGIL_CHAT_NICK_MAX + 1];
 
@@ -7650,7 +7954,7 @@ chat_phone_self(void)
 	vigil_unlock(&lock);
 
 	if (companion_told && !strcmp(name, companion_nick) &&
-	    serial == companion_avatar)
+	    serial == companion_avatar && attached == companion_attached)
 		return;
 
 	len = 0;
@@ -7668,11 +7972,29 @@ chat_phone_self(void)
 	}
 
 	vigil_buf_init(&out, json, sizeof(json));
-	vigil_buf_appendf(&out, "{\"op\":\"self\",\"id\":\"%02x\",\"nick\":",
-	    vigil->gospel->spi & 0xff);
+	vigil_buf_appendf(&out, "{\"op\":\"self\",\"nick\":");
 	vigil_buf_quote(&out, name);
-	vigil_buf_appendf(&out, ",\"signed\":");
-	vigil_buf_quote(&out, named ? vigil->gospel->instance : "");
+	vigil_buf_appendf(&out, ",\"gospels\":[");
+
+	first = 1;
+
+	for (slot = 0; slot < VIGIL_GOSPEL_MAX; slot++) {
+		gospel = &gospels[slot];
+
+		if (!gospel->running)
+			continue;
+
+		vigil_buf_appendf(&out,
+		    "%s{\"flock\":\"%" PRIx64 "\",\"id\":\"%02x\",\"signed\":",
+		    first ? "" : ",", gospel->flock, gospel->local);
+		vigil_buf_quote(&out,
+		    gospel->named ? vigil->gospels[slot]->instance : "");
+		vigil_buf_appendf(&out, "}");
+
+		first = 0;
+	}
+
+	vigil_buf_appendf(&out, "]");
 
 	if (face != NULL)
 		vigil_buf_appendf(&out, ",\"avatar\":%zu", len);
@@ -7694,6 +8016,7 @@ chat_phone_self(void)
 
 	companion_told = 1;
 	companion_avatar = serial;
+	companion_attached = attached;
 	memcpy(companion_nick, name, sizeof(companion_nick));
 }
 
@@ -8204,6 +8527,7 @@ chat_phone_request(struct chat_tunnel *tun, struct chat_rxfer *xfer)
 
 	req.ref = be64toh(req.ref);
 	req.ask = be16toh(req.ask);
+	req.flock = be64toh(req.flock);
 	req.hash = be64toh(req.hash);
 	req.topic = be64toh(req.topic);
 	req.group = be64toh(req.group);
@@ -8309,6 +8633,7 @@ chat_phone_send(const struct vigil_chat_request *req, const u_int8_t *data,
 {
 	int			idx;
 	int			ret;
+	u_int8_t		slot;
 	struct chat_event	*evt;
 	u_int8_t		local;
 	struct chat_quote	quote;
@@ -8327,7 +8652,15 @@ chat_phone_send(const struct vigil_chat_request *req, const u_int8_t *data,
 		return (0);
 	}
 
-	local = vigil->gospel->spi & 0xff;
+	if (vigil_gospel_find(req->flock, &slot) == -1 ||
+	    !gospels[slot].running) {
+		vigil_log(LOG_NOTICE, "[companion] request %" PRIu64
+		    " for flock %" PRIx64 " that does not run", req->ref,
+		    req->flock);
+		return (0);
+	}
+
+	local = gospels[slot].local;
 
 	memset(&quote, 0, sizeof(quote));
 	memset(&group, 0, sizeof(group));
@@ -8369,18 +8702,19 @@ chat_phone_send(const struct vigil_chat_request *req, const u_int8_t *data,
 			continue;
 
 		if (req->kind != 0) {
-			ret = chat_data_queue(idx, req->ref,
+			ret = chat_data_queue(req->flock, idx, req->ref,
 			    req->group != 0 ? &group : NULL, req->topic,
 			    req->kind, name, data, len);
 		} else {
-			ret = chat_command_queue(CHAT_COMMAND_SEND, idx,
-			    req->ref, &quote, &topic,
+			ret = chat_command_queue(CHAT_COMMAND_SEND, req->flock,
+			    idx, req->ref, &quote, &topic,
 			    req->group != 0 ? &group : NULL, data, len);
 		}
 
 		if (ret == -1) {
 			vigil_log(LOG_NOTICE, "[companion] no room for request "
-			    "%" PRIu64 ", our desktop sends it again", req->ref);
+			    "%" PRIu64 ", our desktop sends it again",
+			    req->ref);
 			return (-1);
 		}
 	}
@@ -8391,6 +8725,7 @@ chat_phone_send(const struct vigil_chat_request *req, const u_int8_t *data,
 
 	evt->token = token;
 	evt->peer = req->peer;
+	evt->flock = req->flock;
 	evt->value = req->ref;
 	evt->type = CHAT_EVENT_ECHO;
 
@@ -8429,16 +8764,19 @@ chat_phone_send(const struct vigil_chat_request *req, const u_int8_t *data,
 static void
 chat_phone_call(const struct vigil_chat_request *req)
 {
+	u_int64_t		flock;
 	int			state;
+	u_int8_t		slot;
 	u_int8_t		peer, ringing, st, flags;
 
 	PRECOND(req != NULL);
 	PRECOND(req->op == VIGIL_COMPANION_CALL);
 
 	peer = req->peer;
-
-	if (peer == 0 || peer >= KYRKA_PEERS_PER_FLOCK ||
-	    peer == (vigil->gospel->spi & 0xff)) {
+	flock = req->flock;
+	if (vigil_gospel_find(flock, &slot) == -1 ||
+	    peer == 0 || peer >= KYRKA_PEERS_PER_FLOCK ||
+	    peer == (vigil->gospels[slot]->spi & 0xff)) {
 		vigil_log(LOG_NOTICE, "[companion] bad call request");
 		return;
 	}
@@ -8446,20 +8784,23 @@ chat_phone_call(const struct vigil_chat_request *req)
 	switch (req->kind) {
 	case VIGIL_COMPANION_DIAL:
 		vigil_log(LOG_INFO, "[companion] calling %02x", peer);
-		vigil_call_dial(peer);
-		vigil_voice_relay_call(peer, VIGIL_VOICE_MODE_CALL);
+		vigil_call_dial(flock, peer);
+		vigil_voice_relay_call(flock, peer, VIGIL_VOICE_MODE_CALL);
 		break;
 	case VIGIL_COMPANION_ANSWER:
 		vigil_log(LOG_INFO, "[companion] answering %02x", peer);
-		if (vigil_voice_relay_answer(peer) == 0)
+		if (vigil_voice_relay_answer(flock, peer) == 0)
 			break;
-		state = vigil_call_peer(peer) & VIGIL_CALL_PEER_SIGNALING;
-		if (state == VIGIL_CALL_PEER_PRESENT)
-			vigil_voice_relay_call(peer, VIGIL_VOICE_MODE_ANSWER);
+		state = vigil_call_peer(slot, peer) & VIGIL_CALL_PEER_SIGNALING;
+		if (state == VIGIL_CALL_PEER_PRESENT) {
+			vigil_voice_relay_call(flock, peer,
+			    VIGIL_VOICE_MODE_ANSWER);
+		}
 		break;
 	case VIGIL_COMPANION_DECLINE:
-		vigil_voice_relay_state(&ringing, &st, &flags);
-		if (ringing == peer && (flags & VIGIL_COMPANION_CALL_RINGING))
+		vigil_voice_relay_state(&flock, &ringing, &st, &flags);
+		if (flock == req->flock && ringing == peer &&
+		    (flags & VIGIL_COMPANION_CALL_RINGING))
 			vigil_voice_hangup();
 		break;
 	case VIGIL_COMPANION_HANGUP:
@@ -8567,14 +8908,16 @@ chat_phone_tell(struct chat_event *evt, const u_int8_t *data, size_t len)
 
 /*
  * Apply the state our desktop sent, the peers our desktop types to and the
- * chats our desktop has open, as if our own platform set that state.
+ * chats our desktop has open, as if our own platform set that state. If
+ * our desktop moved to another flock, what it had in the old one is off.
  */
 static void
 chat_phone_desktop(const struct vigil_companion_desktop *st)
 {
-	int		idx;
-	u_int8_t	local;
-	int		on, was;
+	int				idx;
+	u_int64_t			flock;
+	struct vigil_companion_desktop	was;
+	int				on, before;
 
 	PRECOND(st != NULL);
 	PRECOND(companion_role == VIGIL_COMPANION_PHONE);
@@ -8582,36 +8925,49 @@ chat_phone_desktop(const struct vigil_companion_desktop *st)
 	if (!memcmp(st, &companion_desktop, sizeof(*st)))
 		return;
 
-	local = vigil->gospel->spi & 0xff;
+	memcpy(&was, &companion_desktop, sizeof(was));
 
-	for (idx = 1; idx < KYRKA_PEERS_PER_FLOCK; idx++) {
-		if (idx == local)
-			continue;
+	flock = be64toh(was.flock);
 
-		on = (st->typing[idx / 8] >> (idx % 8)) & 1;
-		was = (companion_desktop.typing[idx / 8] >> (idx % 8)) & 1;
+	if (was.flock != st->flock && flock != 0) {
+		for (idx = 1; idx < KYRKA_PEERS_PER_FLOCK; idx++) {
+			if ((was.typing[idx / 8] >> (idx % 8)) & 1)
+				vigil_chat_typing(flock, idx, 0, 0);
 
-		if (on != was || (on && st->topic != companion_desktop.topic))
-			vigil_chat_typing(idx, be64toh(st->topic), on);
+			if ((was.opened[idx / 8] >> (idx % 8)) & 1)
+				vigil_chat_open(flock, idx, 0);
+		}
 
-		on = (st->opened[idx / 8] >> (idx % 8)) & 1;
-		was = (companion_desktop.opened[idx / 8] >> (idx % 8)) & 1;
-
-		if (on != was)
-			vigil_chat_open(idx, on);
+		memset(was.typing, 0, sizeof(was.typing));
+		memset(was.opened, 0, sizeof(was.opened));
 	}
 
-	if (st->group != companion_desktop.group ||
-	    st->owner != companion_desktop.owner ||
-	    st->topic != companion_desktop.topic ||
-	    memcmp(st->members, companion_desktop.members,
-	    sizeof(st->members))) {
+	flock = be64toh(st->flock);
+
+	for (idx = 1; idx < KYRKA_PEERS_PER_FLOCK && flock != 0; idx++) {
+		on = (st->typing[idx / 8] >> (idx % 8)) & 1;
+		before = (was.typing[idx / 8] >> (idx % 8)) & 1;
+
+		if (on != before || (on && st->topic != was.topic))
+			vigil_chat_typing(flock, idx, be64toh(st->topic), on);
+
+		on = (st->opened[idx / 8] >> (idx % 8)) & 1;
+		before = (was.opened[idx / 8] >> (idx % 8)) & 1;
+
+		if (on != before)
+			vigil_chat_open(flock, idx, on);
+	}
+
+	if (st->flock != was.flock || st->group != was.group ||
+	    st->owner != was.owner || st->topic != was.topic ||
+	    memcmp(st->members, was.members, sizeof(st->members))) {
 		if (st->group == 0 || st->owner == 0 ||
 		    st->owner >= KYRKA_PEERS_PER_FLOCK) {
-			vigil_chat_group_typing(0, 0, 0, NULL);
+			vigil_chat_group_typing(0, 0, 0, 0, NULL);
 		} else {
-			vigil_chat_group_typing(st->owner, be64toh(st->group),
-			    be64toh(st->topic), st->members);
+			vigil_chat_group_typing(flock, st->owner,
+			    be64toh(st->group), be64toh(st->topic),
+			    st->members);
 		}
 	}
 
@@ -8619,31 +8975,91 @@ chat_phone_desktop(const struct vigil_companion_desktop *st)
 }
 
 /*
- * Fill in the state we send our desktop with each heartbeat, who is around
- * and the call we run.
+ * Check if the state of any slot changed since we last sent it to our
+ * desktop, our next heartbeat then carries the first one that did.
+ * Returns -1 if one changed, 1 if a call rings or runs and 0 otherwise.
+ */
+static int
+chat_phone_changed(void)
+{
+	int				idx, ringing;
+	u_int8_t			slot;
+	struct vigil_companion_phone	phone;
+
+	PRECOND(companion_role == VIGIL_COMPANION_PHONE);
+
+	ringing = 0;
+
+	for (slot = 0; slot < VIGIL_GOSPEL_MAX; slot++) {
+		if (!gospels[slot].running && companion_phones[slot].flock == 0)
+			continue;
+
+		chat_phone_state(slot, &phone);
+
+		ringing |= phone.call_peer != 0;
+		for (idx = 0; idx < VIGIL_CHAT_GROUP_ROSTER; idx++)
+			ringing |= phone.incoming[idx];
+
+		/* A new entry in our journal alone needs no heartbeat now. */
+		phone.last = companion_phones[slot].last;
+
+		if (memcmp(&phone, &companion_phones[slot], sizeof(phone))) {
+			companion_turn = slot;
+			return (-1);
+		}
+	}
+
+	return (ringing);
+}
+
+/*
+ * Fill in the state of the given slot we send our desktop with a heartbeat,
+ * who is around and the call we run. A slot that no longer runs keeps its
+ * flock with nobody around, so our desktop learns its peers are gone.
  */
 static void
-chat_phone_state(struct vigil_companion_phone *st)
+chat_phone_state(u_int8_t slot, struct vigil_companion_phone *st)
 {
 	int				idx;
 	struct chat_tunnel		*tun;
 	int				state;
+	u_int64_t			flock;
 	u_int64_t			count;
+	struct chat_peer		*peer;
+	struct chat_gospel		*gospel;
 	struct vigil_companion_typed	*typed;
 
+	PRECOND(slot < VIGIL_GOSPEL_MAX);
 	PRECOND(st != NULL);
 	PRECOND(companion_role == VIGIL_COMPANION_PHONE);
+
+	gospel = &gospels[slot];
 
 	memset(st, 0, sizeof(*st));
 	st->magic = htobe16(VIGIL_COMPANION_MAGIC);
 	st->version = htobe16(VIGIL_COMPANION_VERSION);
 	st->last = htobe64(journal.last);
+	st->flock = companion_phones[slot].flock;
+
+	vigil_voice_relay_state(&flock, &st->call_peer, &st->call_state,
+	    &st->call_flags);
+	st->call_flock = htobe64(flock);
+
+	vigil_voice_ended(&flock, &st->ended_peer, &st->ended_why, &count);
+	st->ended_flock = htobe64(flock);
+	st->ended = htobe64(count);
+
+	if (!gospel->running)
+		return;
+
+	st->flock = htobe64(gospel->flock);
 
 	for (idx = 1; idx < KYRKA_PEERS_PER_FLOCK; idx++) {
-		tun = peers[idx].tunnel;
+		peer = &gospel->peers[idx];
+		tun = peer->tunnel;
 
-		state = vigil_call_peer(idx);
-		if (peers[idx].present || (state & VIGIL_CALL_PEER_ONLINE))
+		state = vigil_call_peer(slot, idx);
+		if (peer->present || (state & VIGIL_CALL_PEER_ONLINE))
 			st->present[idx / 8] |= 1 << (idx % 8);
 
 		if ((state & VIGIL_CALL_PEER_SIGNALING) ==
@@ -8670,12 +9086,6 @@ chat_phone_state(struct vigil_companion_phone *st)
 		typed->group = htobe64(tun->typing_group);
 		typed->topic = htobe64(tun->typing_topic);
 	}
-
-	vigil_voice_relay_state(&st->call_peer, &st->call_state,
-	    &st->call_flags);
-	vigil_voice_ended(&st->ended_peer, &st->ended_why, &count);
-
-	st->ended = htobe64(count);
 }
 
 /*
@@ -8696,6 +9106,7 @@ chat_desktop_forward(struct chat_command *cmd)
 		req.peer = cmd->peer;
 		req.kind = cmd->value;
 		req.op = VIGIL_COMPANION_CALL;
+		req.flock = htobe64(cmd->flock);
 		chat_desktop_request(&req, NULL, 0);
 		break;
 	case CHAT_COMMAND_REQUEST:
@@ -8727,6 +9138,7 @@ chat_desktop_queue(const struct vigil_chat_request *req, const void *data,
 
 	wire.ref = htobe64(req->ref);
 	wire.ask = htobe16(req->ask);
+	wire.flock = htobe64(req->flock);
 	wire.hash = htobe64(req->hash);
 	wire.topic = htobe64(req->topic);
 	wire.group = htobe64(req->group);
@@ -9090,6 +9502,7 @@ chat_desktop_queued(const struct vigil_chat_request *req,
 	evt->kind = CHAT_DESKTOP_QUEUED;
 
 	evt->peer = req->peer;
+	evt->flock = be64toh(req->flock);
 	evt->value = be64toh(req->ref);
 	evt->topic.id = be64toh(req->topic);
 	evt->quote.author = req->author;
@@ -9135,6 +9548,7 @@ chat_desktop_unsent(const struct vigil_chat_request *req)
 
 	if (req->op == VIGIL_COMPANION_SEND) {
 		evt->peer = req->peer;
+		evt->flock = be64toh(req->flock);
 		evt->value = be64toh(req->ref);
 
 		if (req->group != 0) {
@@ -9149,14 +9563,45 @@ chat_desktop_unsent(const struct vigil_chat_request *req)
 }
 
 /*
+ * As a desktop, set or clear the bit of the given peer in the given flock
+ * in the given bits for our phone. A bit in another flock clears what we
+ * had, our phone only learns about one flock at a time.
+ */
+static void
+chat_desktop_bit(u_int8_t *bits, u_int64_t flock, u_int8_t peer, int on)
+{
+	PRECOND(bits == desktop_opened || bits == desktop_typing);
+	PRECOND(peer > 0 && peer < KYRKA_PEERS_PER_FLOCK);
+	PRECOND(on == 0 || on == 1);
+
+	vigil_lock(&lock);
+
+	if (flock != desktop_flock) {
+		if (on == 0) {
+			vigil_unlock(&lock);
+			return;
+		}
+
+		desktop_flock = flock;
+		memset(desktop_opened, 0, sizeof(desktop_opened));
+		memset(desktop_typing, 0, sizeof(desktop_typing));
+	}
+
+	if (on)
+		bits[peer / 8] |= 1 << (peer % 8);
+	else
+		bits[peer / 8] &= ~(1 << (peer % 8));
+
+	vigil_unlock(&lock);
+}
+
+/*
  * Fill in the state we send our phone with each heartbeat, who we type to
  * and the chats we have open.
  */
 static void
 chat_desktop_state(struct vigil_companion_desktop *st)
 {
-	int		idx;
-
 	PRECOND(st != NULL);
 	PRECOND(companion_role == VIGIL_COMPANION_DESKTOP);
 
@@ -9164,15 +9609,18 @@ chat_desktop_state(struct vigil_companion_desktop *st)
 	st->magic = htobe16(VIGIL_COMPANION_MAGIC);
 	st->version = htobe16(VIGIL_COMPANION_VERSION);
 
-	for (idx = 1; idx < KYRKA_PEERS_PER_FLOCK; idx++) {
-		if (vigil_atomic_read(&typing[idx]))
-			st->typing[idx / 8] |= 1 << (idx % 8);
-
-		if (vigil_atomic_read(&opened[idx]))
-			st->opened[idx / 8] |= 1 << (idx % 8);
-	}
-
 	vigil_lock(&lock);
+
+	st->flock = htobe64(desktop_flock);
+	memcpy(st->typing, desktop_typing, sizeof(st->typing));
+	memcpy(st->opened, desktop_opened, sizeof(st->opened));
+
+	/* Our phone only knows one flock, the group we type in wins. */
+	if (typing_group != 0 && typing_flock != desktop_flock) {
+		st->flock = htobe64(typing_flock);
+		memset(st->typing, 0, sizeof(st->typing));
+		memset(st->opened, 0, sizeof(st->opened));
+	}
 
 	st->owner = typing_owner;
 	st->group = htobe64(typing_group);
@@ -9186,13 +9634,16 @@ chat_desktop_state(struct vigil_companion_desktop *st)
 }
 
 /*
- * Apply the state our phone sent: hold the call our phone runs for us, or
- * ring for a call our phone rings for.
+ * Take the state our phone sent us for one of its flocks, a state without
+ * a flock means we lost our phone. Hold the call our phone runs if it is
+ * ours, or ring for the call that rings on our phone.
  */
 static void
 chat_desktop_phone(const struct vigil_companion_phone *st)
 {
 	int		idx;
+	u_int8_t	slot;
+	u_int64_t	flock;
 	u_int8_t	ring;
 	int		sound;
 
@@ -9200,6 +9651,28 @@ chat_desktop_phone(const struct vigil_companion_phone *st)
 	PRECOND(companion_role == VIGIL_COMPANION_DESKTOP);
 
 	memcpy(&companion_phone, st, sizeof(*st));
+
+	if (st->flock == 0) {
+		memset(companion_phones, 0, sizeof(companion_phones));
+	} else {
+		slot = VIGIL_GOSPEL_MAX;
+
+		for (idx = 0; idx < VIGIL_GOSPEL_MAX; idx++) {
+			if (companion_phones[idx].flock == st->flock) {
+				slot = idx;
+				break;
+			}
+
+			if (slot == VIGIL_GOSPEL_MAX &&
+			    companion_phones[idx].flock == 0)
+				slot = idx;
+		}
+
+		if (slot < VIGIL_GOSPEL_MAX)
+			memcpy(&companion_phones[slot], st, sizeof(*st));
+	}
+
+	flock = be64toh(st->call_flock);
 
 	if (st->call_peer != 0 &&
 	    (st->call_flags & VIGIL_COMPANION_CALL_RELAY)) {
@@ -9210,7 +9683,7 @@ chat_desktop_phone(const struct vigil_companion_phone *st)
 		else
 			sound = VIGIL_VOICE_TONE_PIPS;
 
-		vigil_voice_relay(st->call_peer, sound, 1);
+		vigil_voice_relay(flock, st->call_peer, sound, 1);
 		return;
 	}
 
@@ -9220,15 +9693,22 @@ chat_desktop_phone(const struct vigil_companion_phone *st)
 		if (st->call_flags & VIGIL_COMPANION_CALL_RINGING)
 			ring = st->call_peer;
 	} else {
-		for (idx = 1; idx < KYRKA_PEERS_PER_FLOCK; idx++) {
-			if (st->incoming[idx / 8] & (1 << (idx % 8))) {
-				ring = idx;
-				break;
+		flock = 0;
+
+		for (slot = 0; slot < VIGIL_GOSPEL_MAX && ring == 0; slot++) {
+			for (idx = 1; idx < KYRKA_PEERS_PER_FLOCK; idx++) {
+				if (companion_phones[slot].incoming[idx / 8] &
+				    (1 << (idx % 8))) {
+					ring = idx;
+					flock = be64toh(
+					    companion_phones[slot].flock);
+					break;
+				}
 			}
 		}
 	}
 
-	vigil_voice_relay(ring, VIGIL_VOICE_TONE_RINGBACK, 0);
+	vigil_voice_relay(flock, ring, VIGIL_VOICE_TONE_RINGBACK, 0);
 }
 
 /*
@@ -9238,6 +9718,8 @@ static void
 chat_companion_heartbeat(struct chat_tunnel *tun,
     struct vigil_chat_frame *frame)
 {
+	int		idx;
+	u_int8_t	slot;
 	u_int8_t	*ptr;
 
 	PRECOND(tun != NULL);
@@ -9252,8 +9734,25 @@ chat_companion_heartbeat(struct chat_tunnel *tun,
 	ptr = frame->data + sizeof(struct vigil_chat_hb);
 
 	if (companion_role == VIGIL_COMPANION_PHONE) {
-		chat_phone_state(&companion_phone);
+		slot = companion_turn;
+		chat_phone_state(slot, &companion_phones[slot]);
+
+		memcpy(&companion_phone, &companion_phones[slot],
+		    sizeof(companion_phone));
 		memcpy(ptr, &companion_phone, sizeof(companion_phone));
+
+		if (!gospels[slot].running)
+			companion_phones[slot].flock = 0;
+
+		for (idx = 1; idx <= VIGIL_GOSPEL_MAX; idx++) {
+			slot = (companion_turn + idx) % VIGIL_GOSPEL_MAX;
+
+			if (gospels[slot].running ||
+			    companion_phones[slot].flock != 0)
+				break;
+		}
+
+		companion_turn = slot;
 	} else {
 		chat_desktop_state(&companion_desktop);
 		memcpy(ptr, &companion_desktop, sizeof(companion_desktop));
@@ -9349,86 +9848,121 @@ chat_companion_mismatch(void)
 }
 
 /*
- * Append the peers and the call our phone told us about to the status.
+ * Append the peers of all flocks of our phone, who types where, who calls
+ * us, the last call that ended and the call our phone runs to the status.
  */
 static void
-chat_companion_peers(struct vigil_buf *buf,
-    const struct vigil_companion_phone *st)
+chat_companion_peers(struct vigil_buf *buf)
 {
 	u_int8_t				bit;
 	u_int8_t				flags;
+	u_int64_t				flock;
+	const struct vigil_companion_phone	*st;
 	const struct vigil_companion_typed	*typed;
 	int					idx, first;
+	u_int8_t				slot;
 	int					present, online, writing;
 
 	PRECOND(buf != NULL);
-	PRECOND(st != NULL);
 
 	first = 1;
 	vigil_buf_appendf(buf, ",\"peers\":[");
 
-	for (idx = 1; idx < KYRKA_PEERS_PER_FLOCK; idx++) {
-		bit = 1 << (idx % 8);
-		online = st->online[idx / 8] & bit;
-		writing = st->typing[idx / 8] & bit;
-		present = st->present[idx / 8] & bit;
+	for (slot = 0; slot < VIGIL_GOSPEL_MAX; slot++) {
+		st = &companion_phones[slot];
+		flock = be64toh(st->flock);
 
-		if (!present && !online)
+		if (flock == 0)
 			continue;
 
-		vigil_buf_appendf(buf, "%s{\"id\":\"%02x\",\"present\":%s"
-		    ",\"online\":%s,\"typing\":%s}", first ? "" : ",", idx,
-		    present ? "true" : "false", online ? "true" : "false",
-		    writing ? "true" : "false");
+		for (idx = 1; idx < KYRKA_PEERS_PER_FLOCK; idx++) {
+			bit = 1 << (idx % 8);
+			online = st->online[idx / 8] & bit;
+			writing = st->typing[idx / 8] & bit;
+			present = st->present[idx / 8] & bit;
 
-		first = 0;
+			if (!present && !online)
+				continue;
+
+			vigil_buf_appendf(buf, "%s{\"id\":\"%" PRIx64 "-%02x\""
+			    ",\"present\":%s,\"online\":%s,\"typing\":%s}",
+			    first ? "" : ",", flock, idx,
+			    present ? "true" : "false",
+			    online ? "true" : "false",
+			    writing ? "true" : "false");
+
+			first = 0;
+		}
 	}
 
+	first = 1;
 	vigil_buf_appendf(buf, "],\"typed\":[");
 
-	for (idx = 0; idx < st->typed_count; idx++) {
-		typed = &st->typed[idx];
+	for (slot = 0; slot < VIGIL_GOSPEL_MAX; slot++) {
+		st = &companion_phones[slot];
+		flock = be64toh(st->flock);
 
-		vigil_buf_appendf(buf, "%s{\"id\":\"%02x\"", idx ? "," : "",
-		    typed->peer);
+		if (flock == 0)
+			continue;
 
-		if (typed->group != 0) {
-			vigil_buf_appendf(buf, ",\"owner\":\"%02x\""
-			    ",\"group\":\"%016" PRIx64 "\"", typed->owner,
-			    be64toh(typed->group));
+		for (idx = 0; idx < st->typed_count; idx++) {
+			typed = &st->typed[idx];
+
+			vigil_buf_appendf(buf, "%s{\"id\":\"%" PRIx64 "-%02x\"",
+			    first ? "" : ",", flock, typed->peer);
+
+			if (typed->group != 0) {
+				vigil_buf_appendf(buf, ",\"owner\":\"%02x\""
+				    ",\"group\":\"%016" PRIx64 "\"",
+				    typed->owner, be64toh(typed->group));
+			}
+
+			if (typed->topic != 0) {
+				vigil_buf_appendf(buf,
+				    ",\"topic\":\"%016" PRIx64 "\"",
+				    be64toh(typed->topic));
+			}
+
+			vigil_buf_appendf(buf, "}");
+			first = 0;
 		}
-
-		if (typed->topic != 0) {
-			vigil_buf_appendf(buf, ",\"topic\":\"%016" PRIx64 "\"",
-			    be64toh(typed->topic));
-		}
-
-		vigil_buf_appendf(buf, "}");
 	}
 
 	first = 1;
 	vigil_buf_appendf(buf, "],\"incoming\":[");
 
-	for (idx = 1; idx < KYRKA_PEERS_PER_FLOCK; idx++) {
-		if (!(st->incoming[idx / 8] & (1 << (idx % 8))))
+	for (slot = 0; slot < VIGIL_GOSPEL_MAX; slot++) {
+		st = &companion_phones[slot];
+		flock = be64toh(st->flock);
+
+		if (flock == 0)
 			continue;
 
-		vigil_buf_appendf(buf, "%s\"%02x\"", first ? "" : ",", idx);
-		first = 0;
+		for (idx = 1; idx < KYRKA_PEERS_PER_FLOCK; idx++) {
+			if (!(st->incoming[idx / 8] & (1 << (idx % 8))))
+				continue;
+
+			vigil_buf_appendf(buf, "%s\"%" PRIx64 "-%02x\"",
+			    first ? "" : ",", flock, idx);
+			first = 0;
+		}
 	}
 
+	st = &companion_phone;
+
 	vigil_buf_appendf(buf, "],\"ended\":{\"count\":%" PRIu64
-	    ",\"peer\":\"%02x\",\"why\":\"%s\"}", be64toh(st->ended),
-	    st->ended_peer, vigil_voice_end_name(st->ended_why));
+	    ",\"peer\":\"%" PRIx64 "-%02x\",\"why\":\"%s\"}",
+	    be64toh(st->ended), be64toh(st->ended_flock), st->ended_peer,
+	    vigil_voice_end_name(st->ended_why));
 
 	if (st->call_peer == 0)
 		return;
 
 	flags = st->call_flags;
 
-	vigil_buf_appendf(buf, ",\"call\":{\"peer\":\"%02x\",\"state\":%u"
-	    ",\"relay\":%s,\"ringing\":%s,\"outgoing\":%s}", st->call_peer,
-	    st->call_state,
+	vigil_buf_appendf(buf, ",\"call\":{\"peer\":\"%" PRIx64 "-%02x\""
+	    ",\"state\":%u,\"relay\":%s,\"ringing\":%s,\"outgoing\":%s}",
+	    be64toh(st->call_flock), st->call_peer, st->call_state,
 	    (flags & VIGIL_COMPANION_CALL_RELAY) ? "true" : "false",
 	    (flags & VIGIL_COMPANION_CALL_RINGING) ? "true" : "false",
 	    (flags & VIGIL_COMPANION_CALL_OUTGOING) ? "true" : "false");
@@ -9474,18 +10008,6 @@ vigil_chat_companion_voice(const u_int8_t *data, size_t len)
 		vigil_log(LOG_NOTICE, "[companion] kyrka_heaven_input: %d",
 		    kyrka_last_error(tun->ctx));
 	}
-}
-
-/*
- * Returns our id in the flock, 0 as the desktop of a phone.
- */
-static u_int8_t
-chat_local(void)
-{
-	if (vigil->gospel == NULL)
-		return (0);
-
-	return (vigil->gospel->spi & 0xff);
 }
 
 /*

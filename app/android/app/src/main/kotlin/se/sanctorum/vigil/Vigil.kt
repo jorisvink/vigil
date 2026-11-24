@@ -12,7 +12,7 @@ object Vigil {
         service: VpnService,
         fd: Int,
         config: ByteArray,
-        voice: ByteArray?,
+        gospels: ByteArray?,
         datadir: String?,
         id: Long
     ): Int
@@ -22,6 +22,9 @@ object Vigil {
 
     @JvmStatic
     external fun runId(): Long
+
+    @JvmStatic
+    external fun gospelMax(): Int
 
     @JvmStatic
     external fun check(config: ByteArray): String
@@ -36,13 +39,13 @@ object Vigil {
     external fun version(): String
 
     @JvmStatic
-    external fun callDial(peer: Int)
+    external fun callDial(flock: Long, peer: Int)
 
     @JvmStatic
     external fun callHangup()
 
     @JvmStatic
-    external fun voiceCall(peer: Int, mode: Int)
+    external fun voiceCall(flock: Long, peer: Int, mode: Int)
 
     @JvmStatic
     external fun voiceHangup()
@@ -60,28 +63,30 @@ object Vigil {
     external fun kyrkaVersion(): String
 
     @JvmStatic
-    external fun chatSend(peer: Int, ref: Long, text: ByteArray, author: Int, hash: Long, topic: Long): Boolean
+    external fun chatSend(
+        flock: Long, peer: Int, ref: Long, text: ByteArray, author: Int, hash: Long, topic: Long
+    ): Boolean
 
     @JvmStatic
-    external fun chatTopic(peer: Int, ref: Long, topic: Long, color: Int, name: ByteArray): Boolean
+    external fun chatTopic(flock: Long, peer: Int, ref: Long, topic: Long, color: Int, name: ByteArray): Boolean
 
     @JvmStatic
-    external fun chatForget(peer: Int): Boolean
+    external fun chatForget(flock: Long, peer: Int): Boolean
 
     @JvmStatic
     external fun chatStored(token: Long): Boolean
 
     @JvmStatic
-    external fun chatOpen(peer: Int, on: Boolean)
+    external fun chatOpen(flock: Long, peer: Int, on: Boolean)
 
     @JvmStatic
-    external fun chatAccept(peer: Int, on: Boolean)
+    external fun chatAccept(flock: Long, peer: Int, on: Boolean)
 
     @JvmStatic
-    external fun chatIgnore(peer: Int, on: Boolean)
+    external fun chatIgnore(flock: Long, peer: Int, on: Boolean)
 
     @JvmStatic
-    external fun chatTyping(peer: Int, topic: Long, on: Boolean)
+    external fun chatTyping(flock: Long, peer: Int, topic: Long, on: Boolean)
 
     @JvmStatic
     external fun chatNick(name: String): Boolean
@@ -90,55 +95,57 @@ object Vigil {
     external fun chatAvatar(data: ByteArray?): Boolean
 
     @JvmStatic
-    external fun chatDrop(peer: Int, ref: Long): Boolean
+    external fun chatDrop(flock: Long, peer: Int, ref: Long): Boolean
 
     @JvmStatic
-    external fun chatGroupTyping(owner: Int, group: Long, topic: Long, members: ByteArray?)
+    external fun chatGroupTyping(flock: Long, owner: Int, group: Long, topic: Long, members: ByteArray?)
 
     @JvmStatic
     external fun chatGroupSend(
-        peer: Int, ref: Long, owner: Int, group: Long, serial: Int, topic: Long, text: ByteArray, author: Int,
-        hash: Long
+        flock: Long, peer: Int, ref: Long, owner: Int, group: Long, serial: Int, topic: Long, text: ByteArray,
+        author: Int, hash: Long
     ): Boolean
 
     @JvmStatic
     external fun chatGroupTopic(
-        peer: Int, ref: Long, group: Long, serial: Int, topic: Long, color: Int, name: ByteArray
+        flock: Long, peer: Int, ref: Long, group: Long, serial: Int, topic: Long, color: Int, name: ByteArray
     ): Boolean
 
     @JvmStatic
     external fun chatGroupRoster(
-        peer: Int, ref: Long, group: Long, serial: Int, ended: Boolean, members: ByteArray, name: ByteArray
+        flock: Long, peer: Int, ref: Long, group: Long, serial: Int, ended: Boolean, members: ByteArray, name: ByteArray
     ): Boolean
 
     @JvmStatic
-    external fun chatGroupLeave(owner: Int, ref: Long, group: Long): Boolean
+    external fun chatGroupLeave(flock: Long, owner: Int, ref: Long, group: Long): Boolean
 
     @JvmStatic
     external fun chatRetract(
-        peer: Int, ref: Long, owner: Int, group: Long, serial: Int, topic: Long, hash: Long
+        flock: Long, peer: Int, ref: Long, owner: Int, group: Long, serial: Int, topic: Long, hash: Long
     ): Boolean
 
     @JvmStatic
     external fun chatEvents(): ByteArray
 
     @JvmStatic
-    external fun chatDataSend(peer: Int, ref: Long, kind: Int, name: ByteArray, data: ByteArray, topic: Long): Boolean
+    external fun chatDataSend(
+        flock: Long, peer: Int, ref: Long, kind: Int, name: ByteArray, data: ByteArray, topic: Long
+    ): Boolean
 
     @JvmStatic
     external fun chatGroupDataSend(
-        peer: Int, ref: Long, owner: Int, group: Long, serial: Int, topic: Long, kind: Int, name: ByteArray,
-        data: ByteArray
+        flock: Long, peer: Int, ref: Long, owner: Int, group: Long, serial: Int, topic: Long, kind: Int,
+        name: ByteArray, data: ByteArray
     ): Boolean
 
     @JvmStatic
     external fun chatDataTake(token: Long, size: Int): ByteArray?
 
     @JvmStatic
-    external fun gospel(config: ByteArray?): Boolean
+    external fun gospel(set: ByteArray?): Boolean
 
     @JvmStatic
-    external fun additionalInput(peer: Int, ikm: ByteArray?): Boolean
+    external fun additionalInput(flock: Long, peer: Int, ikm: ByteArray?): Boolean
 
     @JvmStatic
     external fun safetyWords(half: ByteArray): String?
@@ -150,10 +157,10 @@ object Vigil {
     external fun safetyCode(input: ByteArray): String?
 
     @JvmStatic
-    external fun safetyStart(peer: Int, own: ByteArray, theirs: ByteArray): Boolean
+    external fun safetyStart(flock: Long, peer: Int, own: ByteArray, theirs: ByteArray): Boolean
 
     @JvmStatic
-    external fun safetyGet(peer: Int): ByteArray?
+    external fun safetyGet(flock: Long, peer: Int): ByteArray?
 
     @JvmStatic
     external fun safetyStop()

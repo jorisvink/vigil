@@ -24,7 +24,7 @@ object Chats {
     private var sweep = 0L
     private var screen: BroadcastReceiver? = null
     private var safetyHalf: ByteArray? = null
-    private var safetyFor = 0
+    private var safetyFor = ""
     private data class Shown(val text: String, val time: Long, val name: String, val key: String)
 
     private val shown = mutableMapOf<String, MutableList<Shown>>()
@@ -33,6 +33,7 @@ object Chats {
     private val waiting = mutableSetOf<Long>()
     private val around = mutableSetOf<String>()
     private val asking = mutableSetOf<String>()
+    private val sessions = mutableMapOf<String, Long>()
     private var accepts = -1L
 
     @Volatile
@@ -53,7 +54,7 @@ object Chats {
     var requestedTopic = ""
 
     @Volatile
-    var local = ""
+    var locals = mapOf<String, String>()
         private set
 
     fun vault(context: Context): ChatVault =
@@ -62,9 +63,38 @@ object Chats {
 
             it.mirror = ::mirror
             it.linked = store::linked
+            it.flock = { store.firstFlock()?.also { flock -> migrate(context.applicationContext, flock) } }
             it.reach(prefs(context.applicationContext).getBoolean("reachable", true))
             vault = it
         }
+
+    private fun migrate(context: Context, flock: String) {
+        val prefs = prefs(context)
+
+        if (prefs.getBoolean("flocked", false)) {
+            return
+        }
+
+        val edit = prefs.edit()
+
+        for (key in listOf("stars", "compacts", "mutes", "codes")) {
+            val old = JSONObject(prefs.getString(key, "{}") ?: "{}")
+            val moved = JSONObject()
+
+            for (id in old.keys()) {
+                moved.put("$flock-$id", old.get(id))
+            }
+
+            edit.putString(key, moved.toString())
+        }
+
+        val order = JSONArray(prefs.getString("order", "[]") ?: "[]")
+
+        edit.putString("order", JSONArray((0 until order.length()).map { "$flock-${order.getString(it)}" }).toString())
+        edit.putBoolean("flocked", true).apply()
+
+        PeerNames.migrate(context, flock)
+    }
 
     fun attach(service: VigilVpnService) {
         service.getSystemService(NotificationManager::class.java).createNotificationChannel(
@@ -92,32 +122,49 @@ object Chats {
     fun poll(service: VigilVpnService, status: JSONObject?) {
         val chat = status?.optJSONObject("chat") ?: return
         val vault = vault(service)
+        val gospels = chat.optJSONArray("gospels") ?: JSONArray()
+        val running = mutableMapOf<String, Long>()
+        val own = mutableMapOf<String, String>()
 
-        local = chat.optString("id")
+        for (i in 0 until gospels.length()) {
+            val gospel = gospels.getJSONObject(i)
 
-        if (chat.optLong("session") != session) {
+            running[gospel.getString("flock")] = gospel.optLong("session")
+            own[gospel.getString("flock")] = Flock.local(gospel.getString("id"))
+        }
+
+        locals = own
+
+        val fresh = running.filter { sessions[it.key] != it.value }.keys
+
+        if (chat.optLong("session") != session || fresh.isNotEmpty()) {
             resubmit = 0L
             accepts = -1L
             waiting.clear()
 
             try {
-                if (!Vigil.chatNick(nick(service))) {
-                    Log.w(TAG, "our nickname was refused")
-                }
-
-                val avatar = vault.ownAvatar()
-
-                try {
-                    if (!Vigil.chatAvatar(avatar)) {
-                        Log.w(TAG, "our avatar was refused")
+                if (chat.optLong("session") != session) {
+                    if (!Vigil.chatNick(nick(service))) {
+                        Log.w(TAG, "our nickname was refused")
                     }
-                } finally {
-                    avatar?.fill(0)
+
+                    val avatar = vault.ownAvatar()
+
+                    try {
+                        if (!Vigil.chatAvatar(avatar)) {
+                            Log.w(TAG, "our avatar was refused")
+                        }
+                    } finally {
+                        avatar?.fill(0)
+                    }
+
+                    vault.expire()
                 }
 
-                vault.expire()
-                handover(vault, null)
+                handover(vault, null, fresh)
                 session = chat.optLong("session")
+                sessions.clear()
+                sessions.putAll(running)
             } catch (e: Exception) {
                 Log.w(TAG, "failed to hand over the outbox", e)
             }
@@ -125,7 +172,7 @@ object Chats {
             resubmit = 0L
 
             try {
-                handover(vault, waiting.toSet())
+                handover(vault, waiting.toSet(), running.keys)
             } catch (e: Exception) {
                 Log.w(TAG, "failed to hand over the refused data", e)
                 refused(null)
@@ -167,9 +214,11 @@ object Chats {
 
         for (i in 0 until events.length()) {
             val event = events.getJSONObject(i)
+            val flock = Flock.hex(event.getString("flock"))
             val peer = event.getString("peer").toInt(16)
+            val from = Flock.id(flock, event.getString("peer"))
             val id = event.optString("group").ifEmpty { null }
-                ?.let { ChatVault.groupChat(event.getString("owner"), it) } ?: Calls.hex(peer)
+                ?.let { ChatVault.groupChat(flock, event.getString("owner"), it) } ?: from
 
             try {
                 when (event.getString("type")) {
@@ -190,7 +239,7 @@ object Chats {
                         if (alerts(service, id, event.optBoolean("mention"))) {
                             unseen[id] = (unseen[id] ?: 0) + 1
                             notify(
-                                service, id, peer, nick, event.optString("signed"), text, time,
+                                service, id, from, nick, event.optString("signed"), text, time,
                                 event.optString("topic")
                             )
                         }
@@ -223,7 +272,7 @@ object Chats {
                         if (alerts(service, id, false)) {
                             unseen[id] = (unseen[id] ?: 0) + 1
                             notify(
-                                service, id, peer, nick, event.optString("signed"), summary(media, name), time,
+                                service, id, from, nick, event.optString("signed"), summary(media, name), time,
                                 event.optString("topic")
                             )
                         }
@@ -241,29 +290,26 @@ object Chats {
                         stored(event.getLong("token"))
                     }
                     "name" -> {
-                        vault.peerName(peer, event.optString("nick"), event.optString("signed"))
+                        vault.peerName(from, event.optString("nick"), event.optString("signed"))
                         namesChanged()
                     }
                     "ask" -> {
-                        if (asked(vault, Calls.hex(peer))) {
+                        if (asked(vault, from)) {
                             changed()
-                            announce(
-                                service, Calls.hex(peer), peer,
-                                "Is trying to reach you, accept or decline under Peers"
-                            )
+                            announce(service, from, from, "Is trying to reach you, accept or decline under Peers")
                         }
                     }
                     "avatar" -> {
                         val token = event.getLong("token")
 
                         if (token == 0L) {
-                            vault.peerAvatar(peer, null)
+                            vault.peerAvatar(from, null)
                         } else {
                             val data = Vigil.chatDataTake(token, event.getInt("size"))
                                 ?: throw IllegalStateException("avatar $token is gone")
 
                             try {
-                                vault.peerAvatar(peer, data)
+                                vault.peerAvatar(from, data)
                             } finally {
                                 data.fill(0)
                             }
@@ -292,7 +338,7 @@ object Chats {
                         left(service, vault, id, Calls.hex(peer))
                         stored(event.getLong("token"))
                     }
-                    "safety" -> safetyStore(service, peer)
+                    "safety" -> safetyStore(service, from)
                     "ambry" -> vault.deliver(
                         id, peer, "", event.getString("generation"), System.currentTimeMillis(),
                         "ambry"
@@ -303,7 +349,7 @@ object Chats {
                     }
                     "desktop" -> desktop(service, event)
                     "sent", "delivered" ->
-                        receipt(vault, Receipt(Calls.hex(peer), event.getLong("ref"), event.getString("type")))
+                        receipt(vault, Receipt(from, event.getLong("ref"), event.getString("type")))
                 }
                 changed()
             } catch (e: Exception) {
@@ -362,7 +408,7 @@ object Chats {
         }
 
         for (member in to) {
-            Vigil.chatDrop(member.toInt(16), ref)
+            Vigil.chatDrop(Flock.number(chat), member.toInt(16), ref)
         }
 
         val answer = JSONObject()
@@ -422,7 +468,9 @@ object Chats {
             "retract" -> retract(
                 service, checked(chat), ask.getLong("ref"), ask.optString("hash"), ask.optString("topic")
             )
-            "group" -> groupCreate(service, ask.getString("name"), strings(ask.getJSONArray("members")))
+            "group" -> groupCreate(
+                service, ask.getString("flock"), ask.getString("name"), strings(ask.getJSONArray("members"))
+            )
             "edit" -> groupEdit(
                 service, checked(chat), if (ask.has("name")) ask.getString("name") else null,
                 ask.optJSONArray("members")?.let { strings(it) }
@@ -455,9 +503,7 @@ object Chats {
     }
 
     fun checked(chat: String): String {
-        require(
-            ChatVault.group(chat) != null || (chat.matches(Regex("[0-9a-f]{2}")) && chat.toInt(16) in 1..0xfe)
-        ) { "There is no chat $chat." }
+        require(ChatVault.group(chat) != null || Flock.valid(chat)) { "There is no chat $chat." }
 
         return chat
     }
@@ -635,11 +681,10 @@ object Chats {
 
     private fun strings(list: JSONArray): List<String> = (0 until list.length()).map { list.getString(it) }
 
-    fun self(): String {
-        require(local.isNotEmpty()) { "Gospel is not running." }
+    fun self(chat: String): String = local(Flock.of(chat))
 
-        return local
-    }
+    private fun local(flock: String): String =
+        locals[flock] ?: throw IllegalArgumentException("Gospel is not running for flock $flock.")
 
     fun safetyCode(context: Context, id: String, clear: Boolean, on: Boolean?): String {
         val peer = safetyPeer(id)
@@ -697,7 +742,9 @@ object Chats {
 
         try {
             require(!own.contentEquals(theirs)) { "Those are your own words." }
-            require(Vigil.safetyStart(peer, own, theirs)) { "Could not start the safety code exchange." }
+            require(Vigil.safetyStart(Flock.number(peer), Flock.peer(peer), own, theirs)) {
+                "Could not start the safety code exchange."
+            }
         } finally {
             theirs.fill(0)
         }
@@ -709,17 +756,17 @@ object Chats {
 
         Vigil.safetyStop()
 
-        if (peer != 0) {
+        if (peer.isNotEmpty()) {
             safetyStore(context, peer)
         }
 
         safetyHalf?.fill(0)
         safetyHalf = null
-        safetyFor = 0
+        safetyFor = ""
     }
 
-    fun safetyStore(context: Context, peer: Int) {
-        val input = Vigil.safetyGet(peer) ?: return
+    fun safetyStore(context: Context, peer: String) {
+        val input = Vigil.safetyGet(Flock.number(peer), Flock.peer(peer)) ?: return
         val codes = codes(context)
 
         try {
@@ -728,35 +775,35 @@ object Chats {
             input.fill(0)
         }
 
-        codes.put(Calls.hex(peer), true)
+        codes.put(peer, true)
         prefs(context).edit().putString("codes", codes.toString()).apply()
         safetyApply(context, peer)
     }
 
-    private fun safetyPeer(id: String): Int {
-        require(id.matches(Regex("[0-9a-f]{2}")) && id != "00" && id != "ff") { "There is no peer $id." }
+    private fun safetyPeer(id: String): String {
+        require(Flock.valid(id)) { "There is no peer $id." }
 
-        return id.toInt(16)
+        return id
     }
 
     fun safetyCodes(context: Context): String {
         val set = JSONArray()
 
         for ((peer, input) in vault(context).safetyInputs()) {
-            set.put(Calls.hex(peer))
+            set.put(peer)
             input.fill(0)
         }
 
         return JSONObject().put("on", JSONArray(codes(context).keys().asSequence().toList())).put("set", set).toString()
     }
 
-    private fun safetyApply(context: Context, peer: Int) {
+    private fun safetyApply(context: Context, peer: String) {
         val input = vault(context).safetyInputs()[peer]
 
-        if (input != null && codes(context).optBoolean(Calls.hex(peer))) {
-            Vigil.additionalInput(peer, input)
+        if (input != null && codes(context).optBoolean(peer)) {
+            Vigil.additionalInput(Flock.number(peer), Flock.peer(peer), input)
         } else {
-            Vigil.additionalInput(peer, null)
+            Vigil.additionalInput(Flock.number(peer), Flock.peer(peer), null)
         }
 
         input?.fill(0)
@@ -767,8 +814,8 @@ object Chats {
             val codes = codes(context)
 
             for ((peer, input) in vault(context).safetyInputs()) {
-                if (codes.optBoolean(Calls.hex(peer))) {
-                    Vigil.additionalInput(peer, input)
+                if (codes.optBoolean(peer)) {
+                    Vigil.additionalInput(Flock.number(peer), Flock.peer(peer), input)
                 }
 
                 input.fill(0)
@@ -791,7 +838,7 @@ object Chats {
         require(chosen.matches(Regex("[0-9a-f]{16}")) && chosen != "0".repeat(16)) { "There is no topic $topic." }
 
         val vault = vault(context)
-        val self = if (ChatVault.group(id) != null) self() else ""
+        val self = if (ChatVault.group(id) != null) self(id) else ""
 
         submit(vault, vault.topic(id, chosen, trimmed, color and 0xffffff, vault.ref(), self))
         merge(vault)
@@ -802,7 +849,7 @@ object Chats {
 
     fun retract(context: Context, id: String, ref: Long, hash: String = "", topic: String = "") {
         val vault = vault(context)
-        val self = if (ChatVault.group(id) != null) self() else ""
+        val self = if (ChatVault.group(id) != null) self(id) else ""
         val retracted = try {
             vault.retract(id, ref, self)
         } catch (e: ChatVault.Locked) {
@@ -818,16 +865,18 @@ object Chats {
         changed()
     }
 
-    fun groupCreate(context: Context, name: String, picked: List<String>): String {
-        val local = self()
+    fun groupCreate(context: Context, picked: String, name: String, chosen: List<String>): String {
+        val flock = Flock.hex(picked)
+        val local = local(flock)
         val trimmed = name.trim()
-        val members = picked.filter { it.matches(Regex("[0-9a-f]{2}")) && it != local }.distinct()
+        val members = chosen.filter { Flock.valid(it) && Flock.of(it) == flock }.map { Flock.local(it) }
+            .filter { it != local }.distinct()
 
         require(trimmed.toByteArray().size <= GROUP_NAME_MAX) { "A group name is at most $GROUP_NAME_MAX bytes." }
-        require(members.isNotEmpty()) { "Pick at least one member." }
+        require(members.isNotEmpty()) { "Pick at least one member of that flock." }
 
         val id = "%016x".format(SecureRandom().nextLong().takeIf { it != 0L } ?: 1L)
-        val chat = ChatVault.groupChat(local, id)
+        val chat = ChatVault.groupChat(flock, local, id)
         val vault = vault(context)
         val info = JSONObject()
             .put("owner", local)
@@ -850,7 +899,8 @@ object Chats {
     }
 
     fun groupEdit(context: Context, chat: String, name: String?, picked: List<String>?) {
-        val local = self()
+        val local = self(chat)
+        val flock = Flock.of(chat)
         val vault = vault(context)
         val info = vault.groupInfo(chat) ?: throw IllegalArgumentException("There is no group $chat.")
         val before = ChatVault.members(info)
@@ -859,8 +909,8 @@ object Chats {
         require(info.getString("owner") == local) { "Only the owner can change a group." }
         require(info.getString("state") == "open") { "This group is closed." }
 
-        val members = picked?.filter { it.matches(Regex("[0-9a-f]{2}")) && it != local }?.distinct()?.plus(local)
-            ?: before
+        val members = picked?.filter { Flock.valid(it) && Flock.of(it) == flock }?.map { Flock.local(it) }
+            ?.filter { it != local }?.distinct()?.plus(local) ?: before
 
         require(members.size > 1) { "A group needs at least one other member." }
 
@@ -939,7 +989,9 @@ object Chats {
         }
 
         if (ChatVault.group(chat) == null) {
-            check(Vigil.chatForget(chat.toInt(16))) { "Vigil is busy, try deleting the chat again." }
+            check(Vigil.chatForget(Flock.number(chat), Flock.peer(chat))) {
+                "Vigil is busy, try deleting the chat again."
+            }
         } else if (vault.groupInfo(chat)?.optString("state") == "open") {
             groupLeave(context, chat)
         }
@@ -952,7 +1004,7 @@ object Chats {
     }
 
     fun groupLeave(context: Context, chat: String) {
-        val local = self()
+        val local = self(chat)
         val vault = vault(context)
         val info = vault.groupInfo(chat) ?: return
         val owner = info.getString("owner")
@@ -1000,6 +1052,7 @@ object Chats {
 
     private fun roster(service: VigilVpnService, vault: ChatVault, chat: String, peer: Int, event: JSONObject) {
         val owner = Calls.hex(peer)
+        val local = self(chat)
         val info = vault.groupInfo(chat)
         val serial = event.getInt("serial")
         val time = System.currentTimeMillis()
@@ -1030,27 +1083,29 @@ object Chats {
             chat,
             JSONObject()
                 .put("owner", owner)
-                .put("id", chat.substring(3))
+                .put("id", "%016x".format(ChatVault.group(chat)!!.id))
                 .put("name", name)
                 .put("members", JSONArray(members))
                 .put("serial", serial)
                 .put("state", state)
         )
 
+        val flock = Flock.of(chat)
+
         if (info == null || info.getString("state") == "removed") {
             if (state == "open") {
                 vault.deliver(chat, peer, "", name, time, "added")
-                announce(service, chat, peer, "added you to ${name.ifEmpty { "a group" }}")
+                announce(service, chat, Flock.id(flock, owner), "added you to ${name.ifEmpty { "a group" }}")
             }
         } else {
             for (member in members.filter { it !in before && it != local }) {
                 vault.deliver(chat, member.toInt(16), "", "", time, "joined")
-                announce(service, chat, member.toInt(16), "joined the group")
+                announce(service, chat, Flock.id(flock, member), "joined the group")
             }
 
             for (member in before.filter { it !in members && it != local }) {
                 vault.deliver(chat, member.toInt(16), "", "", time, "left")
-                announce(service, chat, member.toInt(16), "left the group")
+                announce(service, chat, Flock.id(flock, member), "left the group")
             }
 
             if (name != info.optString("name")) {
@@ -1063,7 +1118,7 @@ object Chats {
             drop(vault.groupDrop(chat, before + members))
 
             if (state == "removed") {
-                announce(service, chat, peer, "removed you from the group")
+                announce(service, chat, Flock.id(flock, owner), "removed you from the group")
             }
         } else {
             drop(vault.groupDrop(chat, before.filter { it !in members }))
@@ -1074,6 +1129,7 @@ object Chats {
 
     private fun left(service: VigilVpnService, vault: ChatVault, chat: String, member: String) {
         val info = vault.groupInfo(chat) ?: return
+        val local = self(chat)
 
         if (info.getString("owner") != local || info.getString("state") != "open") {
             return
@@ -1091,7 +1147,7 @@ object Chats {
         vault.groupSave(chat, info)
         drop(vault.groupDrop(chat, listOf(member)))
         vault.deliver(chat, member.toInt(16), "", "", System.currentTimeMillis(), "left")
-        announce(service, chat, member.toInt(16), "left the group")
+        announce(service, chat, Flock.id(Flock.of(chat), member), "left the group")
 
         submit(vault, vault.rosterQueue(chat, info, local))
         namesChanged()
@@ -1109,7 +1165,7 @@ object Chats {
 
     fun drop(dropped: List<Pair<String, Long>>) {
         for ((peer, ref) in dropped) {
-            if (!Vigil.chatDrop(peer.toInt(16), ref)) {
+            if (!Vigil.chatDrop(Flock.number(peer), Flock.peer(peer), ref)) {
                 Log.w(TAG, "failed to drop $ref for $peer")
             }
         }
@@ -1141,12 +1197,16 @@ object Chats {
         for (id in groups.keys()) {
             val info = groups.getJSONObject(id)
             val stale = info.optJSONArray("stale") ?: continue
+            val flock = Flock.of(id)
+            val local = locals[flock] ?: continue
 
             if (info.getString("owner") != local) {
                 continue
             }
 
-            for (member in (0 until stale.length()).map { stale.getString(it) }.filter { it in around }) {
+            val members = (0 until stale.length()).map { stale.getString(it) }
+
+            for (member in members.filter { Flock.id(flock, it) in around }) {
                 vault.groupStale(id, member, false)
                 submit(vault, vault.rosterQueue(id, vault.groupInfo(id)!!, local, only = listOf(member)))
                 submit(vault, vault.topicQueue(id, local, listOf(member)))
@@ -1180,7 +1240,7 @@ object Chats {
         }
     }
 
-    private fun handover(vault: ChatVault, only: Set<Long>?) {
+    private fun handover(vault: ChatVault, only: Set<Long>?, flocks: Set<String>) {
         val outbox = vault.outboxList()
         val refs = mutableSetOf<Long>()
 
@@ -1191,6 +1251,10 @@ object Chats {
             refs.add(ref)
 
             if (only != null && ref !in only) {
+                continue
+            }
+
+            if (Flock.of(entry.getString("peer")) !in flocks) {
                 continue
             }
 
@@ -1209,7 +1273,8 @@ object Chats {
             return true
         }
 
-        val peer = entry.getString("peer").toInt(16)
+        val flock = Flock.number(entry.getString("peer"))
+        val peer = Flock.peer(entry.getString("peer"))
         val chat = entry.optString("chat", entry.getString("peer"))
         val group = ChatVault.group(chat)
         val ref = entry.getLong("ref")
@@ -1221,26 +1286,26 @@ object Chats {
                 val color = entry.getInt("color")
 
                 if (group != null) {
-                    return Vigil.chatGroupTopic(peer, ref, group.id, entry.optInt("gs"), topic, color, name)
+                    return Vigil.chatGroupTopic(flock, peer, ref, group.id, entry.optInt("gs"), topic, color, name)
                 }
 
-                return Vigil.chatTopic(peer, ref, topic, color, name)
+                return Vigil.chatTopic(flock, peer, ref, topic, color, name)
             }
             "roster" -> {
                 val list = entry.getJSONArray("members")
 
                 return Vigil.chatGroupRoster(
-                    peer, ref, group!!.id, entry.getInt("serial"), entry.getBoolean("ended"),
+                    flock, peer, ref, group!!.id, entry.getInt("serial"), entry.getBoolean("ended"),
                     ChatVault.roster((0 until list.length()).map { list.getString(it) }),
                     entry.getString("name").toByteArray()
                 )
             }
-            "leave" -> return Vigil.chatGroupLeave(peer, ref, group!!.id)
+            "leave" -> return Vigil.chatGroupLeave(flock, peer, ref, group!!.id)
             "retract" -> {
                 val hash = java.lang.Long.parseUnsignedLong(entry.getString("hash"), 16)
 
                 return Vigil.chatRetract(
-                    peer, ref, group?.owner ?: 0, group?.id ?: 0L, entry.optInt("gs"), topic, hash
+                    flock, peer, ref, group?.owner ?: 0, group?.id ?: 0L, entry.optInt("gs"), topic, hash
                 )
             }
         }
@@ -1252,12 +1317,12 @@ object Chats {
 
             if (group != null) {
                 return Vigil.chatGroupSend(
-                    peer, ref, group.owner, group.id, entry.optInt("gs"), topic, text, quote?.peer ?: 0,
+                    flock, peer, ref, group.owner, group.id, entry.optInt("gs"), topic, text, quote?.peer ?: 0,
                     quote?.digest ?: 0L
                 )
             }
 
-            return Vigil.chatSend(peer, ref, text, quote?.peer ?: 0, quote?.digest ?: 0L, topic)
+            return Vigil.chatSend(flock, peer, ref, text, quote?.peer ?: 0, quote?.digest ?: 0L, topic)
         }
 
         val data = try {
@@ -1271,11 +1336,11 @@ object Chats {
         try {
             if (group != null) {
                 return Vigil.chatGroupDataSend(
-                    peer, ref, group.owner, group.id, entry.optInt("gs"), topic, kind, name, data
+                    flock, peer, ref, group.owner, group.id, entry.optInt("gs"), topic, kind, name, data
                 )
             }
 
-            return Vigil.chatDataSend(peer, ref, kind, name, data, topic)
+            return Vigil.chatDataSend(flock, peer, ref, kind, name, data, topic)
         } finally {
             data.fill(0)
         }
@@ -1292,11 +1357,15 @@ object Chats {
     }
 
     fun open(context: Context, id: String, on: Boolean) {
-        peer(opened)?.let { if (opened != id) Vigil.chatOpen(it, false) }
+        if (Flock.valid(opened) && opened != id) {
+            Vigil.chatOpen(Flock.number(opened), Flock.peer(opened), false)
+        }
 
         opened = if (on) id else ""
 
-        peer(id)?.let { Vigil.chatOpen(it, on) }
+        if (Flock.valid(id)) {
+            Vigil.chatOpen(Flock.number(id), Flock.peer(id), on)
+        }
 
         if (on) {
             seen(context, id)
@@ -1308,16 +1377,20 @@ object Chats {
         val where = ChatVault.topicId(topic)
 
         if (group == null) {
-            peer(id)?.let { Vigil.chatTyping(it, where, on) }
+            if (Flock.valid(id)) {
+                Vigil.chatTyping(Flock.number(id), Flock.peer(id), where, on)
+            }
             return
         }
 
         val info = if (on) vault(context).groupInfo(id) else null
 
         if (info != null && info.getString("state") == "open") {
-            Vigil.chatGroupTyping(group.owner, group.id, where, ChatVault.roster(ChatVault.members(info)))
+            Vigil.chatGroupTyping(
+                Flock.number(id), group.owner, group.id, where, ChatVault.roster(ChatVault.members(info))
+            )
         } else {
-            Vigil.chatGroupTyping(0, 0L, 0L, null)
+            Vigil.chatGroupTyping(0L, 0, 0L, 0L, null)
         }
     }
 
@@ -1330,7 +1403,10 @@ object Chats {
         foreground = false
 
         if (opened != "") {
-            peer(opened)?.let { Vigil.chatOpen(it, false) }
+            if (Flock.valid(opened)) {
+                Vigil.chatOpen(Flock.number(opened), Flock.peer(opened), false)
+            }
+
             typing(context, opened, false)
             opened = ""
         }
@@ -1355,8 +1431,8 @@ object Chats {
     }
 
     fun topicsFill(vault: ChatVault) {
-        if (local.isNotEmpty()) {
-            vault.topicsFill(local)
+        for ((flock, local) in locals) {
+            vault.topicsFill(flock, local)
         }
     }
 
@@ -1544,19 +1620,37 @@ object Chats {
         val admits = vault.admits()
         val ignored = vault.ignored()
 
-        for (peer in 1 until 0xff) {
-            Vigil.chatIgnore(peer, Calls.hex(peer) in ignored)
-            Vigil.chatAccept(peer, Calls.hex(peer) in admits)
+        for (flock in locals.keys) {
+            val number = java.lang.Long.parseUnsignedLong(flock, 16)
+
+            for (peer in 1 until 0xff) {
+                val id = Flock.id(flock, Calls.hex(peer))
+
+                Vigil.chatIgnore(number, peer, id in ignored)
+                Vigil.chatAccept(number, peer, vault.reachable || id in admits)
+            }
         }
 
         synchronized(this) {
-            if (asking.removeAll(admits + ignored)) {
+            val before = asking.size
+
+            asking.removeAll(admits + ignored)
+
+            if (vault.reachable) {
+                asking.removeAll { it !in ignored }
+            }
+
+            if (asking.size != before) {
                 changed()
             }
         }
     }
 
     private fun asked(vault: ChatVault, id: String): Boolean {
+        if (vault.reachable) {
+            return false
+        }
+
         if (id in vault.admits()) {
             return false
         }
@@ -1570,7 +1664,7 @@ object Chats {
         }
     }
 
-    private fun announce(service: VigilVpnService, chat: String, peer: Int, text: String) {
+    private fun announce(service: VigilVpnService, chat: String, peer: String, text: String) {
         if (!alerts(service, chat, false)) {
             return
         }
@@ -1587,11 +1681,8 @@ object Chats {
         return mention || muted(context, id) == 0L
     }
 
-    private fun peer(id: String): Int? =
-        if (id.length == 2) id.toInt(16).takeIf { it in 1..0xfe } else null
-
-    private fun sender(context: Context, peer: Int, nick: String, signed: String): String {
-        if (PeerNames.load(context).has(Calls.hex(peer))) {
+    private fun sender(context: Context, peer: String, nick: String, signed: String): String {
+        if (PeerNames.load(context).has(peer)) {
             return PeerNames.name(context, peer)
         }
 
@@ -1614,13 +1705,13 @@ object Chats {
         }
 
     private fun notify(
-        service: VigilVpnService, id: String, peer: Int, nick: String, signed: String, text: String,
+        service: VigilVpnService, id: String, peer: String, nick: String, signed: String, text: String,
         time: Long, topic: String
     ) {
         val name = sender(service, peer, nick, signed)
         val messages = shown.getOrPut(id) { mutableListOf() }
 
-        messages.add(Shown(if (preview(service)) text else "New message", time, name, Calls.hex(peer)))
+        messages.add(Shown(if (preview(service)) text else "New message", time, name, peer))
         while (messages.size > SHOWN_MAX) {
             messages.removeAt(0)
         }
@@ -1710,7 +1801,7 @@ object Chats {
             return GROUP_NOTIFICATION_BASE + (id.hashCode() and 0xffff)
         }
 
-        return NOTIFICATION_BASE + id.toInt(16)
+        return NOTIFICATION_BASE + (id.hashCode() and 0xffff)
     }
 
     private fun prefs(context: Context) =
@@ -1727,7 +1818,7 @@ object Chats {
     private const val RESYNC_MARGIN = 256L * 1024
     private const val TAG = "vigil"
     private const val CHANNEL = "messages"
-    private const val NOTIFICATION_BASE = 0x1000
+    private const val NOTIFICATION_BASE = 0x20000
     private const val GROUP_NOTIFICATION_BASE = 0x10000
     private const val SHOWN_MAX = 6
     private const val SUMMARY = 0x0fff

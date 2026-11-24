@@ -173,7 +173,7 @@ String? typingLine(Status status, String chat, String topic) {
 }
 
 List<ChatMember> groupMembers(Status status, String chat) {
-  final own = status.chat?.id ?? ownPeer();
+  final own = Vigil.instance.self(chat);
 
   return [
     for (final id in Vigil.instance.group(chat)?.members ?? const <String>[])
@@ -261,8 +261,7 @@ bool senderPicked(ChatMessage message) {
 }
 
 String memberLine(ChatMessage message) {
-  final own = Vigil.instance.status.chat?.id ?? ownPeer();
-  final who = message.from == own ? 'You' : sender(message);
+  final who = Vigil.instance.mine(message.from) ? 'You' : sender(message);
   final name = message.text.isEmpty ? 'a group' : message.text;
 
   return switch (message.kind) {
@@ -336,20 +335,6 @@ Future<bool> removeChat(String peer) async {
   }
 
   return true;
-}
-
-String ownPeer() {
-  final voice = Vigil.instance.tunnels.where((t) => t.summary.voice);
-  final spi = voice.firstOrNull?.summary.spi;
-  if (spi == null) {
-    return '';
-  }
-
-  if (spi.length < 4) {
-    return '';
-  }
-
-  return spi.substring(2);
 }
 
 String _clock(DateTime time) =>
@@ -443,8 +428,14 @@ String _when(DateTime time) {
 }
 
 Future<void> chatById() async {
+  final flock = await pickFlock('Chat in');
+
+  if (flock == null) {
+    return;
+  }
+
   final context = navigatorKey.currentContext;
-  if (context == null) {
+  if (context == null || !context.mounted) {
     return;
   }
 
@@ -461,12 +452,85 @@ Future<void> chatById() async {
     return;
   }
 
-  if (hex == ownPeer()) {
+  final peer = '$flock-$hex';
+
+  if (Vigil.instance.mine(peer)) {
     notify('That is you.');
     return;
   }
 
-  await push(ChatPage(peer: hex), opaque: false);
+  await push(ChatPage(peer: peer), opaque: false);
+}
+
+Future<String?> pickFlock(String title) async {
+  final voices = Vigil.instance.tunnels.where((t) => t.summary.voice).toList()
+    ..sort((a, b) => a.summary.flockId.compareTo(b.summary.flockId));
+
+  if (voices.isEmpty) {
+    return null;
+  }
+
+  if (voices.length == 1) {
+    return voices.first.summary.flockId;
+  }
+
+  final context = navigatorKey.currentContext;
+  if (context == null) {
+    return null;
+  }
+
+  return sheet<String>(
+    context,
+    (context) => Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        sheetTitle(title),
+        const SizedBox(height: 12),
+        Flexible(
+          child: ListView(
+            shrinkWrap: true,
+            padding: EdgeInsets.zero,
+            children: [
+              for (final voice in voices)
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 8),
+                  child: Panel(
+                    onTap: () =>
+                        Navigator.of(context).pop(voice.summary.flockId),
+                    padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
+                    child: Row(
+                      children: [
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                voice.summary.instance,
+                                style: Styles.cardTitle,
+                              ),
+                              Text(
+                                'Flock ${voice.summary.flockId}',
+                                style: Styles.detail,
+                              ),
+                            ],
+                          ),
+                        ),
+                        const Glyph(
+                          GlyphKind.chevron,
+                          size: 16,
+                          color: Palette.dim,
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+            ],
+          ),
+        ),
+      ],
+    ),
+  );
 }
 
 class _KekPrompt extends StatefulWidget {
@@ -902,7 +966,7 @@ class GroupPortrait extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final vigil = Vigil.instance;
-    final own = vigil.status.chat?.id ?? ownPeer();
+    final own = vigil.self(chat);
     final members = [
       for (final id in vigil.group(chat)?.members ?? const <String>[])
         if (id != own) id,
@@ -970,7 +1034,7 @@ bool _topicsOwned(String peer) {
   }
 
   final group = Vigil.instance.group(peer);
-  final own = Vigil.instance.status.chat?.id ?? ownPeer();
+  final own = Vigil.instance.self(peer);
 
   return group != null && group.open && group.owner == own;
 }
@@ -2104,7 +2168,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
         builder: (context, snapshot) {
           final status = snapshot.data!;
           final group = vigil.group(peer);
-          final owner = group?.owner == (status.chat?.id ?? ownPeer());
+          final owner = group?.owner == vigil.self(peer);
           final open = group?.open ?? false;
           final members = groupMembers(status, peer);
 
@@ -2188,7 +2252,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
       await _edit();
     } else if (action == '-') {
       await _leave();
-    } else if (action != null && action != ownPeer()) {
+    } else if (action != null && !Vigil.instance.mine(action)) {
       await push(ChatPage(peer: action), opaque: false);
     }
   }
@@ -2196,7 +2260,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
   Future<void> _edit() async {
     final vigil = Vigil.instance;
     final group = vigil.group(peer);
-    final own = vigil.status.chat?.id ?? ownPeer();
+    final own = vigil.self(peer);
 
     if (group == null) {
       return;
@@ -2208,13 +2272,14 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
       ...?vigil.status.chat?.peers.where((p) => p.present).map((p) => p.id),
       ...vigil.names.keys.where((p) => !isGroup(p)),
       ...chats.map((c) => c.peer).where((p) => !isGroup(p)),
-    }.where((p) => p != own).toList();
+    }.where((p) => p != own && flockOf(p) == group.flock).toList();
 
     if (!mounted) {
       return;
     }
 
     final picked = await _groupFlow(
+      flock: group.flock,
       peers: peers,
       edit: true,
       name: group.name,
@@ -2234,8 +2299,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
 
   Future<void> _leave() async {
     final vigil = Vigil.instance;
-    final owner =
-        vigil.group(peer)?.owner == (vigil.status.chat?.id ?? ownPeer());
+    final owner = vigil.group(peer)?.owner == vigil.self(peer);
 
     if (!await confirm(
       title: owner ? 'End group' : 'Leave group',
@@ -3201,9 +3265,9 @@ class _TypingState extends State<_Typing> with SingleTickerProviderStateMixin {
   }
 }
 
-String _author(ChatMessage message) {
+String _author(String chat, ChatMessage message) {
   if (!message.incoming) {
-    return Vigil.instance.selfName;
+    return Vigil.instance.selfName(chat);
   }
 
   return sender(message);
@@ -3237,7 +3301,7 @@ class _Quote extends StatelessWidget {
           children: [
             if (quote != null)
               Text(
-                _author(quote),
+                _author(chat, quote),
                 overflow: TextOverflow.ellipsis,
                 style: Styles.detail.copyWith(
                   fontSize: 12.5,
@@ -3288,7 +3352,7 @@ class _ReplyBar extends StatelessWidget {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
-                  'Reply to ${_author(message)}',
+                  'Reply to ${_author(chat, message)}',
                   overflow: TextOverflow.ellipsis,
                   style: Styles.detail.copyWith(
                     fontSize: 12.5,
@@ -3652,7 +3716,7 @@ Future<void> _actions(
       mainAxisSize: MainAxisSize.min,
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        sheetTitle(_author(message)),
+        sheetTitle(_author(chat, message)),
         const SizedBox(height: 8),
         Text(
           _summary(message),
@@ -4153,7 +4217,7 @@ class _Entry extends StatelessWidget {
   bool get _named =>
       message.incoming &&
       isGroup(chat) &&
-      mentions(message.text, Vigil.instance.selfNames).isNotEmpty;
+      mentions(message.text, Vigil.instance.selfNames(chat)).isNotEmpty;
 
   Widget _header() {
     final time = '${_day(message.time)} ${_clock(message.time)}';
@@ -4177,7 +4241,7 @@ class _Entry extends StatelessWidget {
                     style: style,
                     picked: senderPicked(message),
                   )
-                : PeerName(selfPeer, style: style),
+                : PeerName(selfPeer, chat: chat, style: style),
           ),
           const SizedBox(width: 8),
           Text(time, style: Styles.detail.copyWith(fontSize: 11.5)),
@@ -4294,7 +4358,7 @@ class _Entry extends StatelessWidget {
                       ? _icons()
                       : _Portrait(
                           peer: _speaker(chat, message),
-                          name: _author(message),
+                          name: _author(chat, message),
                         ),
                 ),
                 const SizedBox(width: _portraitGap),
@@ -5089,14 +5153,23 @@ class _Utf8Limit extends TextInputFormatter {
 }
 
 Future<void> newGroup(List<String> peers) async {
-  final picked = await _groupFlow(peers: peers);
+  final flock = await pickFlock('New group in');
+
+  if (flock == null) {
+    return;
+  }
+
+  final picked = await _groupFlow(
+    flock: flock,
+    peers: peers.where((p) => flockOf(p) == flock).toList(),
+  );
 
   if (picked == null) {
     return;
   }
 
   try {
-    final chat = await Vigil.instance.createGroup(picked.$1, picked.$2);
+    final chat = await Vigil.instance.createGroup(flock, picked.$1, picked.$2);
 
     await push(ChatPage(peer: chat), opaque: false);
   } on VigilError catch (e) {
@@ -5108,6 +5181,7 @@ Future<void> newGroup(List<String> peers) async {
 // a full page to pick the members. Going back from the members brings
 // the name sheet back up, the picks are kept.
 Future<(String, List<String>)?> _groupFlow({
+  required String flock,
   required List<String> peers,
   bool edit = false,
   String name = '',
@@ -5136,6 +5210,7 @@ Future<(String, List<String>)?> _groupFlow({
 
     final done = await push<bool>(
       _GroupMembers(
+        flock: flock,
         name: named,
         edit: edit,
         peers: {...peers, ...members}.toList()..sort(),
@@ -5231,12 +5306,14 @@ class _GroupNameState extends State<_GroupName> {
 
 class _GroupMembers extends StatefulWidget {
   const _GroupMembers({
+    required this.flock,
     required this.name,
     required this.edit,
     required this.peers,
     required this.picks,
   });
 
+  final String flock;
   final String name;
   final bool edit;
   final List<String> peers;
@@ -5270,19 +5347,21 @@ class _GroupMembersState extends State<_GroupMembers> {
       return;
     }
 
-    if (hex == ownPeer()) {
+    final peer = '${widget.flock}-$hex';
+
+    if (Vigil.instance.mine(peer)) {
       notify('That is you.');
       return;
     }
 
     setState(() {
-      if (!_peers.contains(hex)) {
+      if (!_peers.contains(peer)) {
         _peers
-          ..add(hex)
+          ..add(peer)
           ..sort();
       }
 
-      _picked.add(hex);
+      _picked.add(peer);
       _id.clear();
     });
   }
@@ -5369,8 +5448,8 @@ class _GroupMembersState extends State<_GroupMembers> {
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
                             PeerName(id, style: Styles.cardTitle),
-                            if (vigil.name(id) != 'Peer $id')
-                              Text('Peer $id', style: Styles.detail),
+                            if (vigil.name(id) != id)
+                              Text(id, style: Styles.detail),
                           ],
                         ),
                       ),

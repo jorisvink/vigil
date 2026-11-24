@@ -130,8 +130,8 @@ class _GospelPageState extends State<GospelPage> with WidgetsBindingObserver {
     }
   }
 
-  void _showGospel(Tunnel voice) {
-    sheet<void>(context, (context) => _GospelSheet(voice: voice));
+  void _showGospel(List<Tunnel> voices) {
+    sheet<void>(context, (context) => _GospelSheet(voices: voices));
   }
 
   void _showDesktop() {
@@ -147,7 +147,8 @@ class _GospelPageState extends State<GospelPage> with WidgetsBindingObserver {
       initialData: vigil.tunnels,
       builder: (context, tunnels) => LiveStatus(
         builder: (context, status) {
-          final voice = tunnels.data!.where((t) => t.summary.voice).firstOrNull;
+          final voices = gospels(tunnels.data!);
+          final voice = voices.firstOrNull;
 
           return TabPage(
             index: 3,
@@ -158,8 +159,8 @@ class _GospelPageState extends State<GospelPage> with WidgetsBindingObserver {
             actions: [
               if (voice != null) ...[
                 _StatusBtn(
-                  state: gospelState(voice, status),
-                  onTap: () => _showGospel(voice),
+                  state: gospelStates(voices, status),
+                  onTap: () => _showGospel(voices),
                 ),
                 if (status.chat?.companion case final desktop?)
                   _DesktopBtn(
@@ -195,7 +196,7 @@ class _GospelPageState extends State<GospelPage> with WidgetsBindingObserver {
                   ),
                 )
               else ...[
-                ?_offline(voice, status),
+                ?_offline(voices, status),
                 if (status.running && !status.linked) const LinkNotice(),
                 if (!status.background) const BackgroundNotice(),
                 ..._chatList(status),
@@ -209,8 +210,8 @@ class _GospelPageState extends State<GospelPage> with WidgetsBindingObserver {
 
   // Only shown when Gospel cannot carry chats at all, everything else
   // lives behind the status dot in the top bar.
-  Widget? _offline(Tunnel voice, Status status) {
-    final starting = status.connecting == voice.id;
+  Widget? _offline(List<Tunnel> voices, Status status) {
+    final starting = voices.any((v) => status.connecting == v.id);
 
     if (starting || (status.gospel && status.call != null)) {
       return null;
@@ -221,7 +222,7 @@ class _GospelPageState extends State<GospelPage> with WidgetsBindingObserver {
       action: status.gospel ? 'Start' : 'Turn on',
       busy: _busy,
       onAction: () => _gospel(true),
-      onTap: () => _showGospel(voice),
+      onTap: () => _showGospel(voices),
     );
   }
 
@@ -402,6 +403,10 @@ class _UnreadSort extends StatelessWidget {
   }
 }
 
+List<Tunnel> gospels(List<Tunnel> tunnels) =>
+    tunnels.where((t) => t.summary.voice).toList()
+      ..sort((a, b) => a.summary.flockId.compareTo(b.summary.flockId));
+
 Liveness gospelState(Tunnel voice, Status status) {
   final calls = status.call;
 
@@ -413,11 +418,25 @@ Liveness gospelState(Tunnel voice, Status status) {
     return Liveness.off;
   }
 
-  if (!calls.alive) {
+  if (!calls.gospelAlive(voice.summary.flockId)) {
     return Liveness.pending;
   }
 
   return Liveness.online;
+}
+
+Liveness gospelStates(List<Tunnel> voices, Status status) {
+  final states = [for (final v in voices) gospelState(v, status)];
+
+  if (states.contains(Liveness.pending)) {
+    return Liveness.pending;
+  }
+
+  if (states.contains(Liveness.online)) {
+    return Liveness.online;
+  }
+
+  return Liveness.off;
 }
 
 class _StatusBtn extends StatelessWidget {
@@ -631,9 +650,9 @@ class _DesktopSheet extends StatelessWidget {
 }
 
 class _GospelSheet extends StatefulWidget {
-  const _GospelSheet({required this.voice});
+  const _GospelSheet({required this.voices});
 
-  final Tunnel voice;
+  final List<Tunnel> voices;
 
   @override
   State<_GospelSheet> createState() => _GospelSheetState();
@@ -659,26 +678,26 @@ class _GospelSheetState extends State<_GospelSheet> {
   @override
   Widget build(BuildContext context) {
     final vigil = Vigil.instance;
-    final voice = widget.voice;
 
     return StreamBuilder<Status>(
       stream: vigil.statuses,
       initialData: vigil.status,
       builder: (context, snapshot) {
         final status = snapshot.data!;
+        final voices = gospels(vigil.tunnels);
         final on = status.gospel;
         final calls = status.call;
-        final starting = status.connecting == voice.id;
+        final starting = voices.any((v) => status.connecting == v.id);
 
         return Column(
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            sheetTitle(voice.summary.instance),
+            sheetTitle('Gospel'),
             const SizedBox(height: 16),
             Row(
               children: [
-                StateDot(gospelState(voice, status)),
+                StateDot(gospelStates(voices, status)),
                 const SizedBox(width: 10),
                 Expanded(
                   child: Column(
@@ -687,7 +706,7 @@ class _GospelSheetState extends State<_GospelSheet> {
                       Text(_title(on, starting, calls), style: Styles.value),
                       const SizedBox(height: 2),
                       Text(
-                        _detail(voice, on, calls),
+                        _detail(voices, on, calls),
                         style: Styles.detail,
                         overflow: TextOverflow.ellipsis,
                       ),
@@ -719,18 +738,26 @@ class _GospelSheetState extends State<_GospelSheet> {
                 onTap: _busy ? null : () => _gospel(true),
               ),
             ],
-            if (on && status.liturgies.isNotEmpty) ...[
-              const SizedBox(height: 12),
-              for (final l in status.liturgies) _LiturgyRow(liturgy: l),
-            ],
             const SizedBox(height: 16),
+            Flexible(
+              child: ListView(
+                shrinkWrap: true,
+                padding: EdgeInsets.zero,
+                children: [
+                  for (final voice in voices)
+                    _GospelRow(voice: voice, status: status),
+                ],
+              ),
+            ),
+            const SizedBox(height: 8),
             Btn(
-              label: 'Tunnel details',
+              label: 'Add Gospel',
+              glyph: GlyphKind.scan,
               kind: BtnKind.secondary,
               expand: true,
               onTap: () {
                 Navigator.of(context).pop();
-                push(TunnelPage(tunnel: voice));
+                addConfig();
               },
             ),
           ],
@@ -759,13 +786,17 @@ class _GospelSheetState extends State<_GospelSheet> {
     return 'Ready for calls and messages';
   }
 
-  String _detail(Tunnel voice, bool on, CallStatus? calls) {
+  String _detail(List<Tunnel> voices, bool on, CallStatus? calls) {
     if (!on) {
       return 'No calls or messages';
     }
 
     if (calls == null) {
-      return voice.summary.endpoint;
+      if (voices.length == 1) {
+        return voices.first.summary.endpoint;
+      }
+
+      return '${voices.length} flocks';
     }
 
     if (calls.peers.length == 1) {
@@ -776,16 +807,72 @@ class _GospelSheetState extends State<_GospelSheet> {
   }
 }
 
+class _GospelRow extends StatelessWidget {
+  const _GospelRow({required this.voice, required this.status});
+
+  final Tunnel voice;
+  final Status status;
+
+  @override
+  Widget build(BuildContext context) {
+    final flock = voice.summary.flockId;
+    final online = (status.call?.peers ?? const <String>[])
+        .where((p) => flockOf(p) == flock)
+        .length;
+    final liturgies = status.gospel ? status.liturgies(flock) : const [];
+
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 8),
+      child: Panel(
+        onTap: () {
+          Navigator.of(context).pop();
+          push(TunnelPage(tunnel: voice));
+        },
+        padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                StateDot(gospelState(voice, status)),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(voice.summary.instance, style: Styles.cardTitle),
+                      Text(
+                        online == 1
+                            ? 'Flock $flock · 1 peer online'
+                            : 'Flock $flock · $online peers online',
+                        style: Styles.detail,
+                      ),
+                    ],
+                  ),
+                ),
+                const Glyph(GlyphKind.chevron, size: 16, color: Palette.dim),
+              ],
+            ),
+            if (liturgies.isNotEmpty) ...[
+              const SizedBox(height: 8),
+              for (final l in liturgies) _LiturgyRow(liturgy: l),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+}
+
 List<String> knownPeers(Status status, List<String> chats) {
   final vigil = Vigil.instance;
-  final own = ownPeer();
 
   return <String>{
     ...?status.call?.peers,
     ...?status.chat?.peers.where((p) => p.present).map((p) => p.id),
     ...vigil.names.keys.where((p) => !isGroup(p)),
     ...chats,
-  }.where((p) => p != own).toList()..sort();
+  }.where((p) => isPeer(p) && !vigil.mine(p)).toList()..sort();
 }
 
 class _PeersPage extends StatefulWidget {
@@ -889,6 +976,20 @@ class _PeersPageState extends State<_PeersPage> {
     _updates?.cancel();
     _filter.dispose();
     super.dispose();
+  }
+
+  List<String> _flocks(List<String> peers) =>
+      {for (final p in peers) flockOf(p)}.toList()..sort();
+
+  String _flockName(String flock) {
+    final voices = gospels(Vigil.instance.tunnels);
+    final voice = voices.where((v) => v.summary.flockId == flock).firstOrNull;
+
+    if (voice == null) {
+      return 'Flock $flock';
+    }
+
+    return '${voice.summary.instance} · $flock';
   }
 
   List<String> _peers(Status status) {
@@ -1023,15 +1124,21 @@ class _PeersPageState extends State<_PeersPage> {
                   style: Styles.body,
                 ),
               ),
-            for (final id in peers)
-              Padding(
-                padding: const EdgeInsets.only(bottom: 8),
-                child: _PeerRow(
-                  peer: id,
-                  status: status,
-                  callable: calls.contains(id) && status.phone == null,
+            for (final flock in _flocks(peers)) ...[
+              if (gospels(vigil.tunnels).length > 1) ...[
+                GroupLabel(_flockName(flock)),
+                const SizedBox(height: 10),
+              ],
+              for (final id in peers.where((p) => flockOf(p) == flock))
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 8),
+                  child: _PeerRow(
+                    peer: id,
+                    status: status,
+                    callable: calls.contains(id) && status.phone == null,
+                  ),
                 ),
-              ),
+            ],
           ],
         );
       },
@@ -1071,9 +1178,9 @@ class _PeerRow extends StatelessWidget {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                PeerName(peer, style: Styles.cardTitle),
-                if (vigil.name(peer) != 'Peer $peer')
-                  Text('Peer $peer', style: Styles.detail),
+                PeerName(peer, style: Styles.cardTitle, shrink: 12),
+                if (vigil.name(peer) != peer)
+                  Text(peer, style: Styles.detail),
               ],
             ),
           ),
@@ -1208,7 +1315,16 @@ class _Invite extends StatelessWidget {
             Row(
               children: [
                 Avatar(peer),
-                Expanded(child: PeerName(peer, style: Styles.cardTitle)),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      PeerName(peer, style: Styles.cardTitle),
+                      if (Vigil.instance.name(peer) != peer)
+                        Text(peer, style: Styles.detail),
+                    ],
+                  ),
+                ),
               ],
             ),
             const SizedBox(height: 10),
@@ -1331,8 +1447,8 @@ class _IgnoredSheetState extends State<_IgnoredSheet> {
                               crossAxisAlignment: CrossAxisAlignment.start,
                               children: [
                                 PeerName(id, style: Styles.cardTitle),
-                                if (vigil.name(id) != 'Peer $id')
-                                  Text('Peer $id', style: Styles.detail),
+                                if (vigil.name(id) != id)
+                                  Text(id, style: Styles.detail),
                               ],
                             ),
                           ),

@@ -49,7 +49,9 @@ class _TunnelPageState extends State<TunnelPage> {
 
     await _run(() async {
       final status = Vigil.instance.status;
-      if (status.running && status.tunnelId == widget.tunnel.id) {
+      if (status.running &&
+          status.tunnelId == widget.tunnel.id &&
+          !widget.tunnel.summary.voice) {
         await Vigil.instance.disconnect();
       }
 
