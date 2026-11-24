@@ -34,6 +34,7 @@ struct vigil_ios_video {
 };
 
 int	vigil_ios_utun_fd(void);
+void	vigil_ios_anchor_check(void);
 void	vigil_ios_audio_restart(void);
 void	vigil_ios_video_set(const struct vigil_ios_video *);
 
