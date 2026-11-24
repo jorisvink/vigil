@@ -99,13 +99,16 @@ final class ChatVault {
         }
     }
 
-    static let shared = ChatVault()
+    static let shared = ChatVault(
+        base: FileManager.default
+            .containerURL(forSecurityApplicationGroupIdentifier: TunnelKeychain.group)?
+            .appendingPathComponent("chats", isDirectory: true),
+        owner: Bundle.main.bundleURL.pathExtension != "appex", service: "se.sanctorum.vigil.chat")
     static let selfAuthor = "00"
     static let companionRef = Int64(1) << 62
 
     static let defaults = UserDefaults(suiteName: TunnelKeychain.group) ?? .standard
 
-    private static let service = "se.sanctorum.vigil.chat"
     private static let keyAad = Data("VIGIL.CHAT.KEY".utf8)
     private static let metaAad = Data("VIGIL.CHAT.META".utf8)
     private static let recordAad = Data("VIGIL.CHAT.V1".utf8)
@@ -140,14 +143,16 @@ final class ChatVault {
     private var holding = 0
     private var refs: Int64 = 0
     private let mutex = NSRecursiveLock()
-    private let owner = Bundle.main.bundleURL.pathExtension != "appex"
+    private let owner: Bool
+    private let service: String
+
+    var fault: ((String) throws -> Void)?
 
     var hardware: Bool { SecureEnclave.isAvailable }
 
-    private init() {
-        let base = FileManager.default
-            .containerURL(forSecurityApplicationGroupIdentifier: TunnelKeychain.group)?
-            .appendingPathComponent("chats", isDirectory: true)
+    init(base: URL?, owner: Bool, service: String) {
+        self.owner = owner
+        self.service = service
 
         dir = base
         inbox = base?.appendingPathComponent("inbox", isDirectory: true)
@@ -886,29 +891,33 @@ final class ChatVault {
         var all = [String: Any]()
 
         do {
-            try exclusive(lock: "state") {
-                let file = try folder(dir).appendingPathComponent("state.json")
-                let stored = try? Data(contentsOf: file)
-
-                if let stored {
-                    all = (try? JSONSerialization.jsonObject(with: stored)) as? [String: Any] ?? [:]
-                } else {
-                    all = Self.migrate()
-                }
-
-                let before = all as NSDictionary
-
-                change(&all)
-
-                if stored == nil || !before.isEqual(to: all) {
-                    try write(file, JSONSerialization.data(withJSONObject: all))
-                }
-            }
+            try stateChange(&all, change)
         } catch {
             NSLog("vigil: could not keep the shared chat state: \(error)")
         }
 
         return all
+    }
+
+    private func stateChange(_ all: inout [String: Any], _ change: (inout [String: Any]) -> Void) throws {
+        try exclusive(lock: "state") {
+            let file = try folder(dir).appendingPathComponent("state.json")
+            let stored = try? Data(contentsOf: file)
+
+            if let stored {
+                all = (try? JSONSerialization.jsonObject(with: stored)) as? [String: Any] ?? [:]
+            } else {
+                all = Self.migrate()
+            }
+
+            let before = all as NSDictionary
+
+            change(&all)
+
+            if stored == nil || !before.isEqual(to: all) {
+                try write(file, JSONSerialization.data(withJSONObject: all))
+            }
+        }
     }
 
     private static func migrate() -> [String: Any] {
@@ -3367,13 +3376,15 @@ final class ChatVault {
     private func query(_ account: String) -> [String: Any] {
         [
             kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: Self.service,
+            kSecAttrService as String: service,
             kSecAttrAccount as String: account,
             kSecAttrAccessGroup as String: TunnelKeychain.group,
         ]
     }
 
     private func item(_ account: String) throws -> Data? {
+        try fault?("item \(account)")
+
         var search = query(account)
         search[kSecReturnData as String] = true
         search[kSecMatchLimit as String] = kSecMatchLimitOne
@@ -3394,6 +3405,8 @@ final class ChatVault {
     }
 
     private func store(_ account: String, _ data: Data, unlocked: Bool) throws {
+        try fault?("store \(account)")
+
         var status = SecItemUpdate(query(account) as CFDictionary,
                                    [kSecValueData as String: data] as CFDictionary)
 
@@ -3411,6 +3424,8 @@ final class ChatVault {
     }
 
     private func remove(_ account: String) throws {
+        try fault?("remove \(account)")
+
         let status = SecItemDelete(query(account) as CFDictionary)
 
         guard status == errSecSuccess || status == errSecItemNotFound else {
@@ -3424,11 +3439,14 @@ final class ChatVault {
     }
 
     private func write(_ file: URL, _ data: Data) throws {
+        try fault?("write \(file.lastPathComponent)")
         try data.write(to: file, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
     }
 
     private func wipe(_ file: URL) throws {
         guard FileManager.default.fileExists(atPath: file.path) else { return }
+
+        try fault?("wipe \(file.lastPathComponent)")
 
         let size = try FileManager.default.attributesOfItem(atPath: file.path)[.size] as? NSNumber ?? 0
         let handle = try FileHandle(forWritingTo: file)
@@ -3578,7 +3596,9 @@ final class ChatVault {
             try wipe(file)
         }
 
-        _ = state { all in
+        var kept = [String: Any]()
+
+        try stateChange(&kept) { all in
             for key in ["names", "mutes"] {
                 if let old = all[key] as? [String: Any] {
                     all[key] = Dictionary(uniqueKeysWithValues: old.map { (Self.moved(flock, $0.key), $0.value) })
@@ -3608,8 +3628,15 @@ final class ChatVault {
         for name in names where name.hasSuffix(".box") {
             let file = inbox.appendingPathComponent(name)
 
-            guard let plain = try? unseal(Data(contentsOf: file), info: Self.inboxAad),
-                  var entry = (try? JSONSerialization.jsonObject(with: plain)) as? [String: Any] else { continue }
+            let plain: Data
+
+            do {
+                plain = try unseal(Data(contentsOf: file), info: Self.inboxAad)
+            } catch is CryptoKitError {
+                continue
+            }
+
+            guard var entry = (try? JSONSerialization.jsonObject(with: plain)) as? [String: Any] else { continue }
 
             let chat = entry["chat"] as? String ?? entry["peer"] as? String ?? ""
 
@@ -3723,7 +3750,11 @@ final class ChatVault {
 
             let file = folder.appendingPathComponent(name)
 
-            guard let plain = try? unseal(Data(contentsOf: file), info: prefix + [peer]) else {
+            let plain: Data
+
+            do {
+                plain = try unseal(Data(contentsOf: file), info: prefix + [peer])
+            } catch is CryptoKitError {
                 try wipe(file)
                 continue
             }
