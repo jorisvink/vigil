@@ -9,7 +9,7 @@ import '../reliquary.dart';
 import '../theme.dart';
 import '../voice.dart';
 import '../widgets/marks.dart';
-import '../vigil.dart' show flockOf, localOf;
+import '../vigil.dart' show flockOf, localOf, typingDelay;
 import 'desk.dart';
 import 'join.dart';
 

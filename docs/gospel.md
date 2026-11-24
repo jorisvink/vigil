@@ -108,8 +108,9 @@ the extension.
 ## One-to-one chats
 
 A one-to-one chat uses a tunnel between two devices in the chat domain.
-The tunnel is created when there is something to send and closed again
-after a minute without activity.
+The tunnel is created when there is something to send, or once you have
+been typing for 5 seconds, and closed again after a minute without
+activity. Opening a chat does not create it.
 
 Every chat frame on the wire has the same size. A text message, an
 acknowledgement and a heartbeat all look the same to someone watching

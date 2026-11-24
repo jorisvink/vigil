@@ -369,17 +369,16 @@ struct vigil_companion_phone {
 
 /*
  * The state a desktop appends to each heartbeat to its phone, its sync
- * version, the peers in flock the desktop types to, the chats in flock the
- * desktop has open, the seq up to which the desktop stored what its phone
- * sent and if the desktop holds a full copy of the chats of its phone. The
- * magic and version always come first.
+ * version, the peers in flock the desktop types to, the seq up to which the
+ * desktop stored what its phone sent and if the desktop holds a full copy
+ * of the chats of its phone. The magic and version always come first.
  */
 struct vigil_companion_desktop {
 	u_int16_t		magic;
 	u_int16_t		version;
 	u_int64_t		flock;
 	u_int8_t		typing[VIGIL_CHAT_GROUP_ROSTER];
-	u_int8_t		opened[VIGIL_CHAT_GROUP_ROSTER];
+	u_int8_t		unused[VIGIL_CHAT_GROUP_ROSTER];
 	u_int64_t		topic;
 	u_int8_t		owner;
 	u_int64_t		group;

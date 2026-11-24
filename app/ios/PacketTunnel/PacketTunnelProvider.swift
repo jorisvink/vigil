@@ -327,10 +327,6 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             if words.count == 4, !id.isEmpty, let topic = UInt64(words[3], radix: 16) {
                 vigil_chat_typing(Flock.number(id), Flock.peer(id), topic, words[2] == "1" ? 1 : 0)
             }
-        case "chat-open":
-            if words.count == 3, !id.isEmpty {
-                vigil_chat_open(Flock.number(id), Flock.peer(id), words[2] == "1" ? 1 : 0)
-            }
         case "chat-answer":
             if words.count == 2, chatAsking.remove(String(words[1])) != nil {
                 askingSave()

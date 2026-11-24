@@ -20,7 +20,7 @@
  *	$ ./tests/chatter [-m peer:text] [-g id:name:members]
  *	    [-j owner:id[:members]] [-G text] [-L] [-K peer]
  *	    [-i peer:file] [-I file] [-f peer:file] [-F file] [-o dir]
- *	    [-t peer] [-T] [-O peer] [-e count] [-x secs] [-l count]
+ *	    [-t peer] [-T] [-e count] [-x secs] [-l count]
  *	    [-r author:hash] [-c topic:name] [-C peer:topic] [-P file]
  *	    [-R peer:hash] [-M companion] [-D datadir] <gospel>
  *
@@ -34,7 +34,6 @@
  * our group, or end it if we own it, once our messages to it went out.
  * With -K we remove the given peer from the group we own.
  * With -t we keep typing to the given peer and with -T to our group.
- * With -O we keep the chat with the given peer open.
  * With -r every -m and -G is a reply to the message with the given hash
  * written by the given author, 0 is us.
  * With -c we set up the given topic with every peer we send to and all of
@@ -175,9 +174,6 @@ static int		typing_group = 0;
 /* How many copies of messages to our group we expect to be delivered. */
 static int		group_wanted = 0;
 
-/* Who we keep a chat open with. */
-static long		open_peer = 0;
-
 /*
  * The peers we do not accept, after how many seconds we do and after how
  * many seconds we refuse them again.
@@ -213,7 +209,7 @@ usage(void)
 	    "[-K peer] "
 	    "[-i peer:file] [-I file] [-f peer:file] [-F file] "
 	    "[-a peer:file] [-A file] "
-	    "[-o dir] [-t peer] [-T] [-O peer] [-e count] [-x secs] "
+	    "[-o dir] [-t peer] [-T] [-e count] [-x secs] "
 	    "[-l count] [-r author:hash] [-c topic:name] [-C peer:topic] "
 	    "[-P file] [-R peer:hash] [-M companion] [-D datadir] "
 	    "[-S peer:input] [-W peer:own:theirs] [-u peer] [-U secs] "
@@ -242,7 +238,7 @@ main(int argc, char **argv)
 	delivered = 0;
 
 	while ((ch = getopt(argc, argv,
-	    "a:A:c:C:D:e:E:f:F:g:G:i:I:j:K:l:Lm:M:o:O:P:r:R:S:t:T"
+	    "a:A:c:C:D:e:E:f:F:g:G:i:I:j:K:l:Lm:M:o:P:r:R:S:t:T"
 	    "u:U:W:x:X:y:")) != -1) {
 		switch (ch) {
 		case 'E':
@@ -480,14 +476,6 @@ main(int argc, char **argv)
 		case 'T':
 			typing_group = 1;
 			break;
-		case 'O':
-			open_peer = strtol(optarg, &ep, 16);
-			if (*ep != '\0')
-				usage();
-			if (open_peer <= 0 ||
-			    open_peer >= KYRKA_PEERS_PER_FLOCK)
-				usage();
-			break;
 		case 'r':
 			reply_author = strtol(optarg, &ep, 16);
 			if (*ep != ':')
@@ -721,9 +709,6 @@ main(int argc, char **argv)
 				if (typing_peer != 0)
 					vigil_chat_typing(flock, typing_peer,
 					    topic, 1);
-
-				if (open_peer != 0)
-					vigil_chat_open(flock, open_peer, 1);
 
 				if (typing_group)
 					vigil_chat_group_typing(flock, owner,

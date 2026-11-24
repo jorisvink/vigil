@@ -183,9 +183,9 @@ We signal a peer on the chat signaling liturgy, group `0000`, while:
 
 - we hold messages for that peer, for a group copy only as the backoff
   under Groups allows,
-- its chat is open on our side (`vigil_chat_open(peer, 1)`),
-- a message of ours was delivered to that peer, or we got one from that
-  peer, in the last 60 s,
+- we type to that peer (`vigil_chat_typing(peer, topic, 1)`),
+- a message of ours was delivered to that peer, we got one from that peer
+  or we typed to that peer with our tunnel online, in the last 60 s,
 - that peer signals us and our tunnel with that peer is not online yet.
 
 The cathedral pushes us every peer that signals us. A peer counts as
@@ -484,7 +484,6 @@ vigil_chat_topic(peer, ref, topic, color,   queue a topic, no name removes
 vigil_chat_stored(token)                    ACK the message to the sender
 vigil_chat_forget(peer)                     drop the outbox of the peer
 vigil_chat_drop(peer, ref)                  drop one message of the outbox
-vigil_chat_open(peer, on)                   keep signaling the peer
 vigil_chat_accept(peer, on)                 accept the peer or not
 vigil_chat_ignore(peer, on)                 ignore the peer or not
 vigil_chat_typing(peer, topic, on)          typing in a one-to-one chat,

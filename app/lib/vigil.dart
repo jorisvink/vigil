@@ -1521,6 +1521,8 @@ String chosen(String nick) => '~$nick';
 
 const selfPeer = '00';
 
+const typingDelay = 5000;
+
 String bytes(int value) {
   const units = ['B', 'KiB', 'MiB', 'GiB', 'TiB'];
   var v = value.toDouble();

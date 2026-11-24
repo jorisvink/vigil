@@ -77,9 +77,6 @@ object Vigil {
     external fun chatStored(token: Long): Boolean
 
     @JvmStatic
-    external fun chatOpen(flock: Long, peer: Int, on: Boolean)
-
-    @JvmStatic
     external fun chatAccept(flock: Long, peer: Int, on: Boolean)
 
     @JvmStatic

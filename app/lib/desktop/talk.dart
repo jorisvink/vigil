@@ -28,6 +28,7 @@ class _ConversationState extends State<_Conversation> {
   Message? _reply;
   bool _typing = false;
   int _typed = 0;
+  int _since = 0;
   Timer? _idle;
   bool _recording = false;
   int _recorded = 0;
@@ -132,6 +133,18 @@ class _ConversationState extends State<_Conversation> {
       return;
     }
 
+    if (_since == 0) {
+      _since = now;
+    }
+
+    _idle = Timer(const Duration(seconds: 5), _stopTyping);
+
+    final online = Desk.instance.peers[_chat.id]?.online ?? false;
+
+    if (!_chat.isGroup && !online && now - _since < typingDelay) {
+      return;
+    }
+
     if (!_typing || now - _typed > 4000) {
       _typing = true;
       _typed = now;
@@ -139,12 +152,11 @@ class _ConversationState extends State<_Conversation> {
         Desk.instance.typing(_chat, widget.topic, true).catchError((_) {}),
       );
     }
-
-    _idle = Timer(const Duration(seconds: 5), _stopTyping);
   }
 
   void _stopTyping() {
     _idle?.cancel();
+    _since = 0;
 
     if (!_typing) {
       return;

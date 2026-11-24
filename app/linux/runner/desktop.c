@@ -123,7 +123,6 @@ static void	desktop_send(FlMethodCall *);
 static void	desktop_data(FlMethodCall *);
 static void	desktop_save(FlMethodCall *);
 static void	*desktop_remote_wait(void *);
-static void	desktop_open(FlMethodCall *);
 static void	desktop_hash(FlMethodCall *);
 static void	desktop_drop(FlMethodCall *);
 static void	desktop_paste(FlMethodCall *);
@@ -353,8 +352,6 @@ desktop_call(FlMethodChannel *chan, FlMethodCall *call, gpointer udata)
 		desktop_avatar(call);
 	} else if (!strcmp(method, "typing")) {
 		desktop_typing(call);
-	} else if (!strcmp(method, "open")) {
-		desktop_open(call);
 	} else if (!strcmp(method, "hash")) {
 		desktop_hash(call);
 	} else if (!strcmp(method, "drop")) {
@@ -2464,28 +2461,6 @@ desktop_typing(FlMethodCall *call)
 	    peer < KYRKA_PEERS_PER_FLOCK) {
 		vigil_chat_typing(flock, peer, topic, fl_value_get_bool(on));
 	}
-
-	fl_method_call_respond_success(call, NULL, NULL);
-}
-
-/*
- * Tell the core which chat we have open, our phone keeps that peer close.
- */
-static void
-desktop_open(FlMethodCall *call)
-{
-	FlValue		*args, *on;
-	u_int64_t	peer, flock;
-
-	args = fl_method_call_get_args(call);
-
-	if (run_id != 0 && fl_value_get_type(args) == FL_VALUE_TYPE_MAP &&
-	    (on = fl_value_lookup_string(args, "on")) != NULL &&
-	    fl_value_get_type(on) == FL_VALUE_TYPE_BOOL &&
-	    desktop_hex(args, "flock", &flock) == 0 &&
-	    desktop_hex(args, "peer", &peer) == 0 && peer > 0 &&
-	    peer < KYRKA_PEERS_PER_FLOCK)
-		vigil_chat_open(flock, peer, fl_value_get_bool(on));
 
 	fl_method_call_respond_success(call, NULL, NULL);
 }

@@ -1354,15 +1354,7 @@ object Chats {
     }
 
     fun open(context: Context, id: String, on: Boolean) {
-        if (Flock.valid(opened) && opened != id) {
-            Vigil.chatOpen(Flock.number(opened), Flock.peer(opened), false)
-        }
-
         opened = if (on) id else ""
-
-        if (Flock.valid(id)) {
-            Vigil.chatOpen(Flock.number(id), Flock.peer(id), on)
-        }
 
         if (on) {
             seen(context, id)
@@ -1400,10 +1392,6 @@ object Chats {
         foreground = false
 
         if (opened != "") {
-            if (Flock.valid(opened)) {
-                Vigil.chatOpen(Flock.number(opened), Flock.peer(opened), false)
-            }
-
             typing(context, opened, false)
             opened = ""
         }

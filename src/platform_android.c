@@ -88,8 +88,6 @@ static jboolean		android_chat_companion_sync(JNIEnv *, jclass,
 			    jbyteArray, jbyteArray);
 static jboolean		android_chat_companion_resync(JNIEnv *, jclass,
 			    jboolean);
-static void		android_chat_open(JNIEnv *, jclass, jlong, jint,
-			    jboolean);
 static void		android_chat_accept(JNIEnv *, jclass, jlong, jint,
 			    jboolean);
 static void		android_chat_ignore(JNIEnv *, jclass, jlong, jint,
@@ -150,7 +148,6 @@ static JNINativeMethod	methods[] = {
 	{ "chatForget", "(JI)Z", (void *)android_chat_forget },
 	{ "chatDrop", "(JIJ)Z", (void *)android_chat_drop },
 	{ "chatStored", "(J)Z", (void *)android_chat_stored },
-	{ "chatOpen", "(JIZ)V", (void *)android_chat_open },
 	{ "chatAccept", "(JIZ)V", (void *)android_chat_accept },
 	{ "chatIgnore", "(JIZ)V", (void *)android_chat_ignore },
 	{ "chatTyping", "(JIJZ)V", (void *)android_chat_typing },
@@ -752,16 +749,6 @@ static jboolean
 android_chat_stored(JNIEnv *env, jclass cls, jlong token)
 {
 	return (vigil_chat_stored((u_int64_t)token) == 0);
-}
-
-/*
- * Vigil.chatOpen(), marks the chat with the given peer as open or not.
- */
-static void
-android_chat_open(JNIEnv *env, jclass cls, jlong flock, jint peer, jboolean on)
-{
-	if (peer > 0 && peer < KYRKA_PEERS_PER_FLOCK)
-		vigil_chat_open(flock, peer, on == JNI_TRUE);
 }
 
 /*

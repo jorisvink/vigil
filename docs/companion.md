@@ -532,16 +532,15 @@ phone    struct vigil_companion_phone: the flock it is about; which peers
          last, the newest seq in the phone's journal
 desktop  struct vigil_companion_desktop: the flock it is about; which
          peers of that flock the desktop types to; the topic and group
-         it types in; the chats of that flock it has open; have, the
-         seq up to which it stored the phone's journal; and whether it
-         is synced
+         it types in; have, the seq up to which it stored the phone's
+         journal; and whether it is synced
 ```
 
 A state covers one flock. With several gospels the phone sends the
 state of one gospel per heartbeat and takes turns, and sends the gospel
 whose state changed right away. The desktop keeps the last state per
-flock. The desktop sends the state of the flock it types in or last
-opened a chat of; typing in a group goes before typing to a peer.
+flock. The desktop sends the state of the flock it types in; typing in
+a group goes before typing to a peer.
 
 Both states start with the magic `0x5643` and the sync version,
 `VIGIL_COMPANION_VERSION` at the top of `src/chat.c`, each a big endian
@@ -553,9 +552,9 @@ the `companion` object of their `chat` status, and their apps say which
 side needs an update.
 
 The phone applies the desktop's state as if its own platform had set it,
-with `vigil_chat_typing()`, `vigil_chat_group_typing()` and
-`vigil_chat_open()`. The desktop core puts the phone's state in the
-`companion` object of its `chat` status for its platform to show.
+with `vigil_chat_typing()` and `vigil_chat_group_typing()`. The desktop
+core puts the phone's state in the `companion` object of its `chat`
+status for its platform to show.
 
 ## The store of the desktop
 

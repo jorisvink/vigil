@@ -1193,30 +1193,12 @@ class Desk {
   }
 
   Future<void> select(Chat? chat, String topic) async {
-    final was = open;
-
     open = chat?.id;
     openTopic = topic;
     _changed();
 
-    if (was != null && was != chat?.id && !Chat(was).isGroup) {
-      await _invoke<void>('open', {
-        'flock': flockOf(was),
-        'peer': localOf(was),
-        'on': false,
-      });
-    }
-
     if (chat == null) {
       return;
-    }
-
-    if (!chat.isGroup && was != chat.id) {
-      await _invoke<void>('open', {
-        'flock': chat.flock,
-        'peer': localOf(chat.id),
-        'on': true,
-      });
     }
 
     if (focused) {

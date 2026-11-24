@@ -123,7 +123,6 @@ final class VigilPlugin: NSObject, FlutterPlugin, UIDocumentPickerDelegate,
             if ChatVault.group(chat) != nil {
                 VigilCall.shared.send?("chat-group-typing - 0")
             } else {
-                VigilCall.shared.send?("chat-open \(chat) 0")
                 VigilCall.shared.send?("chat-typing \(chat) 0 0")
             }
 
@@ -1679,10 +1678,6 @@ final class VigilPlugin: NSObject, FlutterPlugin, UIDocumentPickerDelegate,
         case "chatOpen":
             let on = args["on"] as? Bool ?? false
 
-            if let previous = opened, previous != hex, ChatVault.group(previous) == nil {
-                VigilCall.shared.send?("chat-open \(previous) 0")
-            }
-
             opened = on ? hex : nil
 
             if on {
@@ -1692,9 +1687,6 @@ final class VigilPlugin: NSObject, FlutterPlugin, UIDocumentPickerDelegate,
                 defaults.removeObject(forKey: "chatOpen")
             }
 
-            if group == nil {
-                VigilCall.shared.send?("chat-open \(hex) \(on ? 1 : 0)")
-            }
             return ""
         case "chatTyping":
             let on = args["on"] as? Bool == true ? 1 : 0

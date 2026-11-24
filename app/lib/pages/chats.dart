@@ -66,7 +66,7 @@ var _voiceRate = 1.0;
   }
 
   if (_reachable(status, peer)) {
-    return (Liveness.off, 'Around · no link', Palette.amber);
+    return (Liveness.off, 'Around', Palette.amber);
   }
 
   if ((chat?.queued ?? 0) > 0) {
@@ -1617,6 +1617,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
   String? _error;
   Timer? _idle;
   bool _typing = false;
+  DateTime? _since;
   bool _sending = false;
   bool _held = false;
   bool _pastable = false;
@@ -1785,14 +1786,31 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
   }
 
   void _changed() {
-    final active = _input.text.trim().isNotEmpty;
-
     _idle?.cancel();
-    if (active) {
-      _idle = Timer(const Duration(seconds: 5), () => _type(false));
+
+    if (_input.text.trim().isEmpty) {
+      _typed();
+      return;
     }
 
-    _type(active);
+    _idle = Timer(const Duration(seconds: 5), _typed);
+
+    final now = DateTime.now();
+    final since = _since ??= now;
+    final online = Vigil.instance.status.chat?.peer(peer)?.online ?? false;
+
+    if (!isGroup(peer) &&
+        !online &&
+        now.difference(since).inMilliseconds < typingDelay) {
+      return;
+    }
+
+    _type(true);
+  }
+
+  void _typed() {
+    _since = null;
+    _type(false);
   }
 
   void _type(bool on) {

@@ -503,11 +503,10 @@ struct chat_gospel {
 };
 
 /*
- * The peers of one of our Gospel configurations that we accept or ignore,
- * whose chat is open and those we type to, set from any thread.
+ * The peers of one of our Gospel configurations that we accept or ignore
+ * and those we type to, set from any thread.
  */
 struct chat_marks {
-	volatile u_int8_t	opened[KYRKA_PEERS_PER_FLOCK];
 	volatile u_int8_t	ignored[KYRKA_PEERS_PER_FLOCK];
 	volatile u_int8_t	accepted[KYRKA_PEERS_PER_FLOCK];
 	volatile u_int8_t	typing[KYRKA_PEERS_PER_FLOCK];
@@ -796,7 +795,7 @@ static int	chat_phone_queue(const char *, size_t, const u_int8_t *,
 		    size_t);
 
 static void	chat_desktop_told(void);
-static void	chat_desktop_bit(u_int8_t *, u_int64_t, u_int8_t, int);
+static void	chat_desktop_bit(u_int64_t, u_int8_t, int);
 static void	chat_desktop_pump(void);
 static void	chat_desktop_head(void);
 static void	chat_desktop_recall(void);
@@ -981,11 +980,10 @@ static u_int64_t			attached = 0;
 static u_int64_t			companion_attached = 0;
 
 /*
- * As a desktop, the flock of the chat our platform has open or types in
- * and which peers in it, for our phone.
+ * As a desktop, the flock our platform types in and which peers in it, for
+ * our phone.
  */
 static u_int64_t			desktop_flock = 0;
-static u_int8_t				desktop_opened[VIGIL_CHAT_GROUP_ROSTER];
 static u_int8_t				desktop_typing[VIGIL_CHAT_GROUP_ROSTER];
 
 /*
@@ -1063,7 +1061,6 @@ vigil_chat_attach(u_int8_t slot)
 		gospel->peers[idx].slot = slot;
 		gospel->peers[idx].flock = gospel->flock;
 
-		vigil_atomic_write(&marks[slot].opened[idx], 0);
 		vigil_atomic_write(&marks[slot].ignored[idx], 0);
 		vigil_atomic_write(&marks[slot].accepted[idx], 0);
 		vigil_atomic_write(&marks[slot].typing[idx], 0);
@@ -1863,30 +1860,6 @@ vigil_chat_stored(u_int64_t token)
 }
 
 /*
- * Mark the chat with the given peer in the given flock as open or closed,
- * we keep signaling the peer while it is open.
- */
-void
-vigil_chat_open(u_int64_t flock, u_int8_t peer, int on)
-{
-	u_int8_t	slot;
-
-	PRECOND(peer > 0 && peer < KYRKA_PEERS_PER_FLOCK);
-	PRECOND(on == 0 || on == 1);
-
-	if (vigil_gospel_slot(flock, &slot) == -1) {
-		chat_desktop_bit(desktop_opened, flock, peer, on);
-		vigil_wake_signal();
-		return;
-	}
-
-	vigil_atomic_write(&marks[slot].opened[peer], on);
-	vigil_gospel_release();
-
-	vigil_wake_signal();
-}
-
-/*
  * Accept the given peer in the given flock or not, we ignore a peer we did
  * not accept.
  */
@@ -1964,7 +1937,7 @@ vigil_chat_typing(u_int64_t flock, u_int8_t peer, u_int64_t topic, int on)
 		typing_topic = topic;
 		vigil_unlock(&lock);
 
-		chat_desktop_bit(desktop_typing, flock, peer, on);
+		chat_desktop_bit(flock, peer, on);
 		vigil_wake_signal();
 		return;
 	}
@@ -3015,6 +2988,9 @@ chat_tunnel_manage(struct chat_tunnel *tun)
 
 	typed = chat_typed(tun->peer);
 	chat_typing_state(tun->peer, &owner, &group, &topic);
+
+	if (typed)
+		tun->peer->active = vigil->now;
 
 	if (!tun->greeted || typed != tun->typed ||
 	    owner != tun->typed_owner || group != tun->typed_group ||
@@ -4662,7 +4638,7 @@ chat_text_report(struct chat_tunnel *tun, u_int64_t token,
 
 /*
  * Returns 1 if we want the given peer in the signaling liturgy, this is the
- * case if we hold messages for it, its chat is open or we talked recently.
+ * case if we hold messages for it, we type to it or we talked recently.
  *
  * We also signal a peer that signals us until our tunnel with it is up,
  * the cathedral does not tell it we are around otherwise.
@@ -4681,7 +4657,7 @@ chat_signal_check(struct chat_peer *peer)
 	if (chat_outbox_signal(peer))
 		return (1);
 
-	if (vigil_atomic_read(&marks[peer->slot].opened[peer->id]))
+	if (chat_typed(peer))
 		return (1);
 
 	if (peer->active != 0 && (vigil->now - peer->active) < CHAT_IDLE)
@@ -8853,9 +8829,9 @@ chat_phone_tell(struct chat_event *evt, const u_int8_t *data, size_t len)
 }
 
 /*
- * Apply the state our desktop sent, the peers our desktop types to and the
- * chats our desktop has open, as if our own platform set that state. If
- * our desktop moved to another flock, what it had in the old one is off.
+ * Apply the state our desktop sent, the peers our desktop types to, as if
+ * our own platform set that state. If our desktop moved to another flock,
+ * what it had in the old one is off.
  */
 static void
 chat_phone_desktop(const struct vigil_companion_desktop *st)
@@ -8879,13 +8855,9 @@ chat_phone_desktop(const struct vigil_companion_desktop *st)
 		for (idx = 1; idx < KYRKA_PEERS_PER_FLOCK; idx++) {
 			if ((was.typing[idx / 8] >> (idx % 8)) & 1)
 				vigil_chat_typing(flock, idx, 0, 0);
-
-			if ((was.opened[idx / 8] >> (idx % 8)) & 1)
-				vigil_chat_open(flock, idx, 0);
 		}
 
 		memset(was.typing, 0, sizeof(was.typing));
-		memset(was.opened, 0, sizeof(was.opened));
 	}
 
 	flock = be64toh(st->flock);
@@ -8896,12 +8868,6 @@ chat_phone_desktop(const struct vigil_companion_desktop *st)
 
 		if (on != before || (on && st->topic != was.topic))
 			vigil_chat_typing(flock, idx, be64toh(st->topic), on);
-
-		on = (st->opened[idx / 8] >> (idx % 8)) & 1;
-		before = (was.opened[idx / 8] >> (idx % 8)) & 1;
-
-		if (on != before)
-			vigil_chat_open(flock, idx, on);
 	}
 
 	if (st->flock != was.flock || st->group != was.group ||
@@ -9509,14 +9475,13 @@ chat_desktop_unsent(const struct vigil_chat_request *req)
 }
 
 /*
- * As a desktop, set or clear the bit of the given peer in the given flock
- * in the given bits for our phone. A bit in another flock clears what we
- * had, our phone only learns about one flock at a time.
+ * As a desktop, set or clear that we type to the given peer in the given
+ * flock for our phone. A bit in another flock clears what we had, our
+ * phone only learns about one flock at a time.
  */
 static void
-chat_desktop_bit(u_int8_t *bits, u_int64_t flock, u_int8_t peer, int on)
+chat_desktop_bit(u_int64_t flock, u_int8_t peer, int on)
 {
-	PRECOND(bits == desktop_opened || bits == desktop_typing);
 	PRECOND(peer > 0 && peer < KYRKA_PEERS_PER_FLOCK);
 	PRECOND(on == 0 || on == 1);
 
@@ -9529,21 +9494,19 @@ chat_desktop_bit(u_int8_t *bits, u_int64_t flock, u_int8_t peer, int on)
 		}
 
 		desktop_flock = flock;
-		memset(desktop_opened, 0, sizeof(desktop_opened));
 		memset(desktop_typing, 0, sizeof(desktop_typing));
 	}
 
 	if (on)
-		bits[peer / 8] |= 1 << (peer % 8);
+		desktop_typing[peer / 8] |= 1 << (peer % 8);
 	else
-		bits[peer / 8] &= ~(1 << (peer % 8));
+		desktop_typing[peer / 8] &= ~(1 << (peer % 8));
 
 	vigil_unlock(&lock);
 }
 
 /*
- * Fill in the state we send our phone with each heartbeat, who we type to
- * and the chats we have open.
+ * Fill in the state we send our phone with each heartbeat, who we type to.
  */
 static void
 chat_desktop_state(struct vigil_companion_desktop *st)
@@ -9559,13 +9522,11 @@ chat_desktop_state(struct vigil_companion_desktop *st)
 
 	st->flock = htobe64(desktop_flock);
 	memcpy(st->typing, desktop_typing, sizeof(st->typing));
-	memcpy(st->opened, desktop_opened, sizeof(st->opened));
 
 	/* Our phone only knows one flock, the group we type in wins. */
 	if (typing_group != 0 && typing_flock != desktop_flock) {
 		st->flock = htobe64(typing_flock);
 		memset(st->typing, 0, sizeof(st->typing));
-		memset(st->opened, 0, sizeof(st->opened));
 	}
 
 	st->owner = typing_owner;
