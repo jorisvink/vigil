@@ -67,9 +67,13 @@ struct ios_anchor {
 	int		active;
 };
 
+static int	ios_anchor_lost(void);
 static void	ios_nofile_raise(void);
 
 static struct ios_anchor	anchors[IOS_NOFILE_MAX];
+
+/* Set if any of our sockets ended up without an anchor. */
+static int			anchor_lost = 0;
 
 /*
  * Log a message to the unified logging system.
@@ -97,6 +101,19 @@ vigil_platform_log(int prio, const char *msg)
 }
 
 /*
+ * A socket did not get its anchor. Without one we are not woken up for
+ * the traffic arriving on that socket its port, so remember it and try
+ * again when the system wakes us or the network changes.
+ */
+static int
+ios_anchor_lost(void)
+{
+	vigil_atomic_write(&anchor_lost, 1);
+
+	return (0);
+}
+
+/*
  * Anchor the given socket so we are woken up for traffic on its port.
  */
 int
@@ -112,38 +129,38 @@ vigil_platform_socket(int fd)
 
 	if (fd >= IOS_NOFILE_MAX) {
 		vigil_log(LOG_NOTICE, "socket %d too high to anchor", fd);
-		return (0);
+		return (ios_anchor_lost());
 	}
 
 	on = 1;
 	if (setsockopt(fd, SOL_SOCKET, SO_REUSEPORT, &on, sizeof(on)) == -1) {
 		vigil_log(LOG_NOTICE, "SO_REUSEPORT: %s", errno_s);
-		return (0);
+		return (ios_anchor_lost());
 	}
 
 	socklen = sizeof(sin);
 	if (getsockname(fd, (struct sockaddr *)&sin, &socklen) == -1) {
 		vigil_log(LOG_NOTICE, "getsockname: %s", errno_s);
-		return (0);
+		return (ios_anchor_lost());
 	}
 
 	anchor = socket(AF_INET, SOCK_DGRAM, 0);
 	if (anchor == -1) {
 		vigil_log(LOG_NOTICE, "anchor socket: %s", errno_s);
-		return (0);
+		return (ios_anchor_lost());
 	}
 
 	if (setsockopt(anchor, SOL_SOCKET,
 	    SO_REUSEPORT, &on, sizeof(on)) == -1) {
 		vigil_log(LOG_NOTICE, "anchor SO_REUSEPORT: %s", errno_s);
 		(void)close(anchor);
-		return (0);
+		return (ios_anchor_lost());
 	}
 
 	if (bind(anchor, (const struct sockaddr *)&sin, sizeof(sin)) == -1) {
 		vigil_log(LOG_NOTICE, "anchor bind: %s", errno_s);
 		(void)close(anchor);
-		return (0);
+		return (ios_anchor_lost());
 	}
 
 	sin.sin_addr.s_addr = htonl(IOS_ANCHOR_ADDR);
@@ -152,7 +169,7 @@ vigil_platform_socket(int fd)
 	if (connect(anchor, (const struct sockaddr *)&sin, sizeof(sin)) == -1) {
 		vigil_log(LOG_NOTICE, "anchor connect: %s", errno_s);
 		(void)close(anchor);
-		return (0);
+		return (ios_anchor_lost());
 	}
 
 	anchors[fd].anchor = anchor;
@@ -260,6 +277,22 @@ void
 vigil_platform_fatal(void)
 {
 	abort();
+}
+
+/*
+ * Reopen all sockets if one of them could not get its anchor, we are not
+ * woken up for its traffic without one.
+ */
+void
+vigil_ios_anchor_check(void)
+{
+	if (!vigil_atomic_read(&anchor_lost))
+		return;
+
+	vigil_log(LOG_NOTICE, "missing anchors, reopening sockets");
+
+	vigil_atomic_write(&anchor_lost, 0);
+	vigil_rebind();
 }
 
 /*
