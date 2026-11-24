@@ -637,9 +637,9 @@ class _Header extends StatelessWidget {
     var sub = '';
     var color = Palette.dim;
     if (chat.isGroup) {
-      final others = chat.members.where((m) => m != desk.selfIn(chat.id));
-      final around = others.where(desk.around).length;
-      sub = '$around of ${others.length} around';
+      final members = desk.everyone(chat);
+      final around = members.where(desk.around).length;
+      sub = '$around of ${members.length} around';
     } else {
       color = _presence(chat.id) ?? Palette.dim;
       sub = switch (_rank(chat.id)) {
@@ -748,7 +748,13 @@ Color? _presence(String peer) => switch (_rank(peer)) {
 };
 
 int _rank(String peer) {
-  final state = Desk.instance.peers[peer];
+  final desk = Desk.instance;
+
+  if (desk.isSelf(peer)) {
+    return desk.online ? 2 : 0;
+  }
+
+  final state = desk.peers[peer];
 
   if (state == null) {
     return 0;
@@ -878,7 +884,7 @@ class _Members extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final desk = Desk.instance;
-    final members = chat.members.where((m) => m != desk.selfIn(chat.id)).toList()
+    final members = desk.everyone(chat).toList()
       ..sort((a, b) {
         final rank = _rank(b).compareTo(_rank(a));
 
@@ -919,40 +925,43 @@ class _Members extends StatelessWidget {
   Widget _row(String member, double opacity) {
     final desk = Desk.instance;
 
-    return _Clickable(
-      onTap: () => onOpen(desk.chat(member)),
-      child: Opacity(
-        opacity: opacity,
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 5),
-          child: Row(
-            children: [
-              _Avatar(peer: member, size: 30, presence: true),
-              const SizedBox(width: 10),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      desk.name(member),
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(
-                        fontSize: 13.5,
-                        height: 1.3,
-                        color: Palette.fg,
-                      ),
+    final row = Opacity(
+      opacity: opacity,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 5),
+        child: Row(
+          children: [
+            _Avatar(peer: member, size: 30, presence: true),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    desk.name(member),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                      fontSize: 13.5,
+                      height: 1.3,
+                      color: Palette.fg,
                     ),
-                    if (member == chat.owner)
-                      const Text('owner', style: Styles.detail),
-                  ],
-                ),
+                  ),
+                  if (member == chat.owner)
+                    const Text('owner', style: Styles.detail),
+                ],
               ),
-            ],
-          ),
+            ),
+          ],
         ),
       ),
     );
+
+    if (desk.isSelf(member)) {
+      return row;
+    }
+
+    return _Clickable(onTap: () => onOpen(desk.chat(member)), child: row);
   }
 }
 

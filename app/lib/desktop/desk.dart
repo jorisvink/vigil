@@ -782,7 +782,16 @@ class Desk {
     return list.toList()..sort((a, b) => name(a).compareTo(name(b)));
   }
 
+  Set<String> everyone(Chat chat) => {
+    ...chat.members,
+    if (selfIn(chat.id).isNotEmpty) selfIn(chat.id),
+  };
+
   bool around(String peer) {
+    if (isSelf(peer)) {
+      return online;
+    }
+
     final state = peers[peer];
 
     if (state == null) {
