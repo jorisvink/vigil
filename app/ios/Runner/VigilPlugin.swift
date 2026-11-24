@@ -497,7 +497,7 @@ final class VigilPlugin: NSObject, FlutterPlugin, UIDocumentPickerDelegate,
         let kept = order.compactMap { id in current.first { $0.id == id } }
         let added = current.reversed().filter { !order.contains($0.id) }
         let list: [[String: Any]] = (kept + added).map {
-            ["id": $0.id, "ref": $0.ref, "flock": Flock.hex($0.summary["flock"] as? String ?? "0")]
+            ["id": $0.id, "ref": $0.ref, "flock": Flock.hex($0.summary["cathedral_flock"] as? String ?? "0")]
         }
 
         if !NSArray(array: list).isEqual(to: before) {
@@ -565,7 +565,7 @@ final class VigilPlugin: NSObject, FlutterPlugin, UIDocumentPickerDelegate,
             as? [String: Any])?["mode"] as? String
 
         let flock = Flock.hex((try? JSONSerialization.jsonObject(with: Data(summary.utf8))
-            as? [String: Any])?["flock"] as? String ?? "0")
+            as? [String: Any])?["cathedral_flock"] as? String ?? "0")
         let present = gospels()
 
         if mode == "gospel" && present.contains(where: { $0["flock"] as? String == flock }) {

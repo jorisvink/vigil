@@ -1518,12 +1518,12 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
 
         let id = proto.providerConfiguration?["id"] as? String ?? ""
         var ref = summary["mode"] as? String == "gospel" ? proto.passwordReference : nil
-        var flock = summary["flock"] as? String
+        var flock = summary["cathedral_flock"] as? String
 
         if ref == nil, let voice = proto.providerConfiguration?["voice"] as? Data,
            var config = try? TunnelKeychain.load(ref: voice) {
             ref = voice
-            flock = Self.summary(config)?["flock"] as? String
+            flock = Self.summary(config)?["cathedral_flock"] as? String
             TunnelKeychain.wipe(&config)
         }
 
