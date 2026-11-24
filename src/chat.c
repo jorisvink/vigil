@@ -7664,6 +7664,7 @@ chat_companion_check(void)
 			journal_heard = 0;
 			chat_phone_desktop(&desktop);
 			memset(companion_phones, 0, sizeof(companion_phones));
+			return;
 		}
 
 		ringing = chat_phone_changed();
