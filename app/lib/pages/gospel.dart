@@ -1171,16 +1171,23 @@ class _PeerRow extends StatelessWidget {
       onTap: chat,
       child: Row(
         children: [
-          chatDot(status, peer),
+          chatPresence(
+            status,
+            peer,
+            Avatar(peer, margin: EdgeInsets.zero),
+            ring: Palette.bg2,
+          ),
           const SizedBox(width: 12),
-          Avatar(peer),
           Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                PeerName(peer, style: Styles.cardTitle, shrink: 12),
+                PeerName(peer, style: Styles.cardTitle, shrink: 9),
                 if (vigil.name(peer) != peer)
-                  Text(peer, style: Styles.detail),
+                  FittedBox(
+                    fit: BoxFit.scaleDown,
+                    child: Text(peer, style: Styles.detail),
+                  ),
               ],
             ),
           ),
@@ -1446,7 +1453,11 @@ class _IgnoredSheetState extends State<_IgnoredSheet> {
                             child: Column(
                               crossAxisAlignment: CrossAxisAlignment.start,
                               children: [
-                                PeerName(id, style: Styles.cardTitle),
+                                PeerName(
+                                  id,
+                                  style: Styles.cardTitle,
+                                  shrink: 9,
+                                ),
                                 if (vigil.name(id) != id)
                                   Text(id, style: Styles.detail),
                               ],

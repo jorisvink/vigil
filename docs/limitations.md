@@ -57,11 +57,12 @@ system notifications. The operating system may show these on the lock
 screen and keep them for a while. Turn previews off if this matters to
 you.
 
-## Nicknames and pictures
+## Names and pictures
 
-The nickname and picture a peer sends are not verified. A peer can choose
-any nickname or picture, including one that belongs to someone else. Name
-your peers yourself in the app if you rely on names.
+Vigil only shows signed names for peers running Vigil, but can receive
+old gospel-style names. Those and the picture a peer sends are not
+verified, a peer can choose any, including one that belongs to someone
+else. Name your peers yourself in the app if you rely on names.
 
 ## When the tunnel is down
 

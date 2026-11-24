@@ -1769,17 +1769,11 @@ final class VigilPlugin: NSObject, FlutterPlugin, UIDocumentPickerDelegate,
 
             return ""
         default:
-            if let nick = args["nick"] as? String {
-                try ChatVault.setNick(nick)
-                VigilCall.shared.send?("chat-nick")
-            }
-
             if let preview = args["preview"] as? Bool {
                 defaults.set(preview, forKey: "chatPreview")
             }
 
             return json([
-                "nick": defaults.string(forKey: "chatNick") ?? "",
                 "preview": defaults.object(forKey: "chatPreview") as? Bool ?? false,
             ])
         }

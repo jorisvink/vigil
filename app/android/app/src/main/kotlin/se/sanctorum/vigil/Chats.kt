@@ -144,9 +144,7 @@ object Chats {
 
             try {
                 if (chat.optLong("session") != session) {
-                    if (!Vigil.chatNick(nick(service))) {
-                        Log.w(TAG, "our nickname was refused")
-                    }
+                    prefs(service).edit().remove("nick").apply()
 
                     val avatar = vault.ownAvatar()
 
@@ -486,7 +484,6 @@ object Chats {
             "star" -> star(service, checked(chat), ask.getBoolean("on"))
             "compact" -> compact(service, checked(chat), ask.getBoolean("on"))
             "mute" -> mute(service, checked(chat), ask.getLong("until"))
-            "nick" -> settings(service, ask.getString("nick"), null)
             "avatar" -> {
                 val image = data?.let { Images.avatar(it) }
 
@@ -1466,8 +1463,6 @@ object Chats {
         avatarChanged()
     }
 
-    fun nick(context: Context): String = prefs(context).getString("nick", "") ?: ""
-
     fun preview(context: Context): Boolean = prefs(context).getBoolean("preview", false)
 
     fun reachable(context: Context, on: Boolean?): Boolean {
@@ -1483,19 +1478,12 @@ object Chats {
         return vault.reachable
     }
 
-    fun settings(context: Context, nick: String?, preview: Boolean?): JSONObject {
-        if (nick != null) {
-            if (!Vigil.chatNick(nick)) {
-                throw IllegalArgumentException("A name is 2 to 16 letters or digits.")
-            }
-            prefs(context).edit().putString("nick", nick).apply()
-        }
-
+    fun settings(context: Context, preview: Boolean?): JSONObject {
         if (preview != null) {
             prefs(context).edit().putBoolean("preview", preview).apply()
         }
 
-        return JSONObject().put("nick", nick(context)).put("preview", preview(context))
+        return JSONObject().put("preview", preview(context))
     }
 
     fun mute(context: Context, id: String, until: Long?): Long {

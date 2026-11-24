@@ -404,7 +404,6 @@ void	vigil_call_done(u_int64_t, u_int8_t);
 
 /* src/chat.c */
 int	vigil_chat_stored(u_int64_t);
-int	vigil_chat_nick(const char *);
 int	vigil_chat_forget(u_int64_t, u_int8_t);
 size_t	vigil_chat_events(char *, size_t);
 void	vigil_chat_avatar(const void *, size_t);

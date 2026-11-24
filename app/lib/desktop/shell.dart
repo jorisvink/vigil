@@ -9,7 +9,7 @@ import '../reliquary.dart';
 import '../theme.dart';
 import '../voice.dart';
 import '../widgets/marks.dart';
-import '../vigil.dart' show flockOf;
+import '../vigil.dart' show flockOf, localOf;
 import 'desk.dart';
 import 'join.dart';
 
@@ -387,6 +387,9 @@ class _LinkState extends State<_Link> {
   }
 }
 
+const _railWidth = 72.0;
+const _topicsWidth = 228.0;
+
 class _Shell extends StatefulWidget {
   const _Shell();
 
@@ -395,7 +398,9 @@ class _Shell extends StatefulWidget {
 }
 
 class _ShellState extends State<_Shell> {
+  final Map<String, String> _topics = {};
   bool _favorites = false;
+  bool _members = true;
   String _problem = '';
   Timer? _clear;
 
@@ -461,6 +466,31 @@ class _ShellState extends State<_Shell> {
     final open = desk.open;
     final chat = open == null ? null : desk.chats[open];
 
+    if (chat != null) {
+      _topics[chat.id] = desk.openTopic;
+    }
+
+    return LayoutBuilder(
+      builder: (context, box) => _layout(chat, box.maxWidth >= 960),
+    );
+  }
+
+  void _open(Chat chat) {
+    final topic = _topics[chat.id] ?? '';
+
+    if (chat.named.any((t) => t.id == topic)) {
+      _select(chat, topic);
+      return;
+    }
+
+    _select(chat, '');
+  }
+
+  Widget _layout(Chat? chat, bool wide) {
+    final desk = Desk.instance;
+    final shown = _favorites ? null : chat;
+    final group = shown != null && shown.isGroup && !shown.closed;
+
     Widget main = const _Empty();
 
     if (_favorites) {
@@ -468,44 +498,97 @@ class _ShellState extends State<_Shell> {
         onOpen: (chat, topic) => _select(chat, topic),
         onClose: () => setState(() => _favorites = false),
       );
-    } else if (chat != null) {
+    } else if (shown != null) {
       main = _Conversation(
-        key: ValueKey('${chat.id}/${desk.openTopic}'),
-        chat: chat,
+        key: ValueKey('${shown.id}/${desk.openTopic}'),
+        chat: shown,
         topic: desk.openTopic,
-        onTopic: (topic) => _select(chat, topic),
+        members: _members,
+        onMembers: group && wide
+            ? () => setState(() => _members = !_members)
+            : null,
         onProblem: _say,
       );
     }
 
-    return Row(
+    return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        _Sidebar(
-          open: _favorites ? null : open,
-          topic: desk.openTopic,
-          onSelect: _select,
-          onFavorites: () => setState(() => _favorites = true),
-          onProblem: _say,
+        _TopBar(
+          favorites: _favorites,
+          onFavorites: () => setState(() => _favorites = !_favorites),
           act: _act,
         ),
-        const ColoredBox(color: Palette.line, child: SizedBox(width: 1)),
+        const ColoredBox(color: Palette.line, child: SizedBox(height: 1)),
         Expanded(
-          child: Stack(
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              Positioned.fill(child: main),
-              Positioned(
-                top: 64,
-                right: 20,
-                child: _CallPanel(act: _act),
-              ),
-              if (_problem.isNotEmpty)
-                Positioned(
-                  left: 20,
-                  right: 20,
-                  bottom: 90,
-                  child: Center(child: _Toast(text: _problem)),
+              SizedBox(
+                width: chat == null ? _railWidth : _railWidth + _topicsWidth,
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    Expanded(
+                      child: Row(
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        children: [
+                          SizedBox(
+                            width: _railWidth,
+                            child: _Rail(
+                              open: chat?.id,
+                              onOpen: _open,
+                              onSelect: _select,
+                              act: _act,
+                            ),
+                          ),
+                          if (chat != null)
+                            Expanded(
+                              child: _TopicList(
+                                chat: chat,
+                                current: _favorites ? null : desk.openTopic,
+                                onPick: (topic) => _select(chat, topic),
+                                act: _act,
+                              ),
+                            ),
+                        ],
+                      ),
+                    ),
+                    const ColoredBox(
+                      color: Palette.line,
+                      child: SizedBox(height: 1),
+                    ),
+                    _Me(wide: chat != null),
+                  ],
                 ),
+              ),
+              const ColoredBox(color: Palette.line, child: SizedBox(width: 1)),
+              Expanded(
+                child: Stack(
+                  children: [
+                    Positioned.fill(child: main),
+                    Positioned(
+                      top: 64,
+                      right: 20,
+                      child: _CallPanel(act: _act),
+                    ),
+                    if (_problem.isNotEmpty)
+                      Positioned(
+                        left: 20,
+                        right: 20,
+                        bottom: 90,
+                        child: Center(child: _Toast(text: _problem)),
+                      ),
+                  ],
+                ),
+              ),
+              if (group && wide && _members) ...[
+                const ColoredBox(
+                  color: Palette.line,
+                  child: SizedBox(width: 1),
+                ),
+                _Members(chat: shown, onOpen: _open),
+              ],
             ],
           ),
         ),
@@ -533,135 +616,55 @@ class _Toast extends StatelessWidget {
   }
 }
 
-class _Sidebar extends StatelessWidget {
-  const _Sidebar({
-    required this.open,
-    required this.topic,
-    required this.onSelect,
+class _TopBar extends StatelessWidget {
+  const _TopBar({
+    required this.favorites,
     required this.onFavorites,
-    required this.onProblem,
     required this.act,
   });
 
-  final String? open;
-  final String topic;
-  final void Function(Chat, String) onSelect;
+  final bool favorites;
   final VoidCallback onFavorites;
-  final void Function(String) onProblem;
   final Future<void> Function(Future<void> Function()) act;
 
   @override
   Widget build(BuildContext context) {
-    final desk = Desk.instance;
-    final chats = desk.sorted;
-    final rows = <Widget>[];
-
-    for (final chat in chats) {
-      rows.add(
-        _ChatItem(
-          chat: chat,
-          active: chat.id == open && topic.isEmpty,
-          onTap: () => onSelect(chat, ''),
-          act: act,
-        ),
-      );
-
-      final topics = chat.topics.values
-          .where((t) => t.name.isNotEmpty)
-          .toList();
-
-      if (topics.isEmpty) {
-        continue;
-      }
-
-      if (chat.compact) {
-        rows.add(
-          Padding(
-            padding: const EdgeInsets.fromLTRB(68, 0, 16, 8),
-            child: Wrap(
-              spacing: 6,
-              runSpacing: 6,
-              children: [
-                for (final t in topics)
-                  _TopicTag(
-                    chat: chat,
-                    topic: t,
-                    active: chat.id == open && topic == t.id,
-                    onTap: () => onSelect(chat, t.id),
-                    act: act,
-                  ),
-              ],
-            ),
-          ),
-        );
-        continue;
-      }
-
-      for (final (i, t) in topics.indexed) {
-        rows.add(
-          _TopicItem(
-            chat: chat,
-            topic: t,
-            end: i == topics.length - 1,
-            active: chat.id == open && topic == t.id,
-            onTap: () => onSelect(chat, t.id),
-            act: act,
-          ),
-        );
-      }
-    }
-
     return ColoredBox(
-      color: Palette.bg2,
+      color: Palette.well,
       child: SizedBox(
-        width: 300,
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
+        height: 44,
+        child: Row(
           children: [
-            SizedBox(
-              height: 56,
-              child: Row(
-                children: [
-                  const SizedBox(width: Metrics.edge + 2),
-                  const WordmarkSquare(),
-                  const SizedBox(width: 12),
-                  Text('VIGIL', style: Styles.wordmark),
-                  const Spacer(),
-                  _Icon(
-                    icon: GlyphKind.plus,
-                    tip: 'New chat',
-                    onTap: () => _newChat(context, onSelect, act),
-                  ),
-                  _Icon(
-                    icon: GlyphKind.star,
-                    tip: 'Favorites',
-                    onTap: onFavorites,
-                  ),
-                  _Icon(
-                    icon: GlyphKind.grip,
-                    tip: 'Settings',
-                    onTap: () => showDialog<void>(
-                      context: context,
-                      builder: (_) => _SettingsDialog(act: act),
-                    ),
-                  ),
-                  const SizedBox(width: 8),
-                ],
+            const SizedBox(
+              width: _railWidth,
+              child: Center(child: WordmarkSquare()),
+            ),
+            Text('VIGIL', style: Styles.wordmark),
+            const SizedBox(width: 28),
+            Expanded(
+              child: Align(
+                alignment: Alignment.centerLeft,
+                child: ConstrainedBox(
+                  constraints: const BoxConstraints(maxWidth: 420),
+                  child: _PhoneState(),
+                ),
               ),
             ),
-            const ColoredBox(color: Palette.line, child: SizedBox(height: 1)),
-            _PhoneState(),
-            const ColoredBox(color: Palette.line, child: SizedBox(height: 1)),
-            Expanded(
-              child: chats.isEmpty
-                  ? Center(child: Text('NO CHATS YET', style: Styles.rubric))
-                  : ListView(
-                      padding: const EdgeInsets.symmetric(vertical: 8),
-                      children: rows,
-                    ),
+            _Icon(
+              icon: GlyphKind.star,
+              tip: 'Favorites',
+              lit: favorites,
+              onTap: onFavorites,
             ),
-            const ColoredBox(color: Palette.line, child: SizedBox(height: 1)),
-            _Me(),
+            _Icon(
+              icon: GlyphKind.grip,
+              tip: 'Settings',
+              onTap: () => showDialog<void>(
+                context: context,
+                builder: (_) => _SettingsDialog(act: act),
+              ),
+            ),
+            const SizedBox(width: 8),
           ],
         ),
       ),
@@ -669,43 +672,713 @@ class _Sidebar extends StatelessWidget {
   }
 }
 
-class _Me extends StatelessWidget {
+class _Rail extends StatelessWidget {
+  const _Rail({
+    required this.open,
+    required this.onOpen,
+    required this.onSelect,
+    required this.act,
+  });
+
+  final String? open;
+  final void Function(Chat) onOpen;
+  final void Function(Chat, String) onSelect;
+  final Future<void> Function(Future<void> Function()) act;
+
+  @override
+  Widget build(BuildContext context) {
+    final chats = Desk.instance.sorted;
+    final stars = chats.where((c) => c.starred).length;
+
+    return ColoredBox(
+      color: Palette.well,
+      child: Column(
+        children: [
+          Expanded(
+            child: ScrollConfiguration(
+              behavior: ScrollConfiguration.of(
+                context,
+              ).copyWith(scrollbars: false),
+              child: ListView(
+                padding: const EdgeInsets.symmetric(vertical: 8),
+                children: [
+                  for (final (i, chat) in chats.indexed) ...[
+                    if (i == stars && i > 0)
+                      const Center(
+                        child: Padding(
+                          padding: EdgeInsets.symmetric(vertical: 6),
+                          child: ColoredBox(
+                            color: Palette.line2,
+                            child: SizedBox(width: 32, height: 2),
+                          ),
+                        ),
+                      ),
+                    _RailItem(
+                      key: ValueKey(chat.id),
+                      chat: chat,
+                      active: chat.id == open,
+                      onTap: () => onOpen(chat),
+                      act: act,
+                    ),
+                  ],
+                ],
+              ),
+            ),
+          ),
+          Padding(
+            padding: const EdgeInsets.symmetric(vertical: 8),
+            child: _Icon(
+              icon: GlyphKind.plus,
+              tip: 'New chat',
+              boxed: true,
+              onTap: () => _newChat(context, onSelect, act),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _RailItem extends StatefulWidget {
+  const _RailItem({
+    super.key,
+    required this.chat,
+    required this.active,
+    required this.onTap,
+    required this.act,
+  });
+
+  final Chat chat;
+  final bool active;
+  final VoidCallback onTap;
+  final Future<void> Function(Future<void> Function()) act;
+
+  @override
+  State<_RailItem> createState() => _RailItemState();
+}
+
+class _RailItemState extends State<_RailItem> {
+  bool _hover = false;
+
+  double get _mark {
+    if (widget.active) {
+      return 36;
+    }
+
+    if (_hover) {
+      return 18;
+    }
+
+    if (widget.chat.unreadAll > 0) {
+      return 8;
+    }
+
+    return 0;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final desk = Desk.instance;
+    final chat = widget.chat;
+    final unread = chat.unreadAll;
+
+    return _RightClick(
+      onMenu: (at) => unawaited(_chatMenu(context, chat, at, widget.act)),
+      child: _Hint(
+        title: desk.title(chat),
+        detail: desk.title(chat) == chat.id ? '' : chat.flock,
+        child: MouseRegion(
+          cursor: SystemMouseCursors.click,
+          onEnter: (_) => setState(() => _hover = true),
+          onExit: (_) => setState(() => _hover = false),
+          child: GestureDetector(
+            behavior: HitTestBehavior.opaque,
+            onTap: widget.onTap,
+            child: SizedBox(
+              height: 54,
+              child: Stack(
+                alignment: Alignment.center,
+                children: [
+                  Positioned(
+                    left: 0,
+                    child: Container(
+                      width: 4,
+                      height: _mark,
+                      decoration: BoxDecoration(
+                        color: widget.active ? Palette.amber : Palette.fg2,
+                        borderRadius: const BorderRadius.horizontal(
+                          right: Radius.circular(4),
+                        ),
+                      ),
+                    ),
+                  ),
+                  Opacity(
+                    opacity: chat.closed ? 0.5 : 1,
+                    child: _Avatar(
+                      peer: chat.isGroup ? '' : chat.id,
+                      label: desk.title(chat),
+                      group: chat.isGroup,
+                      size: 44,
+                      presence: !chat.isGroup,
+                    ),
+                  ),
+                  if (chat.silenced)
+                    const Positioned(
+                      left: 10,
+                      bottom: 2,
+                      child: _RailMark(
+                        child: Glyph(
+                          GlyphKind.snoozed,
+                          size: 12,
+                          color: Palette.dim,
+                        ),
+                      ),
+                    ),
+                  if (unread > 0)
+                    Positioned(
+                      right: 8,
+                      top: 1,
+                      child: _RailMark(
+                        child: _Unread(
+                          count: unread,
+                          quiet: chat.silenced,
+                          margin: EdgeInsets.zero,
+                        ),
+                      ),
+                    ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _Hint extends StatefulWidget {
+  const _Hint({required this.title, required this.detail, required this.child});
+
+  final String title;
+  final String detail;
+  final Widget child;
+
+  @override
+  State<_Hint> createState() => _HintState();
+}
+
+class _HintState extends State<_Hint> {
+  final _portal = OverlayPortalController();
+  final _link = LayerLink();
+
+  Widget _card(BuildContext context) {
+    return Positioned(
+      left: 0,
+      top: 0,
+      child: CompositedTransformFollower(
+        link: _link,
+        showWhenUnlinked: false,
+        targetAnchor: Alignment.centerRight,
+        followerAnchor: Alignment.centerLeft,
+        offset: const Offset(-8, 0),
+        child: IgnorePointer(
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 300),
+            child: CustomPaint(
+              painter: const _HintPainter(),
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(22, 9, 16, 9),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      widget.title,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        fontSize: 14.5,
+                        height: 1.3,
+                        fontWeight: FontWeight.w600,
+                        color: Palette.fg,
+                      ),
+                    ),
+                    if (widget.detail.isNotEmpty)
+                      Text(
+                        widget.detail,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: Styles.detail,
+                      ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Semantics(
+      label: widget.title,
+      child: CompositedTransformTarget(
+        link: _link,
+        child: OverlayPortal(
+          controller: _portal,
+          overlayChildBuilder: _card,
+          child: Listener(
+            onPointerDown: (_) => _portal.hide(),
+            child: MouseRegion(
+              onEnter: (_) => _portal.show(),
+              onExit: (_) => _portal.hide(),
+              child: widget.child,
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _HintPainter extends CustomPainter {
+  const _HintPainter();
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    const arrow = 7.0;
+    final y = size.height / 2;
+    final body = Path()
+      ..addRRect(
+        RRect.fromLTRBR(
+          arrow,
+          0,
+          size.width,
+          size.height,
+          const Radius.circular(8),
+        ),
+      );
+    final point = Path()
+      ..moveTo(arrow + 1, y - arrow)
+      ..lineTo(0, y)
+      ..lineTo(arrow + 1, y + arrow)
+      ..close();
+    final path = Path.combine(PathOperation.union, body, point);
+
+    canvas.drawShadow(path, const Color(0xff000000), 6, false);
+    canvas.drawPath(path, Paint()..color = Palette.bg3);
+    canvas.drawPath(
+      path,
+      Paint()
+        ..color = Palette.line2
+        ..style = PaintingStyle.stroke,
+    );
+  }
+
+  @override
+  bool shouldRepaint(_HintPainter old) => false;
+}
+
+class _RailMark extends StatelessWidget {
+  const _RailMark({required this.child});
+
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(2),
+      decoration: const BoxDecoration(
+        color: Palette.well,
+        borderRadius: BorderRadius.all(Radius.circular(10)),
+      ),
+      child: child,
+    );
+  }
+}
+
+class _TopicList extends StatelessWidget {
+  const _TopicList({
+    required this.chat,
+    required this.current,
+    required this.onPick,
+    required this.act,
+  });
+
+  final Chat chat;
+  final String? current;
+  final void Function(String) onPick;
+  final Future<void> Function(Future<void> Function()) act;
+
   @override
   Widget build(BuildContext context) {
     final desk = Desk.instance;
 
-    return Padding(
-      padding: const EdgeInsets.symmetric(
-        horizontal: Metrics.edge,
-        vertical: 10,
-      ),
-      child: Row(
+    return ColoredBox(
+      color: Palette.bg2,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          _Avatar(peer: '00', size: 30),
-          const SizedBox(width: 10),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  desk.name('00'),
-                  overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(
-                    fontSize: 13.5,
-                    fontWeight: FontWeight.w600,
-                    color: Palette.fg,
+          SizedBox(
+            height: 56,
+            child: _RightClick(
+              onMenu: (at) => unawaited(_chatMenu(context, chat, at, act)),
+              child: _Clickable(
+                onTap: () => unawaited(_details(context, chat)),
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 16),
+                  child: Align(
+                    alignment: Alignment.centerLeft,
+                    child: Text(
+                      desk.title(chat),
+                      style: Styles.barTitle,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
                   ),
                 ),
-                Text(
-                  desk.selves.isEmpty
-                      ? 'Not heard from your phone'
-                      : (desk.selves.values.toList()..sort()).join(' · '),
-                  style: Styles.detail,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
+              ),
+            ),
+          ),
+          const ColoredBox(color: Palette.line, child: SizedBox(height: 1)),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 8, 8, 2),
+            child: SizedBox(
+              height: 34,
+              child: Row(
+                children: [
+                  Expanded(child: Text('TOPICS', style: Styles.rubric)),
+                  if (desk.owns(chat) && !chat.closed)
+                    _Icon(
+                      icon: GlyphKind.plus,
+                      tip: 'New topic',
+                      onTap: () => _newTopic(context, chat, act),
+                    ),
+                ],
+              ),
+            ),
+          ),
+          Expanded(
+            child: ListView(
+              padding: const EdgeInsets.only(bottom: 12),
+              children: [
+                _TopicRow(
+                  chat: chat,
+                  active: current == '',
+                  onTap: () => onPick(''),
                 ),
+                for (final topic in chat.named)
+                  _RightClick(
+                    onMenu: (at) => unawaited(
+                      _topicMenu(context, chat, topic, at, act),
+                    ),
+                    child: _TopicRow(
+                      chat: chat,
+                      topic: topic,
+                      active: current == topic.id,
+                      onTap: () => onPick(topic.id),
+                    ),
+                  ),
               ],
             ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _TopicRow extends StatefulWidget {
+  const _TopicRow({
+    required this.chat,
+    required this.active,
+    required this.onTap,
+    this.topic,
+  });
+
+  final Chat chat;
+  final Topic? topic;
+  final bool active;
+  final VoidCallback onTap;
+
+  @override
+  State<_TopicRow> createState() => _TopicRowState();
+}
+
+class _TopicRowState extends State<_TopicRow> {
+  bool _hover = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final chat = widget.chat;
+    final topic = widget.topic;
+    final id = topic?.id ?? '';
+    final unread = chat.unreadIn(id);
+    final typing = Desk.instance.typers(chat, id).isNotEmpty;
+
+    var color = Palette.dim;
+
+    if (unread > 0 || _hover) {
+      color = Palette.fg2;
+    }
+
+    if (widget.active) {
+      color = Palette.fg;
+    }
+
+    var bg = const Color(0x00000000);
+
+    if (_hover) {
+      bg = Palette.bg3;
+    }
+
+    if (widget.active) {
+      bg = Palette.amberWash;
+    }
+
+    return MouseRegion(
+      cursor: SystemMouseCursors.click,
+      onEnter: (_) => setState(() => _hover = true),
+      onExit: (_) => setState(() => _hover = false),
+      child: GestureDetector(
+        onTap: widget.onTap,
+        child: Container(
+          height: 34,
+          margin: const EdgeInsets.symmetric(horizontal: 8, vertical: 1),
+          padding: const EdgeInsets.symmetric(horizontal: 10),
+          decoration: BoxDecoration(
+            color: bg,
+            borderRadius: const BorderRadius.all(Radius.circular(8)),
+          ),
+          child: Row(
+            children: [
+              _Hash(topic: topic),
+              const SizedBox(width: 9),
+              Expanded(
+                child: Text(
+                  topic?.name ?? 'Main',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    fontSize: 14,
+                    height: 1.3,
+                    fontWeight: unread > 0 ? FontWeight.w600 : FontWeight.w500,
+                    color: color,
+                  ),
+                ),
+              ),
+              if (typing)
+                const Padding(
+                  padding: EdgeInsets.only(left: 8),
+                  child: Text(
+                    'typing…',
+                    style: TextStyle(
+                      fontSize: 12,
+                      height: 1.3,
+                      fontStyle: FontStyle.italic,
+                      color: Palette.amber,
+                    ),
+                  ),
+                ),
+              if (unread > 0 && !widget.active)
+                _Unread(count: unread, quiet: chat.silenced),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _Hash extends StatelessWidget {
+  const _Hash({required this.topic, this.size = 15});
+
+  final Topic? topic;
+  final double size;
+
+  @override
+  Widget build(BuildContext context) {
+    final topic = this.topic;
+
+    return Text(
+      '#',
+      style: TextStyle(
+        fontFamily: Fonts.mono,
+        fontSize: size,
+        height: 1.2,
+        fontWeight: FontWeight.w700,
+        color: topic == null ? Palette.dim : _topicColor(topic.color),
+      ),
+    );
+  }
+}
+
+class _Me extends StatelessWidget {
+  const _Me({required this.wide});
+
+  final bool wide;
+
+  @override
+  Widget build(BuildContext context) {
+    final desk = Desk.instance;
+
+    final where = switch (desk.selves.length) {
+      0 => 'Not heard from your phone',
+      1 => desk.selves.values.first,
+      _ => '${desk.selves.length} flocks',
+    };
+
+    Future<void> flocks() {
+      return showDialog<void>(
+        context: context,
+        builder: (_) => const _FlocksDialog(),
+      );
+    }
+
+    return ColoredBox(
+      color: Palette.well,
+      child: SizedBox(
+        height: 60,
+        child: Row(
+          children: [
+            SizedBox(
+              width: _railWidth,
+              child: _Hint(
+                title: desk.selfLabel,
+                detail: where,
+                child: Center(
+                  child: _Clickable(
+                    onTap: () => unawaited(flocks()),
+                    child: const _Avatar(peer: '00', size: 36),
+                  ),
+                ),
+              ),
+            ),
+            if (wide) ...[
+              Expanded(
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      desk.selfLabel,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        fontSize: 13.5,
+                        fontWeight: FontWeight.w600,
+                        color: Palette.fg,
+                      ),
+                    ),
+                    Text(
+                      where,
+                      style: Styles.detail,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ],
+                ),
+              ),
+              _Icon(
+                icon: GlyphKind.group,
+                tip: 'Your flocks',
+                onTap: () => unawaited(flocks()),
+              ),
+              const SizedBox(width: 8),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _FlocksDialog extends StatelessWidget {
+  const _FlocksDialog();
+
+  @override
+  Widget build(BuildContext context) {
+    return ValueListenableBuilder<int>(
+      valueListenable: Desk.instance.changes,
+      builder: (context, _, _) => _build(context),
+    );
+  }
+
+  Widget _build(BuildContext context) {
+    final desk = Desk.instance;
+    final flocks = desk.selves.keys.toList()..sort();
+
+    return _Dialog(
+      title: 'Your flocks',
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          if (flocks.isEmpty)
+            const Text('Not heard from your phone')
+          else
+            Row(
+              children: [
+                Expanded(child: Text('FLOCK', style: Styles.rubric)),
+                Text('YOUR ID', style: Styles.rubric),
+                const SizedBox(width: 16),
+              ],
+            ),
+          const SizedBox(height: 6),
+          ConstrainedBox(
+            constraints: const BoxConstraints(maxHeight: 360),
+            child: ListView(
+              shrinkWrap: true,
+              padding: const EdgeInsets.only(right: 16),
+              children: [
+                for (final flock in flocks)
+                  Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 7),
+                    child: Row(
+                      children: [
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                flock,
+                                style: Styles.detail.copyWith(
+                                  color: Palette.fg,
+                                ),
+                              ),
+                              if (desk.selfSigned(flock).isNotEmpty)
+                                Text(
+                                  desk.selfSigned(flock),
+                                  style: Styles.detail,
+                                  overflow: TextOverflow.ellipsis,
+                                ),
+                            ],
+                          ),
+                        ),
+                        const SizedBox(width: 12),
+                        SelectableText(
+                          desk.selfIn(flock),
+                          style: Styles.detail.copyWith(color: Palette.amber),
+                        ),
+                      ],
+                    ),
+                  ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 16),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.end,
+            children: [
+              _Button(
+                label: 'Close',
+                ghost: true,
+                onTap: () => Navigator.of(context).pop(),
+              ),
+            ],
           ),
         ],
       ),
@@ -746,40 +1419,38 @@ class _PhoneState extends StatelessWidget {
       text = '$text · ${desk.behind} TO GO';
     }
 
-    return Padding(
-      padding: const EdgeInsets.symmetric(
-        horizontal: Metrics.edge + 2,
-        vertical: 12,
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          Row(
-            children: [
-              _Dot(color: color),
-              const SizedBox(width: 10),
-              Expanded(
-                child: Text(
-                  text,
-                  style: Styles.rubric.copyWith(color: color),
-                  overflow: TextOverflow.ellipsis,
-                ),
-              ),
-              if (desk.online && desk.queued > 0)
-                Text('${desk.queued} WAITING', style: Styles.rubric),
-            ],
-          ),
-          if (busy)
-            const Padding(
-              padding: EdgeInsets.only(top: 8),
-              child: LinearProgressIndicator(
-                minHeight: 2,
-                color: Palette.amber,
-                backgroundColor: Palette.amberDim,
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Row(
+          children: [
+            _Dot(color: color),
+            const SizedBox(width: 10),
+            Flexible(
+              child: Text(
+                text,
+                style: Styles.rubric.copyWith(color: color),
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
               ),
             ),
-        ],
-      ),
+            if (desk.online && desk.queued > 0) ...[
+              const SizedBox(width: 16),
+              Text('${desk.queued} WAITING', style: Styles.rubric),
+            ],
+          ],
+        ),
+        if (busy)
+          const Padding(
+            padding: EdgeInsets.only(top: 6),
+            child: LinearProgressIndicator(
+              minHeight: 2,
+              color: Palette.amber,
+              backgroundColor: Palette.amberDim,
+            ),
+          ),
+      ],
     );
   }
 }
@@ -800,521 +1471,103 @@ class _Dot extends StatelessWidget {
   }
 }
 
-class _ChatItem extends StatefulWidget {
-  const _ChatItem({
-    required this.chat,
-    required this.active,
-    required this.onTap,
-    required this.act,
-  });
+Future<void> _chatMenu(
+  BuildContext context,
+  Chat chat,
+  Offset at,
+  Future<void> Function(Future<void> Function()) act,
+) async {
+  final desk = Desk.instance;
+  final owner = chat.owner == desk.selfIn(chat.id);
 
-  final Chat chat;
-  final bool active;
-  final VoidCallback onTap;
-  final Future<void> Function(Future<void> Function()) act;
+  final what = await _popup(context, at, [
+    _item('details', 'Details'),
+    _item('star', chat.starred ? 'Unstar' : 'Star'),
+    if (chat.silenced)
+      _item('unmute', 'Unmute')
+    else ...[
+      _item('mute1', 'Mute for an hour'),
+      _item('mute8', 'Mute for 8 hours'),
+      _item('mute', 'Mute'),
+    ],
+    if (desk.owns(chat) && !chat.closed) _item('topic', 'New topic'),
+    if (chat.isGroup && desk.owns(chat)) _item('edit', 'Edit group'),
+    if (chat.isGroup && !chat.closed)
+      _item('leave', owner ? 'End group' : 'Leave group'),
+    _item('delete', 'Delete chat'),
+  ]);
 
-  @override
-  State<_ChatItem> createState() => _ChatItemState();
-}
-
-class _ChatItemState extends State<_ChatItem> {
-  bool _hover = false;
-
-  Future<void> _menu(Offset at) async {
-    final desk = Desk.instance;
-    final chat = widget.chat;
-    final owned = chat.isGroup && desk.owns(chat);
-
-    final what = await _popup(context, at, [
-      _item('star', chat.starred ? 'Unstar' : 'Star'),
-      if (chat.silenced)
-        _item('unmute', 'Unmute')
-      else ...[
-        _item('mute1', 'Mute for an hour'),
-        _item('mute8', 'Mute for 8 hours'),
-        _item('mute', 'Mute'),
-      ],
-      if (chat.topics.isNotEmpty)
-        _item(
-          'compact',
-          chat.compact ? 'Show topics as a tree' : 'Show topics as tags',
-        ),
-      if (desk.owns(chat) && !chat.closed) _item('topic', 'New topic'),
-      if (owned) _item('edit', 'Edit group'),
-      if (chat.isGroup && !chat.closed)
-        _item(
-          'leave',
-          chat.owner == desk.selfIn(chat.id) ? 'End group' : 'Leave group',
-        ),
-      _item('delete', 'Delete chat'),
-    ]);
-
-    if (!mounted || what == null) {
-      return;
-    }
-
-    final now = DateTime.now().millisecondsSinceEpoch;
-
-    switch (what) {
-      case 'star':
-        await widget.act(() => desk.star(chat, !chat.starred));
-      case 'unmute':
-        await widget.act(() => desk.mute(chat, 0));
-      case 'mute1':
-        await widget.act(() => desk.mute(chat, now + 3600 * 1000));
-      case 'mute8':
-        await widget.act(() => desk.mute(chat, now + 8 * 3600 * 1000));
-      case 'mute':
-        await widget.act(() => desk.mute(chat, -1));
-      case 'compact':
-        await widget.act(() => desk.compact(chat, !chat.compact));
-      case 'topic':
-        await _newTopic(context, chat, widget.act);
-      case 'edit':
-        await showDialog<void>(
-          context: context,
-          builder: (_) => _GroupDialog(chat: chat, act: widget.act),
-        );
-      case 'leave':
-        final sure = await _confirm(
-          context,
-          chat.owner == desk.selfIn(chat.id)
-              ? 'End this group?'
-              : 'Leave this group?',
-          'Your phone does this for you, the messages here stay.',
-          chat.owner == desk.selfIn(chat.id) ? 'End' : 'Leave',
-        );
-        if (sure) {
-          await widget.act(() => desk.leaveGroup(chat));
-        }
-      case 'delete':
-        final sure = await _confirm(
-          context,
-          'Delete this chat?',
-          'Your phone deletes it too.',
-          'Delete',
-        );
-        if (sure) {
-          await widget.act(() => desk.delete(chat));
-        }
-    }
+  if (what == null || !context.mounted) {
+    return;
   }
 
-  @override
-  Widget build(BuildContext context) {
-    final desk = Desk.instance;
-    final chat = widget.chat;
-    final main = chat.messages.where((m) => m.topic.isEmpty);
-    final last = main.isEmpty ? null : main.last;
-    final typing = desk.typers(chat, '');
+  final now = DateTime.now().millisecondsSinceEpoch;
 
-    var preview = 'No messages';
-    if (typing.isNotEmpty) {
-      preview = chat.isGroup
-          ? '${desk.name(typing.first)} is typing…'
-          : 'typing…';
-    } else if (last != null) {
-      preview = _line(last);
-      if (last.system.isEmpty) {
-        if (desk.mine(last)) {
-          preview = 'You: $preview';
-        } else if (chat.isGroup) {
-          preview = '${desk.name(last.author)}: $preview';
-        }
+  switch (what) {
+    case 'details':
+      await _details(context, chat);
+    case 'star':
+      await act(() => desk.star(chat, !chat.starred));
+    case 'unmute':
+      await act(() => desk.mute(chat, 0));
+    case 'mute1':
+      await act(() => desk.mute(chat, now + 3600 * 1000));
+    case 'mute8':
+      await act(() => desk.mute(chat, now + 8 * 3600 * 1000));
+    case 'mute':
+      await act(() => desk.mute(chat, -1));
+    case 'topic':
+      await _newTopic(context, chat, act);
+    case 'edit':
+      await showDialog<void>(
+        context: context,
+        builder: (_) => _GroupDialog(chat: chat, act: act),
+      );
+    case 'leave':
+      final sure = await _confirm(
+        context,
+        owner ? 'End this group?' : 'Leave this group?',
+        'Your phone does this for you, the messages here stay.',
+        owner ? 'End' : 'Leave',
+      );
+      if (sure) {
+        await act(() => desk.leaveGroup(chat));
       }
-    }
-
-    final bg = widget.active
-        ? Palette.amberWash
-        : _hover
-        ? Palette.bg3
-        : const Color(0x00000000);
-
-    return MouseRegion(
-      cursor: SystemMouseCursors.click,
-      onEnter: (_) => setState(() => _hover = true),
-      onExit: (_) => setState(() => _hover = false),
-      child: _RightClick(
-        onMenu: _menu,
-        child: GestureDetector(
-          onTap: widget.onTap,
-          child: Container(
-            margin: const EdgeInsets.symmetric(horizontal: 8, vertical: 1),
-            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
-            color: bg,
-            child: Row(
-              children: [
-                _Avatar(
-                  peer: chat.isGroup ? '' : chat.id,
-                  label: desk.title(chat),
-                  group: chat.isGroup,
-                  size: 36,
-                  presence: !chat.isGroup,
-                ),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Row(
-                        children: [
-                          Expanded(
-                            child: Text(
-                              desk.title(chat),
-                              overflow: TextOverflow.ellipsis,
-                              style: TextStyle(
-                                fontSize: 14,
-                                fontWeight: chat.unreadAll > 0
-                                    ? FontWeight.w600
-                                    : FontWeight.w500,
-                                color: chat.closed ? Palette.dim : Palette.fg,
-                              ),
-                            ),
-                          ),
-                          if (chat.starred)
-                            const Padding(
-                              padding: EdgeInsets.only(left: 6),
-                              child: Glyph(
-                                GlyphKind.star,
-                                size: 12,
-                                color: Palette.amber,
-                              ),
-                            ),
-                          if (chat.silenced)
-                            const Padding(
-                              padding: EdgeInsets.only(left: 6),
-                              child: Glyph(
-                                GlyphKind.snoozed,
-                                size: 12,
-                                color: Palette.dim,
-                              ),
-                            ),
-                          if (last != null) ...[
-                            const SizedBox(width: 6),
-                            Text(_when(last.at), style: Styles.detail),
-                          ],
-                        ],
-                      ),
-                      const SizedBox(height: 2),
-                      Row(
-                        children: [
-                          Expanded(
-                            child: Text(
-                              preview,
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                              style: TextStyle(
-                                fontSize: 13,
-                                height: 1.3,
-                                fontStyle: typing.isNotEmpty
-                                    ? FontStyle.italic
-                                    : FontStyle.normal,
-                                color: typing.isNotEmpty
-                                    ? Palette.amber
-                                    : chat.unread > 0
-                                    ? Palette.fg2
-                                    : Palette.dim,
-                              ),
-                            ),
-                          ),
-                          if (chat.unread > 0)
-                            _Unread(count: chat.unread, quiet: chat.silenced),
-                        ],
-                      ),
-                    ],
-                  ),
-                ),
-              ],
-            ),
-          ),
-        ),
-      ),
-    );
+    case 'delete':
+      final sure = await _confirm(
+        context,
+        'Delete this chat?',
+        'Your phone deletes it too.',
+        'Delete',
+      );
+      if (sure) {
+        await act(() => desk.delete(chat));
+      }
   }
-}
-
-class _TopicItem extends StatefulWidget {
-  const _TopicItem({
-    required this.chat,
-    required this.topic,
-    required this.end,
-    required this.active,
-    required this.onTap,
-    required this.act,
-  });
-
-  final Chat chat;
-  final Topic topic;
-  final bool end;
-  final bool active;
-  final VoidCallback onTap;
-  final Future<void> Function(Future<void> Function()) act;
-
-  @override
-  State<_TopicItem> createState() => _TopicItemState();
-}
-
-class _TopicItemState extends State<_TopicItem> {
-  bool _hover = false;
-
-  @override
-  Widget build(BuildContext context) {
-    final desk = Desk.instance;
-    final chat = widget.chat;
-    final topic = widget.topic;
-    final unread = topic.unread;
-    final typing = desk.typers(chat, topic.id);
-    final said = chat.messages.where((m) => m.topic == topic.id);
-
-    var preview = '';
-    if (typing.isNotEmpty) {
-      preview = chat.isGroup
-          ? '${desk.name(typing.first)} is typing…'
-          : 'typing…';
-    } else if (said.isNotEmpty) {
-      preview = _line(said.last);
-    }
-
-    final bg = widget.active
-        ? Palette.amberWash
-        : _hover
-        ? Palette.bg3
-        : const Color(0x00000000);
-
-    return IntrinsicHeight(
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          SizedBox(
-            width: 52,
-            child: CustomPaint(painter: _Branch(end: widget.end)),
-          ),
-          Expanded(
-            child: MouseRegion(
-              cursor: SystemMouseCursors.click,
-              onEnter: (_) => setState(() => _hover = true),
-              onExit: (_) => setState(() => _hover = false),
-              child: _RightClick(
-                onMenu: (at) =>
-                    _topicMenu(context, chat, topic, at, widget.act),
-                child: GestureDetector(
-                  onTap: widget.onTap,
-                  child: Container(
-                    margin: const EdgeInsets.only(right: 8, bottom: 1),
-                    padding: const EdgeInsets.fromLTRB(8, 6, 12, 6),
-                    decoration: BoxDecoration(
-                      color: bg,
-                      borderRadius: const BorderRadius.all(Radius.circular(8)),
-                    ),
-                    child: Row(
-                      children: [
-                        _Dot(color: _topicColor(topic.color), size: 8),
-                        const SizedBox(width: 9),
-                        ConstrainedBox(
-                          constraints: const BoxConstraints(maxWidth: 110),
-                          child: Text(
-                            topic.name,
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                            style: TextStyle(
-                              fontSize: 13,
-                              fontWeight: unread > 0
-                                  ? FontWeight.w600
-                                  : FontWeight.w500,
-                              color: unread > 0 || widget.active
-                                  ? Palette.fg
-                                  : Palette.fg2,
-                            ),
-                          ),
-                        ),
-                        const SizedBox(width: 8),
-                        Expanded(
-                          child: Text(
-                            preview,
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                            style: TextStyle(
-                              fontSize: 12.5,
-                              fontStyle: typing.isNotEmpty
-                                  ? FontStyle.italic
-                                  : FontStyle.normal,
-                              color: typing.isNotEmpty
-                                  ? Palette.amber
-                                  : unread > 0
-                                  ? Palette.fg2
-                                  : Palette.dim,
-                            ),
-                          ),
-                        ),
-                        if (unread > 0)
-                          _Unread(count: unread, quiet: chat.silenced),
-                      ],
-                    ),
-                  ),
-                ),
-              ),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-class _TopicTag extends StatefulWidget {
-  const _TopicTag({
-    required this.chat,
-    required this.topic,
-    required this.active,
-    required this.onTap,
-    required this.act,
-  });
-
-  final Chat chat;
-  final Topic topic;
-  final bool active;
-  final VoidCallback onTap;
-  final Future<void> Function(Future<void> Function()) act;
-
-  @override
-  State<_TopicTag> createState() => _TopicTagState();
-}
-
-class _TopicTagState extends State<_TopicTag> {
-  bool _hover = false;
-
-  @override
-  Widget build(BuildContext context) {
-    final desk = Desk.instance;
-    final chat = widget.chat;
-    final topic = widget.topic;
-    final unread = topic.unread;
-    final typing = desk.typers(chat, topic.id).isNotEmpty;
-    final lit = _topicColor(topic.color);
-
-    var color = Color.lerp(lit, Palette.bg2, 0.82)!;
-    var ink = Color.lerp(lit, Palette.dim, 0.55)!;
-
-    if (unread > 0) {
-      color = lit;
-      ink = lit.computeLuminance() > 0.35 ? Palette.bg : Palette.fg;
-    }
-
-    if (_hover || widget.active) {
-      color = Color.lerp(color, Palette.fg, 0.08)!;
-    }
-
-    return MouseRegion(
-      cursor: SystemMouseCursors.click,
-      onEnter: (_) => setState(() => _hover = true),
-      onExit: (_) => setState(() => _hover = false),
-      child: _RightClick(
-        onMenu: (at) => _topicMenu(context, chat, topic, at, widget.act),
-        child: GestureDetector(
-          onTap: widget.onTap,
-          child: Container(
-            padding: const EdgeInsets.fromLTRB(9, 4, 9, 4),
-            decoration: BoxDecoration(
-              color: color,
-              border: widget.active
-                  ? Border.all(color: Palette.amberDim)
-                  : null,
-              borderRadius: const BorderRadius.all(Radius.circular(11)),
-            ),
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                ConstrainedBox(
-                  constraints: const BoxConstraints(maxWidth: 140),
-                  child: Text(
-                    typing ? '${topic.name} …' : topic.name,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: TextStyle(
-                      fontSize: 12,
-                      height: 1.2,
-                      fontWeight: FontWeight.w600,
-                      color: ink,
-                    ),
-                  ),
-                ),
-                if (unread > 0) ...[
-                  const SizedBox(width: 6),
-                  Container(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 5,
-                      vertical: 1,
-                    ),
-                    decoration: const BoxDecoration(
-                      color: Palette.bg,
-                      borderRadius: BorderRadius.all(Radius.circular(8)),
-                    ),
-                    child: Text(
-                      '$unread',
-                      style: const TextStyle(
-                        fontSize: 10.5,
-                        height: 1.2,
-                        color: Palette.amber,
-                      ),
-                    ),
-                  ),
-                ],
-              ],
-            ),
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-class _Branch extends CustomPainter {
-  const _Branch({required this.end});
-
-  final bool end;
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    final paint = Paint()
-      ..color = Palette.line2
-      ..strokeWidth = 1.5
-      ..style = PaintingStyle.stroke;
-    const x = 38.0;
-    final y = size.height / 2;
-    final path = Path()
-      ..moveTo(x, 0)
-      ..lineTo(x, y - 8)
-      ..quadraticBezierTo(x, y, x + 8, y)
-      ..lineTo(size.width, y);
-
-    canvas.drawPath(path, paint);
-
-    if (!end) {
-      canvas.drawLine(Offset(x, y - 8), Offset(x, size.height), paint);
-    }
-  }
-
-  @override
-  bool shouldRepaint(_Branch old) => old.end != end;
 }
 
 class _Unread extends StatelessWidget {
-  const _Unread({required this.count, this.quiet = false});
+  const _Unread({
+    required this.count,
+    this.quiet = false,
+    this.margin = const EdgeInsets.only(left: 8),
+  });
 
   final int count;
   final bool quiet;
+  final EdgeInsets margin;
 
   @override
   Widget build(BuildContext context) {
     return Container(
-      margin: const EdgeInsets.only(left: 8),
+      margin: margin,
       padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
       decoration: BoxDecoration(
         color: quiet ? Palette.line2 : Palette.amber,
         borderRadius: const BorderRadius.all(Radius.circular(8)),
       ),
       child: Text(
-        '$count',
+        count > 99 ? '99+' : '$count',
         style: TextStyle(
           fontSize: 11,
           fontWeight: FontWeight.w700,
@@ -1402,7 +1655,7 @@ class _Favorites extends StatelessWidget {
                                 crossAxisAlignment: CrossAxisAlignment.start,
                                 children: [
                                   Text(
-                                    '${desk.name(message.author)} · '
+                                    '${desk.author(message)} · '
                                     '${chat == null ? '' : desk.title(chat)} '
                                     '· ${_when(message.at)}',
                                     style: Styles.detail,
@@ -1501,6 +1754,7 @@ class _NewChatDialog extends StatelessWidget {
             constraints: const BoxConstraints(maxHeight: 360),
             child: ListView(
               shrinkWrap: true,
+              padding: const EdgeInsets.only(right: 16),
               children: [
                 for (final peer in known)
                   _Clickable(
@@ -1637,6 +1891,7 @@ class _GroupDialogState extends State<_GroupDialog> {
             constraints: const BoxConstraints(maxHeight: 300),
             child: ListView(
               shrinkWrap: true,
+              padding: const EdgeInsets.only(right: 16),
               children: [
                 for (final peer in known)
                   _Clickable(
@@ -1820,33 +2075,10 @@ class _TopicDialogState extends State<_TopicDialog> {
   }
 }
 
-class _SettingsDialog extends StatefulWidget {
+class _SettingsDialog extends StatelessWidget {
   const _SettingsDialog({required this.act});
 
   final Future<void> Function(Future<void> Function()) act;
-
-  @override
-  State<_SettingsDialog> createState() => _SettingsDialogState();
-}
-
-class _SettingsDialogState extends State<_SettingsDialog> {
-  final _nick = TextEditingController(text: Desk.instance.selfNick);
-
-  @override
-  void dispose() {
-    _nick.dispose();
-    super.dispose();
-  }
-
-  Future<void> _save() async {
-    final nick = _nick.text.trim();
-
-    Navigator.of(context).pop();
-
-    if (nick != Desk.instance.selfNick) {
-      await widget.act(() => Desk.instance.nick(nick));
-    }
-  }
 
   @override
   Widget build(BuildContext context) {
@@ -1872,7 +2104,7 @@ class _SettingsDialogState extends State<_SettingsDialog> {
               _Button(
                 label: 'Change picture',
                 ghost: true,
-                onTap: () => widget.act(() async {
+                onTap: () => act(() async {
                   await desk.avatar();
                 }),
               ),
@@ -1881,30 +2113,13 @@ class _SettingsDialogState extends State<_SettingsDialog> {
                 _Button(
                   label: 'Remove',
                   ghost: true,
-                  onTap: () => widget.act(desk.dropAvatar),
+                  onTap: () => act(desk.dropAvatar),
                 ),
             ],
           ),
-          const SizedBox(height: 20),
-          Text('NICKNAME', style: Styles.rubric),
-          const SizedBox(height: 6),
-          _Field(
-            controller: _nick,
-            hint: 'What your peers see',
-            limit: nickMax,
-            onSubmit: _save,
-          ),
-          for (final signed in desk.selves.keys.map(desk.selfSigned))
-            if (signed.isNotEmpty) ...[
-            const SizedBox(height: 6),
-            Text(
-              'Your peers see your signed name $signed.',
-              style: Styles.detail,
-            ),
-          ],
-          const SizedBox(height: 8),
+          const SizedBox(height: 12),
           const Text(
-            'Your phone keeps these, they change there too.',
+            'Your phone keeps this, it changes there too.',
             style: Styles.detail,
           ),
           const SizedBox(height: 24),
@@ -1972,8 +2187,6 @@ class _SettingsDialogState extends State<_SettingsDialog> {
                 ghost: true,
                 onTap: () => Navigator.of(context).pop(),
               ),
-              const SizedBox(width: 10),
-              _Button(label: 'Save', onTap: _save),
             ],
           ),
         ],
@@ -2033,11 +2246,16 @@ class _Avatar extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final desk = Desk.instance;
-    final text = (label ?? desk.name(peer)).replaceFirst('~', '');
+    final shown = peer == '00' ? desk.selfLabel : desk.name(peer);
+    final text = (label ?? shown).replaceFirst('~', '');
     final words = text.trim().split(RegExp(r'\s+'));
     var initials = words.first.isEmpty ? '?' : words.first[0];
     if (words.length > 1 && words.last.isNotEmpty) {
       initials += words.last[0];
+    }
+
+    if (RegExp(r'^[0-9a-f]{1,16}-[0-9a-f]{2}$').hasMatch(text)) {
+      initials = localOf(text);
     }
 
     const tints = [
@@ -2100,14 +2318,7 @@ class _Avatar extends StatelessWidget {
       return face;
     }
 
-    final state = desk.peers[peer];
-    Color? dot;
-
-    if (state != null && state.online) {
-      dot = Palette.good;
-    } else if (state != null && state.present) {
-      dot = Palette.amber;
-    }
+    final dot = _presence(peer);
 
     if (dot == null) {
       return face;
@@ -2329,6 +2540,15 @@ class _Field extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final style = TextStyle(
+      inherit: false,
+      fontSize: mono ? 12.5 : 14.5,
+      height: 1.45,
+      fontFamily: mono ? Fonts.mono : null,
+      color: Palette.fg2,
+      textBaseline: TextBaseline.alphabetic,
+    );
+
     return TextField(
       controller: controller,
       focusNode: focus,
@@ -2343,14 +2563,10 @@ class _Field extends StatelessWidget {
       onEditingComplete: onSubmit == null ? null : () {},
       onChanged: onChanged,
       inputFormatters: [if (limit > 0) _Utf8Limit(limit)],
-      style: TextStyle(
-        fontSize: mono ? 12.5 : 14.5,
-        fontFamily: mono ? Fonts.mono : null,
-        color: Palette.fg,
-      ),
+      style: style,
       decoration: InputDecoration(
         hintText: hint,
-        hintStyle: const TextStyle(color: Palette.dim),
+        hintStyle: style.copyWith(color: Palette.dim),
         isDense: true,
         filled: true,
         fillColor: Palette.bg,

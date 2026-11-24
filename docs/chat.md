@@ -151,7 +151,7 @@ heartbeat data
   8     16         1        1          64             64              8             1              8              8
 
 uid           random for each tunnel, a new one means the peer started over
-nick          our nickname, empty if we have none
+nick          old gospel-style name, we send zero
 typing        1 while we type in this chat
 features      0x01 DATA, 0x02 REPLY, 0x04 NAME, 0x08 AVATAR, 0x10 TOPIC,
               0x20 GROUP, 0x40 RETRACT
@@ -444,20 +444,19 @@ which the peer acks and drops. Group frames wait for a heartbeat like a
 reply does.
 
 A message in a group that names us is marked as a mention. That is `@`
-followed by our nickname, our signed name or our peer id in hex, in any
-case, with no letter, digit, `-` or `_` right before the `@` or right after
-the name.
+followed by our signed name or our peer id in hex, in any case, with no
+letter, digit, `-` or `_` right before the `@` or right after the name.
 
 ## Names
 
-A nickname is 2 to 16 letters and digits, `vigil_chat_nick()` refuses
-anything else. A nickname from a peer that does not pass that check is
-taken as empty.
+We only show signed names for peers running Vigil, but can receive old
+gospel-style names. Such a name is 2 to 16 letters and digits, anything
+else is taken as empty.
 
 A peer with `NAME` sends its name and the signature of its flock over
 that name. We show the name only when the signature verifies for that peer
 id. The platform gets a `name` event the first time we hear from a peer,
-and again when its nickname or signed name changes.
+and again when its gospel-style or signed name changes.
 
 ## Platform contract
 
@@ -493,7 +492,6 @@ vigil_chat_typing(peer, topic, on)          typing in a one-to-one chat,
 vigil_chat_group_typing(owner, group,       typing in a group and topic,
     topic, members)                         group 0 for none, only the
                                             owner and members hear it
-vigil_chat_nick(name)                       our nickname, empty for none
 vigil_chat_events(buf, len)                 the events as a JSON array,
                                             buf holds at least 64 KiB
 ```
@@ -545,7 +543,7 @@ not acked, so our peer sends the message again.
 | VIGIL_CHAT_GROUP_REPLY_MAX| 489 B  | text in a reply in a group              |
 | VIGIL_CHAT_GROUP_TOPIC_MAX| 481 B  | text in a topic in a group              |
 | VIGIL_CHAT_GROUP_NAME_MAX | 32 B   | name of a group                         |
-| VIGIL_CHAT_NICK_MAX       | 16     | nickname length                         |
+| VIGIL_CHAT_NICK_MAX       | 16     | gospel-style name length                |
 | CHAT_HEARTBEAT            | 15 s   | between heartbeats                      |
 | CHAT_RESEND               | 5 s    | before an unacked message goes again    |
 | CHAT_STORE_WAIT           | 10 s   | for the platform to store a message     |

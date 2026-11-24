@@ -427,53 +427,23 @@ class StateDot extends StatelessWidget {
 }
 
 class AmbientClock extends ValueNotifier<double> {
-  AmbientClock(this._sample, [this._quiet]) : super(_sample(0));
+  AmbientClock() : super(0);
 
   static const _step = Duration(milliseconds: 50);
 
-  static final net = AmbientClock((seconds) => seconds);
-  static final blip = AmbientClock(_blip, _blipQuiet);
-
-  static double _blip(double seconds) {
-    final p = seconds % 4 / 4;
-
-    if (p < 0.9375) {
-      return 0;
-    }
-
-    if (p < 0.9575) {
-      return (p - 0.9375) / 0.02;
-    }
-
-    return 1 - (p - 0.9575) / 0.0425;
-  }
-
-  static Duration? _blipQuiet(double seconds) {
-    final p = seconds % 4 / 4;
-
-    if (p >= 0.9375) {
-      return null;
-    }
-
-    return Duration(microseconds: ((0.9375 - p) * 4e6).ceil());
-  }
+  static final net = AmbientClock();
 
   static bool live(BuildContext context) {
     return TickerMode.valuesOf(context).enabled &&
         !MediaQuery.disableAnimationsOf(context);
   }
 
-  final double Function(double seconds) _sample;
-  final Duration? Function(double seconds)? _quiet;
-
   final _clock = Stopwatch();
   Timer? _timer;
 
   void _tick() {
-    final seconds = _clock.elapsedMicroseconds / 1e6;
-
-    value = _sample(seconds);
-    _timer = Timer(_quiet?.call(seconds) ?? _step, _tick);
+    value = _clock.elapsedMicroseconds / 1e6;
+    _timer = Timer(_step, _tick);
   }
 
   @override
@@ -540,36 +510,14 @@ class AroundDot extends StatelessWidget {
 
   final double size;
 
-  Widget _dot(double t) {
+  @override
+  Widget build(BuildContext context) {
     return Container(
       width: size,
       height: size,
-      decoration: BoxDecoration(
-        color: Palette.good.withValues(alpha: 0.9 * t),
+      decoration: const BoxDecoration(
+        color: Palette.amber,
         shape: BoxShape.circle,
-        border: Border.all(color: Palette.good.withValues(alpha: 0.75)),
-        boxShadow: t == 0
-            ? null
-            : [
-                BoxShadow(
-                  color: Palette.good.withValues(alpha: 0.25 * t),
-                  spreadRadius: size / 2,
-                ),
-              ],
-      ),
-    );
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    if (!AmbientClock.live(context)) {
-      return _dot(0);
-    }
-
-    return RepaintBoundary(
-      child: ValueListenableBuilder<double>(
-        valueListenable: AmbientClock.blip,
-        builder: (context, t, _) => _dot(t),
       ),
     );
   }

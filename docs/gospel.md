@@ -31,9 +31,9 @@ running, a new one is attached and a removed one is detached. When the
 gospel runs on its own, the configuration it was started with can not
 be detached, the platform starts again with another one.
 
-Gospels share nothing but the nickname, the picture and whether anyone
-may reach us. Each has its own cathedrals, liturgies, remembrances, call
-state and chat tunnels.
+Gospels share nothing but the picture and whether anyone may reach us.
+Each has its own cathedrals, liturgies, remembrances, call state and chat
+tunnels.
 
 Device ids are only unique within a flock, so the platforms name a peer
 by its flock and its id: `<flock>-<id>`, the flock in hex without
@@ -132,12 +132,14 @@ Ignoring a device instead blocks it for good, it can not message, call or
 invite you and never asks again. The Peers sheet lists the devices you
 ignore, removing one there lets it ask again.
 
-Each device also sends a nickname in its heartbeats. The nickname is
-chosen by the sender and is not checked by anyone. The device id is what
-identifies the sender. You can give peers your own names in the app.
+The device id is what identifies the sender. You can give peers your own
+names in the app.
 
-The last nickname and signed name heard from each peer are kept, so the
-app still shows them after a restart before the peer is heard again.
+Vigil only shows signed names for peers running Vigil. It can still
+receive old gospel-style names, which nobody checks.
+
+The last gospel-style and signed name heard from each peer are kept, so
+the app still shows them after a restart before the peer is heard again.
 
 ## Signed names
 
@@ -161,12 +163,12 @@ The receiver rebuilds `m` from the flock in its own configuration and
 the KEK id of the tunnel the heartbeat came in on. It never takes those
 from the sender, so a device cannot use the signed name of another
 device. If the signature checks out with its own `name_pubkey`, the app
-shows that name for the peer instead of its nickname. A name you gave
+shows that name for the peer. A name you gave
 the peer yourself still comes first.
 
 The cathedrals never see a name, it only travels inside the tunnels.
 Renaming the instance in Vigil breaks the signature, the device then
-only sends its nickname until it is provisioned again.
+sends no name until it is provisioned again.
 
 ## Pictures
 
@@ -187,8 +189,8 @@ always send zero, and so get the picture on every new tunnel.
 
 The receiver keeps the picture and shows it next to the name of the
 peer. When the heartbeats of a peer no longer have the feature bit, the
-receiver drops the picture it kept for that peer. Like the nickname, the
-picture is chosen by the sender and not checked by anyone.
+receiver drops the picture it kept for that peer. The picture is
+chosen by the sender and not checked by anyone.
 
 ## Topics
 
@@ -248,9 +250,9 @@ message.
 
 You can snooze a group chat with the bell at the top of it, for a set time
 or until you turn it off. While it is snoozed you only get a notification
-for a message that mentions you. A mention is `@` followed by the nickname,
-signed name or device id of a member, in the text of the message. Type `@`
-to pick a member from a list.
+for a message that mentions you. A mention is `@` followed by the signed
+name or device id of a member, in the text of the message. Type `@` to
+pick a member from a list.
 
 Notification text is handled by the operating system. It is not part of
 the chat vault and can be shown on the lock screen.

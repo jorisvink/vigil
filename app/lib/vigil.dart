@@ -304,7 +304,6 @@ class ChatStatus {
   final Map<String, dynamic> json;
 
   bool get alive => gospels.any((g) => g.alive);
-  String get nick => json['nick'] as String? ?? '';
 
   List<GospelStatus> get gospels =>
       (json['gospels'] as List<dynamic>? ?? const [])
@@ -465,7 +464,6 @@ class ChatSettings {
 
   final Map<String, dynamic> json;
 
-  String get nick => json['nick'] as String? ?? '';
   bool get preview => json['preview'] as bool? ?? false;
 }
 
@@ -658,7 +656,6 @@ class Vigil {
       ..._signed.values,
       ..._nicks.values,
       if (chat != null) ...[
-        if (chat.nick.isNotEmpty) chat.nick,
         for (final g in chat.gospels) ...[
           localOf(g.id),
           if (g.signed.isNotEmpty) g.signed,
@@ -690,20 +687,22 @@ class Vigil {
   bool mine(String peer) => isPeer(peer) && self(peer) == peer;
 
   String get selfLabel {
-    final nick = _last.chat?.nick ?? '';
+    final signed = {
+      for (final g in _last.chat?.gospels ?? const <GospelStatus>[])
+        if (g.signed.isNotEmpty) g.signed,
+    };
 
-    if (nick.isEmpty) {
+    if (signed.length != 1) {
       return 'You';
     }
 
-    return chosen(nick);
+    return signed.first;
   }
 
   String selfName(String chat) {
-    final status = _last.chat;
-    final gospel = status?.gospel(flockOf(chat));
+    final gospel = _last.chat?.gospel(flockOf(chat));
 
-    if (status == null || gospel == null) {
+    if (gospel == null) {
       return 'You';
     }
 
@@ -711,31 +710,15 @@ class Vigil {
       return gospel.signed;
     }
 
-    if (status.nick.isNotEmpty) {
-      return chosen(status.nick);
-    }
-
     return gospel.id;
   }
 
-  bool selfPicked(String chat) {
-    final status = _last.chat;
-    final gospel = status?.gospel(flockOf(chat));
-
-    return gospel != null && gospel.signed.isEmpty && status!.nick.isNotEmpty;
-  }
-
-  bool selfSigned(String chat) =>
-      _last.chat?.gospel(flockOf(chat))?.signed.isNotEmpty ?? false;
-
   Set<String> selfNames(String chat) {
-    final status = _last.chat;
-    final gospel = status?.gospel(flockOf(chat));
+    final gospel = _last.chat?.gospel(flockOf(chat));
 
     return {
       if (gospel != null) ...[
         localOf(gospel.id),
-        if (status!.nick.isNotEmpty) status.nick,
         if (gospel.signed.isNotEmpty) gospel.signed,
       ],
     };
@@ -745,9 +728,6 @@ class Vigil {
 
   bool known(String peer) =>
       _names.containsKey(peer) || _signed.containsKey(peer);
-
-  bool authenticated(String peer) =>
-      !_names.containsKey(peer) && _signed.containsKey(peer);
 
   bool safetyActive(String peer) =>
       _safetyOn.contains(peer) && _safetySet.contains(peer);
@@ -1355,13 +1335,10 @@ class Vigil {
   Future<int> chatMute(String peer, [int? until]) async =>
       int.parse(await _invoke('chatMute', {'peer': peer, 'until': until}));
 
-  Future<ChatSettings> chatSettings({String? nick, bool? preview}) async =>
-      ChatSettings(
-        jsonDecode(
-              await _invoke('chatSettings', {'nick': nick, 'preview': preview}),
-            )
-            as Map<String, dynamic>,
-      );
+  Future<ChatSettings> chatSettings({bool? preview}) async => ChatSettings(
+    jsonDecode(await _invoke('chatSettings', {'preview': preview}))
+        as Map<String, dynamic>,
+  );
 
   Future<SafetyCode> safetyCode(
     String peer, {

@@ -17,7 +17,7 @@
 /*
  * chatter - run a Gospel configuration on a regular host and chat.
  *
- *	$ ./tests/chatter [-n nick] [-m peer:text] [-g id:name:members]
+ *	$ ./tests/chatter [-m peer:text] [-g id:name:members]
  *	    [-j owner:id[:members]] [-G text] [-L] [-K peer]
  *	    [-i peer:file] [-I file] [-f peer:file] [-F file] [-o dir]
  *	    [-t peer] [-T] [-O peer] [-e count] [-x secs] [-l count]
@@ -208,7 +208,7 @@ static u_int64_t	retract_hash[CHATTER_MESSAGES_MAX];
 static void
 usage(void)
 {
-	fprintf(stderr, "usage: chatter [-n nick] [-m peer:text] "
+	fprintf(stderr, "usage: chatter [-m peer:text] "
 	    "[-g id:name:members] [-j owner:id[:members]] [-G text] [-L] "
 	    "[-K peer] "
 	    "[-i peer:file] [-I file] [-f peer:file] [-F file] "
@@ -242,7 +242,7 @@ main(int argc, char **argv)
 	delivered = 0;
 
 	while ((ch = getopt(argc, argv,
-	    "a:A:c:C:D:e:E:f:F:g:G:i:I:j:K:l:Lm:M:n:o:O:P:r:R:S:t:T"
+	    "a:A:c:C:D:e:E:f:F:g:G:i:I:j:K:l:Lm:M:o:O:P:r:R:S:t:T"
 	    "u:U:W:x:X:y:")) != -1) {
 		switch (ch) {
 		case 'E':
@@ -428,10 +428,6 @@ main(int argc, char **argv)
 			message_peer[message_count] = peer;
 			message_text[message_count] = ep + 1;
 			message_count++;
-			break;
-		case 'n':
-			if (vigil_chat_nick(optarg) == -1)
-				usage();
 			break;
 		case 'a':
 		case 'f':

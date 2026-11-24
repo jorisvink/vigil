@@ -89,9 +89,6 @@ object Vigil {
     external fun chatTyping(flock: Long, peer: Int, topic: Long, on: Boolean)
 
     @JvmStatic
-    external fun chatNick(name: String): Boolean
-
-    @JvmStatic
     external fun chatAvatar(data: ByteArray?): Boolean
 
     @JvmStatic

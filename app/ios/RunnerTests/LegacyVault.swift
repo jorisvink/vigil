@@ -1621,14 +1621,6 @@ final class LegacyVault {
         return dropped
     }
 
-    static func setNick(_ nick: String) throws {
-        guard nick.withCString({ vigil_chat_nick($0) }) == 0 else {
-            throw Failure(description: "A name is 2 to 16 letters or digits.")
-        }
-
-        defaults.set(nick, forKey: "chatNick")
-    }
-
     func groupLeave(_ chat: String, local: String) throws -> [(String, Int64)] {
         guard var info = try groupInfo(chat), info["state"] as? String == "open",
               let owner = info["owner"] as? String, let me = UInt8(local, radix: 16) else { return [] }

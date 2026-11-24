@@ -82,7 +82,6 @@ static jbyteArray	android_chat_data_take(JNIEnv *, jclass, jlong, jint);
 static jboolean		android_chat_forget(JNIEnv *, jclass, jlong, jint);
 static jboolean		android_chat_drop(JNIEnv *, jclass, jlong, jint, jlong);
 static jboolean		android_chat_stored(JNIEnv *, jclass, jlong);
-static jboolean		android_chat_nick(JNIEnv *, jclass, jstring);
 static jboolean		android_chat_avatar(JNIEnv *, jclass, jbyteArray);
 static jboolean		android_chat_companion(JNIEnv *, jclass, jbyteArray);
 static jboolean		android_chat_companion_sync(JNIEnv *, jclass,
@@ -155,7 +154,6 @@ static JNINativeMethod	methods[] = {
 	{ "chatAccept", "(JIZ)V", (void *)android_chat_accept },
 	{ "chatIgnore", "(JIZ)V", (void *)android_chat_ignore },
 	{ "chatTyping", "(JIJZ)V", (void *)android_chat_typing },
-	{ "chatNick", "(Ljava/lang/String;)Z", (void *)android_chat_nick },
 	{ "chatAvatar", "([B)Z", (void *)android_chat_avatar },
 	{ "chatCompanion", "([B)Z", (void *)android_chat_companion },
 	{ "chatCompanionSync", "([B[B)Z",
@@ -798,31 +796,6 @@ android_chat_typing(JNIEnv *env, jclass cls, jlong flock, jint peer,
 {
 	if (peer > 0 && peer < KYRKA_PEERS_PER_FLOCK)
 		vigil_chat_typing(flock, peer, topic, on == JNI_TRUE);
-}
-
-/*
- * Vigil.chatNick(), sets the nickname we send to our peers.
- */
-static jboolean
-android_chat_nick(JNIEnv *env, jclass cls, jstring name)
-{
-	int		ret;
-	const char	*str;
-
-	if (name == NULL)
-		return (JNI_FALSE);
-
-	str = (*env)->GetStringUTFChars(env, name, NULL);
-	if (str == NULL)
-		return (JNI_FALSE);
-
-	ret = vigil_chat_nick(str);
-	(*env)->ReleaseStringUTFChars(env, name, str);
-
-	if (ret == -1)
-		return (JNI_FALSE);
-
-	return (JNI_TRUE);
 }
 
 /*

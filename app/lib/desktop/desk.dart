@@ -19,7 +19,6 @@ const topicColors = [
 
 const topicNameMax = 32;
 const groupNameMax = 32;
-const nickMax = 16;
 const messageMax = 512;
 
 const _creating = {'msg', 'member', 'topic'};
@@ -201,7 +200,7 @@ class Chat {
 
   bool get starred => Desk.instance._stars.containsKey(id);
 
-  bool get compact => Desk.instance._compacts.containsKey(id);
+  Iterable<Topic> get named => topics.values.where((t) => t.name.isNotEmpty);
 
   int get muted => Desk.instance._mutes[id] as int? ?? 0;
 
@@ -316,14 +315,12 @@ class Desk {
   final Map<String, Future<Uint8List?>> _data = {};
 
   Map<String, dynamic> _stars = {};
-  Map<String, dynamic> _compacts = {};
   Map<String, dynamic> _mutes = {};
   Map<String, dynamic> _labels = {};
   List<String> _order = [];
 
   final Map<String, String> selves = {};
   final Map<String, String> _selfSigned = {};
-  String selfNick = '';
   String selfAvatar = '';
   bool linked = false;
   bool online = false;
@@ -633,17 +630,31 @@ class Desk {
 
   String selfSigned(String peer) => _selfSigned[flockOf(peer)] ?? '';
 
+  String get selfLabel {
+    final signed = _selfSigned.values.where((s) => s.isNotEmpty).toSet();
+
+    if (signed.length != 1) {
+      return 'You';
+    }
+
+    return signed.first;
+  }
+
+  String author(Message message) {
+    if (mine(message)) {
+      return name(selfIn(message.chat).isEmpty ? '00' : selfIn(message.chat));
+    }
+
+    return name(message.author);
+  }
+
   String name(String peer) {
     if (isSelf(peer)) {
       if (selfSigned(peer).isNotEmpty) {
         return selfSigned(peer);
       }
 
-      if (selfNick.isEmpty) {
-        return 'You';
-      }
-
-      return '~$selfNick';
+      return 'You';
     }
 
     final label = _labels[peer] as String?;
@@ -673,10 +684,6 @@ class Desk {
         return selfSigned(peer);
       }
 
-      if (selfNick.isNotEmpty) {
-        return selfNick;
-      }
-
       return localOf(peer);
     }
 
@@ -685,14 +692,12 @@ class Desk {
 
   Set<String> selfNames(String chat) => {
     if (selfIn(chat).isNotEmpty) localOf(selfIn(chat)),
-    if (selfNick.isNotEmpty) selfNick,
     if (selfSigned(chat).isNotEmpty) selfSigned(chat),
   };
 
   Set<String> get mentionable => {
     ..._signed.values,
     ..._nicks.values,
-    if (selfNick.isNotEmpty) selfNick,
     ..._selfSigned.values,
     for (final chat in chats.values) ...chat.members.map(localOf),
   };
@@ -852,7 +857,6 @@ class Desk {
       case 'self':
         selves.clear();
         _selfSigned.clear();
-        selfNick = op['nick'] as String? ?? '';
         for (final g in op['gospels'] as List<dynamic>? ?? const []) {
           final gospel = g as Map<String, dynamic>;
           final flock = gospel['flock'] as String;
@@ -907,7 +911,6 @@ class Desk {
         avatars.removeWhere((peer, _) => !keep.contains(peer));
       case 'prefs':
         _stars = op['stars'] as Map<String, dynamic>? ?? {};
-        _compacts = op['compacts'] as Map<String, dynamic>? ?? {};
         _mutes = op['mutes'] as Map<String, dynamic>? ?? {};
         _labels = op['names'] as Map<String, dynamic>? ?? {};
         _order = (op['order'] as List<dynamic>? ?? const []).cast<String>();
@@ -1562,8 +1565,6 @@ class Desk {
     });
   }
 
-  Future<void> nick(String name) => _ask({'what': 'nick', 'nick': name});
-
   Future<bool> avatar() async => await _invoke<bool>('avatar', true) ?? false;
 
   Future<void> dropAvatar() => _invoke<void>('avatar', false);
@@ -1584,9 +1585,6 @@ class Desk {
 
   Future<void> star(Chat chat, bool on) =>
       _ask({'what': 'star', 'chat': chat.id, 'on': on});
-
-  Future<void> compact(Chat chat, bool on) =>
-      _ask({'what': 'compact', 'chat': chat.id, 'on': on});
 
   Future<void> mute(Chat chat, int until) =>
       _ask({'what': 'mute', 'chat': chat.id, 'until': until});

@@ -66,7 +66,7 @@ var _voiceRate = 1.0;
   }
 
   if (_reachable(status, peer)) {
-    return (Liveness.off, 'Around · no link', Palette.fg2);
+    return (Liveness.off, 'Around · no link', Palette.amber);
   }
 
   if ((chat?.queued ?? 0) > 0) {
@@ -195,7 +195,12 @@ Widget chatDot(Status status, String peer, {double size = 8}) {
   return StateDot(state, size: size);
 }
 
-Widget _presence(Status status, String peer, Widget portrait) {
+Widget chatPresence(
+  Status status,
+  String peer,
+  Widget portrait, {
+  Color ring = Palette.bg,
+}) {
   final state = _link(status, peer).$1;
 
   if (state == Liveness.off && !_reachable(status, peer)) {
@@ -211,10 +216,7 @@ Widget _presence(Status status, String peer, Widget portrait) {
         bottom: -1,
         child: Container(
           padding: const EdgeInsets.all(2.5),
-          decoration: const BoxDecoration(
-            color: Palette.bg,
-            shape: BoxShape.circle,
-          ),
+          decoration: BoxDecoration(color: ring, shape: BoxShape.circle),
           child: chatDot(status, peer, size: 9),
         ),
       ),
@@ -871,7 +873,7 @@ class ChatRow extends StatelessWidget {
         padding: const EdgeInsets.fromLTRB(4, 10, 0, 10),
         child: Row(
           children: [
-            _presence(
+            chatPresence(
               status,
               chat.peer,
               isGroup(chat.peer)
@@ -886,7 +888,11 @@ class ChatRow extends StatelessWidget {
                   Row(
                     children: [
                       Flexible(
-                        child: PeerName(chat.peer, style: Styles.cardTitle),
+                        child: PeerName(
+                          chat.peer,
+                          style: Styles.cardTitle,
+                          shrink: 12,
+                        ),
                       ),
                       if (chat.star) ...[
                         const SizedBox(width: 6),
@@ -2504,7 +2510,7 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
               onTap: _about,
               child: Row(
                 children: [
-                  _presence(
+                  chatPresence(
                     status,
                     peer,
                     group
@@ -3130,7 +3136,7 @@ class _Member extends StatelessWidget {
             'p2p' => (Liveness.online, 'Online · p2p', Palette.good),
             'relay' => (Liveness.online, 'Online · relay', Palette.good),
             'connecting' => (Liveness.pending, 'Connecting', Palette.amber),
-            _ when member.around => (Liveness.off, 'Around', Palette.fg2),
+            _ when member.around => (Liveness.off, 'Around', Palette.amber),
             _ => (Liveness.off, owner ? 'Owner' : 'Offline', Palette.dim),
           };
 
@@ -5601,7 +5607,6 @@ Future<void> chatSettings() async {
     return;
   }
 
-  final nick = TextEditingController(text: settings.nick);
   var preview = settings.preview;
 
   if (!context.mounted) {
@@ -5620,24 +5625,6 @@ Future<void> chatSettings() async {
           Text('YOUR PICTURE', style: Styles.key),
           const SizedBox(height: 6),
           const _AvatarPicker(),
-          const SizedBox(height: 18),
-          Text('YOUR NAME', style: Styles.key),
-          const SizedBox(height: 6),
-          Pre(
-            child: TextField(
-              controller: nick,
-              maxLength: 16,
-              style: Styles.pre,
-              cursorColor: Palette.amber,
-              inputFormatters: [
-                FilteringTextInputFormatter.allow(RegExp('[0-9A-Za-z]')),
-              ],
-              decoration: InputDecoration.collapsed(
-                hintText: 'Sent to your peers, gospel shows it',
-                hintStyle: Styles.pre.copyWith(color: Palette.dim),
-              ).copyWith(counterText: ''),
-            ),
-          ),
           const SizedBox(height: 18),
           Row(
             children: [
@@ -5673,15 +5660,12 @@ Future<void> chatSettings() async {
     ),
   );
 
-  final name = nick.text;
-  nick.dispose();
-
   if (saved != true) {
     return;
   }
 
   try {
-    await vigil.chatSettings(nick: name, preview: preview);
+    await vigil.chatSettings(preview: preview);
   } on VigilError catch (e) {
     notify(e.message);
   }

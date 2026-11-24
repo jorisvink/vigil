@@ -7,13 +7,15 @@ class _Conversation extends StatefulWidget {
     super.key,
     required this.chat,
     required this.topic,
-    required this.onTopic,
+    required this.members,
+    required this.onMembers,
     required this.onProblem,
   });
 
   final Chat chat;
   final String topic;
-  final void Function(String) onTopic;
+  final bool members;
+  final VoidCallback? onMembers;
   final void Function(String) onProblem;
 
   @override
@@ -347,14 +349,13 @@ class _ConversationState extends State<_Conversation> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        _Header(chat: chat, topic: topic, act: _act),
-        if (chat.topics.isNotEmpty || desk.owns(chat))
-          _Topics(
-            chat: chat,
-            current: topic,
-            onPick: widget.onTopic,
-            act: _act,
-          ),
+        _Header(
+          chat: chat,
+          topic: topic,
+          members: widget.members,
+          onMembers: widget.onMembers,
+          act: _act,
+        ),
         const ColoredBox(color: Palette.line, child: SizedBox(height: 1)),
         if (pinned.isNotEmpty) _Pinned(chat: chat, pinned: pinned, act: _act),
         Expanded(
@@ -602,76 +603,38 @@ class _Mentions extends StatelessWidget {
 }
 
 class _Header extends StatelessWidget {
-  const _Header({required this.chat, required this.topic, required this.act});
+  const _Header({
+    required this.chat,
+    required this.topic,
+    required this.members,
+    required this.onMembers,
+    required this.act,
+  });
 
   final Chat chat;
   final String topic;
+  final bool members;
+  final VoidCallback? onMembers;
   final Future<void> Function(Future<void> Function()) act;
-
-  Future<void> _menu(BuildContext context, Offset at) async {
-    final desk = Desk.instance;
-    final owner = chat.owner == desk.selfIn(chat.id);
-
-    final what = await _popup(context, at, [
-      if (desk.owns(chat) && !chat.closed) _item('topic', 'New topic'),
-      if (chat.isGroup && desk.owns(chat)) _item('edit', 'Edit group'),
-      if (chat.isGroup && !chat.closed)
-        _item('leave', owner ? 'End group' : 'Leave group'),
-    ]);
-
-    if (what == null || !context.mounted) {
-      return;
-    }
-
-    switch (what) {
-      case 'topic':
-        await _newTopic(context, chat, act);
-      case 'edit':
-        await showDialog<void>(
-          context: context,
-          builder: (_) => _GroupDialog(chat: chat, act: act),
-        );
-      case 'leave':
-        final sure = await _confirm(
-          context,
-          owner ? 'End this group?' : 'Leave this group?',
-          'Your phone does this for you, the messages here stay.',
-          owner ? 'End' : 'Leave',
-        );
-        if (sure) {
-          await act(() => desk.leaveGroup(chat));
-        }
-    }
-  }
 
   @override
   Widget build(BuildContext context) {
     final desk = Desk.instance;
-
-    final members = chat.members.where((m) => m != desk.selfIn(chat.id)).toList()
-      ..sort((a, b) {
-        final rank = _rank(b).compareTo(_rank(a));
-
-        if (rank != 0) {
-          return rank;
-        }
-
-        return desk.name(a).compareTo(desk.name(b));
-      });
+    final current = chat.named.where((t) => t.id == topic).firstOrNull;
 
     var sub = '';
+    var color = Palette.dim;
     if (chat.isGroup) {
-      final around = members.where(desk.around).length;
-      sub = '$around of ${members.length} around';
+      final others = chat.members.where((m) => m != desk.selfIn(chat.id));
+      final around = others.where(desk.around).length;
+      sub = '$around of ${others.length} around';
     } else {
-      final state = desk.peers[chat.id];
-      if (state != null && state.online) {
-        sub = 'Online';
-      } else if (state != null && state.present) {
-        sub = 'Around';
-      } else {
-        sub = chat.id;
-      }
+      color = _presence(chat.id) ?? Palette.dim;
+      sub = switch (_rank(chat.id)) {
+        2 => 'Online',
+        1 => 'Around',
+        _ => 'Offline',
+      };
     }
 
     final busy = desk.call != null || desk.ringingFor != null;
@@ -681,53 +644,96 @@ class _Header extends StatelessWidget {
       child: Row(
         children: [
           const SizedBox(width: 20),
-          _Avatar(
-            peer: chat.isGroup ? '' : chat.id,
-            label: desk.title(chat),
-            group: chat.isGroup,
-            size: 30,
-            presence: !chat.isGroup,
-          ),
-          const SizedBox(width: 12),
           Expanded(
-            child: Column(
-              mainAxisAlignment: MainAxisAlignment.center,
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  desk.title(chat),
-                  style: Styles.barTitle,
-                  overflow: TextOverflow.ellipsis,
-                ),
-                Text(sub, overflow: TextOverflow.ellipsis, style: Styles.detail),
-              ],
+            child: _Clickable(
+              onTap: () => unawaited(_details(context, chat)),
+              child: Row(
+                children: [
+                  _Hash(topic: current, size: 22),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Column(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Row(
+                          children: [
+                            Flexible(
+                              child: Text(
+                                current?.name ?? 'Main',
+                                style: Styles.barTitle,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                            ),
+                            if (!chat.isGroup) ...[
+                              const SizedBox(width: 12),
+                              _Dot(color: color),
+                              const SizedBox(width: 7),
+                              Text(
+                                sub,
+                                style: Styles.detail.copyWith(color: color),
+                              ),
+                            ],
+                          ],
+                        ),
+                        if (chat.isGroup)
+                          Text(
+                            sub,
+                            style: Styles.detail,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
             ),
           ),
-          if (chat.isGroup && !chat.closed) _Members(members: members),
+          if (onMembers != null)
+            _Icon(
+              icon: GlyphKind.group,
+              tip: members ? 'Hide members' : 'Show members',
+              lit: members,
+              onTap: onMembers!,
+            ),
           if (!chat.isGroup && !busy)
             _Icon(
               icon: GlyphKind.call,
               tip: 'Call ${desk.title(chat)}',
               onTap: () => act(() => desk.dial(chat.id)),
             ),
-          if (desk.owns(chat) && !chat.closed || chat.isGroup && !chat.closed)
-            Builder(
-              builder: (context) => _Icon(
-                icon: GlyphKind.grip,
-                tip: 'More',
-                onTap: () {
-                  final box = context.findRenderObject() as RenderBox;
-                  final at = box.localToGlobal(Offset(0, box.size.height));
-                  unawaited(_menu(context, at));
-                },
-              ),
+          Builder(
+            builder: (context) => _Icon(
+              icon: GlyphKind.grip,
+              tip: 'More',
+              onTap: () {
+                final box = context.findRenderObject() as RenderBox;
+                final at = box.localToGlobal(Offset(0, box.size.height));
+                unawaited(_chatMenu(context, chat, at, act));
+              },
             ),
+          ),
           const SizedBox(width: 12),
         ],
       ),
     );
   }
 }
+
+Future<void> _details(BuildContext context, Chat chat) {
+  return showDialog<void>(
+    context: context,
+    builder: (_) => _DetailsDialog(chat: chat),
+  );
+}
+
+Color? _presence(String peer) => switch (_rank(peer)) {
+  2 => Palette.good,
+  1 => Palette.amber,
+  _ => null,
+};
 
 int _rank(String peer) {
   final state = Desk.instance.peers[peer];
@@ -747,165 +753,189 @@ int _rank(String peer) {
   return 0;
 }
 
-class _Members extends StatelessWidget {
-  const _Members({required this.members});
-
-  static const _shown = 8;
-
-  final List<String> members;
-
-  @override
-  Widget build(BuildContext context) {
-    final desk = Desk.instance;
-    final rest = members.length - _shown;
-
-    return Padding(
-      padding: const EdgeInsets.only(right: 8),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          for (final m in members.take(_shown))
-            Padding(
-              padding: const EdgeInsets.only(left: 6),
-              child: Tooltip(
-                message: desk.name(m),
-                waitDuration: const Duration(milliseconds: 300),
-                child: _Avatar(peer: m, size: 28, presence: true),
-              ),
-            ),
-          if (rest > 0)
-            Padding(
-              padding: const EdgeInsets.only(left: 8),
-              child: Text('+$rest', style: Styles.detail),
-            ),
-        ],
-      ),
-    );
-  }
-}
-
-class _Topics extends StatelessWidget {
-  const _Topics({
-    required this.chat,
-    required this.current,
-    required this.onPick,
-    required this.act,
-  });
+class _DetailsDialog extends StatelessWidget {
+  const _DetailsDialog({required this.chat});
 
   final Chat chat;
-  final String current;
-  final void Function(String) onPick;
-  final Future<void> Function(Future<void> Function()) act;
 
   @override
   Widget build(BuildContext context) {
-    final desk = Desk.instance;
-    final topics = chat.topics.values.where((t) => t.name.isNotEmpty);
+    return ValueListenableBuilder<int>(
+      valueListenable: Desk.instance.changes,
+      builder: (context, _, _) => _build(context),
+    );
+  }
 
-    return SizedBox(
-      height: 40,
-      child: ListView(
-        scrollDirection: Axis.horizontal,
-        padding: const EdgeInsets.fromLTRB(16, 4, 16, 8),
+  Widget _build(BuildContext context) {
+    final desk = Desk.instance;
+    final members = chat.members.toList()
+      ..sort((a, b) => desk.name(a).compareTo(desk.name(b)));
+
+    return _Dialog(
+      title: desk.title(chat),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          _TopicTab(
-            label: 'Main',
-            on: current.isEmpty,
-            unread: current.isEmpty ? 0 : chat.unread,
-            onTap: () => onPick(''),
-          ),
-          for (final t in topics)
-            Builder(
-              builder: (context) => _RightClick(
-                onMenu: (at) => _topicMenu(context, chat, t, at, act),
-                child: _TopicTab(
-                  label: t.name,
-                  color: t.color,
-                  on: t.id == current,
-                  unread: t.id == current ? 0 : t.unread,
-                  onTap: () => onPick(t.id),
-                ),
+          _Detail(label: 'FLOCK', value: chat.flock),
+          if (chat.isGroup)
+            _Detail(label: 'OWNER', value: chat.owner)
+          else
+            _Detail(label: 'PEER ID', value: chat.id),
+          if (desk.selfIn(chat.id).isNotEmpty)
+            _Detail(label: 'YOUR ID', value: desk.selfIn(chat.id)),
+          if (members.isNotEmpty) ...[
+            const SizedBox(height: 16),
+            Text('MEMBERS · ${members.length}', style: Styles.rubric),
+            const SizedBox(height: 6),
+            ConstrainedBox(
+              constraints: const BoxConstraints(maxHeight: 300),
+              child: ListView(
+                shrinkWrap: true,
+                padding: const EdgeInsets.only(right: 16),
+                children: [
+                  for (final member in members)
+                    Padding(
+                      padding: const EdgeInsets.symmetric(vertical: 6),
+                      child: Row(
+                        children: [
+                          _Avatar(peer: member, size: 26, presence: true),
+                          const SizedBox(width: 10),
+                          Expanded(
+                            child: Text(
+                              desk.name(member),
+                              style: const TextStyle(color: Palette.fg),
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                          ),
+                          const SizedBox(width: 12),
+                          SelectableText(member, style: Styles.detail),
+                        ],
+                      ),
+                    ),
+                ],
               ),
             ),
-          if (desk.owns(chat) && !chat.closed)
-            _Icon(
-              icon: GlyphKind.plus,
-              tip: 'New topic',
-              onTap: () => _newTopic(context, chat, act),
-            ),
+          ],
+          const SizedBox(height: 16),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.end,
+            children: [
+              _Button(
+                label: 'Close',
+                ghost: true,
+                onTap: () => Navigator.of(context).pop(),
+              ),
+            ],
+          ),
         ],
       ),
     );
   }
 }
 
-class _TopicTab extends StatefulWidget {
-  const _TopicTab({
-    required this.label,
-    required this.on,
-    required this.unread,
-    required this.onTap,
-    this.color,
-  });
+class _Detail extends StatelessWidget {
+  const _Detail({required this.label, required this.value});
 
   final String label;
-  final bool on;
-  final int unread;
-  final VoidCallback onTap;
-  final int? color;
-
-  @override
-  State<_TopicTab> createState() => _TopicTabState();
-}
-
-class _TopicTabState extends State<_TopicTab> {
-  bool _hover = false;
+  final String value;
 
   @override
   Widget build(BuildContext context) {
-    final color = widget.color;
-
-    return MouseRegion(
-      cursor: SystemMouseCursors.click,
-      onEnter: (_) => setState(() => _hover = true),
-      onExit: (_) => setState(() => _hover = false),
-      child: GestureDetector(
-        onTap: widget.onTap,
-        child: Container(
-          margin: const EdgeInsets.only(right: 8),
-          padding: const EdgeInsets.symmetric(horizontal: 12),
-          decoration: BoxDecoration(
-            color: widget.on
-                ? Palette.amberWash
-                : _hover
-                ? Palette.bg3
-                : Palette.bg2,
-            border: Border.all(
-              color: widget.on ? Palette.amberDim : Palette.line,
-            ),
-            borderRadius: const BorderRadius.all(Radius.circular(14)),
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 5),
+      child: Row(
+        children: [
+          Expanded(child: Text(label, style: Styles.rubric)),
+          SelectableText(
+            value,
+            style: Styles.detail.copyWith(color: Palette.fg),
           ),
+        ],
+      ),
+    );
+  }
+}
+
+class _Members extends StatelessWidget {
+  const _Members({required this.chat, required this.onOpen});
+
+  final Chat chat;
+  final void Function(Chat) onOpen;
+
+  @override
+  Widget build(BuildContext context) {
+    final desk = Desk.instance;
+    final members = chat.members.where((m) => m != desk.selfIn(chat.id)).toList()
+      ..sort((a, b) {
+        final rank = _rank(b).compareTo(_rank(a));
+
+        if (rank != 0) {
+          return rank;
+        }
+
+        return desk.name(a).compareTo(desk.name(b));
+      });
+
+    final around = members.where(desk.around).toList();
+    final away = members.where((m) => !desk.around(m)).toList();
+
+    return ColoredBox(
+      color: Palette.bg2,
+      child: SizedBox(
+        width: 220,
+        child: ListView(
+          padding: const EdgeInsets.symmetric(vertical: 8),
+          children: [
+            if (around.isNotEmpty) _label('AROUND', around.length),
+            for (final member in around) _row(member, 1),
+            if (away.isNotEmpty) _label('OFFLINE', away.length),
+            for (final member in away) _row(member, 0.5),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _label(String text, int count) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 12, 16, 6),
+      child: Text('$text · $count', style: Styles.rubric),
+    );
+  }
+
+  Widget _row(String member, double opacity) {
+    final desk = Desk.instance;
+
+    return _Clickable(
+      onTap: () => onOpen(desk.chat(member)),
+      child: Opacity(
+        opacity: opacity,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 5),
           child: Row(
-            mainAxisSize: MainAxisSize.min,
             children: [
-              if (color != null) ...[
-                _Dot(color: _topicColor(color), size: 8),
-                const SizedBox(width: 7),
-              ],
-              ConstrainedBox(
-                constraints: const BoxConstraints(maxWidth: 160),
-                child: Text(
-                  widget.label,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: TextStyle(
-                    fontSize: 13,
-                    fontWeight: FontWeight.w500,
-                    color: widget.on ? Palette.amber2 : Palette.fg2,
-                  ),
+              _Avatar(peer: member, size: 30, presence: true),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      desk.name(member),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        fontSize: 13.5,
+                        height: 1.3,
+                        color: Palette.fg,
+                      ),
+                    ),
+                    if (member == chat.owner)
+                      const Text('owner', style: Styles.detail),
+                  ],
                 ),
               ),
-              if (widget.unread > 0) _Unread(count: widget.unread),
             ],
           ),
         ),
@@ -1264,7 +1294,7 @@ class _LineState extends State<_Line> {
                             child: Row(
                               children: [
                                 Text(
-                                  desk.name(mine ? '00' : message.author),
+                                  desk.author(message),
                                   style: TextStyle(
                                     fontSize: 14,
                                     fontWeight: FontWeight.w600,
@@ -1803,7 +1833,7 @@ class _Quote extends StatelessWidget {
     var who = desk.name(author);
 
     if (quoted != null) {
-      who = desk.name(desk.mine(quoted) ? '00' : quoted.author);
+      who = desk.author(quoted);
       text = quoted.summary;
     }
 
@@ -1899,7 +1929,7 @@ class _ReplyBar extends StatelessWidget {
           const SizedBox(width: 10),
           Expanded(
             child: Text(
-              'Replying to ${desk.name(desk.mine(message) ? '00' : message.author)}: '
+              'Replying to ${desk.author(message)}: '
               '${message.summary}',
               maxLines: 1,
               overflow: TextOverflow.ellipsis,

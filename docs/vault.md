@@ -157,8 +157,8 @@ unlocked. A peer only has one picture, a new one overwrites the old.
 Your own picture is encrypted with the outbox key, since the network
 side must send it to your peers while the phone is locked.
 
-The last nickname and signed name of each peer are kept the same way as
-its picture, sealed to the inbox public key and bound to its id.
+The last gospel-style and signed name of each peer are kept the same way
+as its picture, sealed to the inbox public key and bound to its id.
 
 ## The outbox and receipts
 
@@ -222,9 +222,9 @@ cannot be decrypted.
 
 ## What is not in the vault
 
-Peer names you set in the app and your own nickname are stored in the
-normal app settings, not in the vault. Notification text is handled by
-the operating system, see [gospel.md](gospel.md).
+Peer names you set in the app are stored in the normal app settings, not
+in the vault. Notification text is handled by the operating system, see
+[gospel.md](gospel.md).
 
 ## Moving chats into their flock
 

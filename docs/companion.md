@@ -71,9 +71,9 @@ flowchart LR
 The desktop keeps a copy of the phone's chat store. Every change the phone
 platform makes to its store is sent to the desktop as an op with
 `vigil_chat_companion_sync()`, in the order the phone made the changes.
-The phone core adds one op of its own: a `self` op with the phone's
-nickname and, for each gospel, its flock, id and signed name. It sends it the first time it hears from the
-desktop, and again when the nickname or avatar changes, with the avatar
+The phone core adds one op of its own: a `self` op with the flock, id and
+signed name of each gospel. It sends it the first time it hears from the
+desktop, and again when the avatar or the gospels change, with the avatar
 as the data.
 
 The desktop shows its copy by the same rules the phone uses for its own
@@ -95,7 +95,7 @@ prefs   stars, compacts, mutes, order, names: the phone's chat settings
 answer  id, what, ok, reason if not ok: the answer to an ask. With what
         "send", chat and ref instead: a desktop send to a group the
         phone is no longer in, which the phone did not keep
-self    nick, gospels: [{flock, id, signed}], avatar if the data is the
+self    gospels: [{flock, id, signed}], avatar if the data is the
         avatar
 reset   a full resync starts, see Resync
 avatars peers: the peers that have an avatar, sent in a resync
@@ -497,7 +497,6 @@ pin       chat, ref, on
 star      chat, on
 compact   chat, on
 mute      chat, until
-nick      nick
 avatar    the picture is the data, no data removes the avatar
 ```
 
@@ -508,8 +507,7 @@ still go out.
 
 The phone platform answers every ask with an `answer` op and then calls
 `vigil_chat_stored()` with the ask's token. The changes an ask makes
-reach the desktop as ops; a new nickname or avatar arrives as a new
-`self` op.
+reach the desktop as ops; a new avatar arrives as a new `self` op.
 
 ## Heartbeats
 

@@ -841,9 +841,6 @@ static struct chat_marks		marks[VIGIL_GOSPEL_MAX];
 /* Protects our commands, events, parcels and blobs. */
 static pthread_mutex_t			lock = PTHREAD_MUTEX_INITIALIZER;
 
-/* Our nickname, empty if we have none. */
-static char				nick[VIGIL_CHAT_NICK_MAX + 1];
-
 /*
  * The group and topic we are typing in, an id of 0 means none. Only the
  * owner and members of that group in its flock learn about it.
@@ -906,9 +903,8 @@ static struct sockaddr_in		companion_addr;
 /* The ref of our last parcel for our companion. */
 static u_int64_t			companion_refs = 0;
 
-/* Set once we sent our desktop who we are, with the nickname we sent. */
+/* Set once we sent our desktop who we are. */
 static int				companion_told = 0;
-static char				companion_nick[VIGIL_CHAT_NICK_MAX + 1];
 
 /* The serial of the avatar we last sent our desktop. */
 static u_int32_t			companion_avatar = 0;
@@ -1984,33 +1980,6 @@ vigil_chat_typing(u_int64_t flock, u_int8_t peer, u_int64_t topic, int on)
 }
 
 /*
- * Set the nickname we announce to peers in heartbeats, if empty we clear it.
- */
-int
-vigil_chat_nick(const char *name)
-{
-	int		len;
-
-	PRECOND(name != NULL);
-
-	if (name[0] != '\0' && chat_nick_valid(name) == -1)
-		return (-1);
-
-	vigil_lock(&lock);
-	memset(nick, 0, sizeof(nick));
-	len = snprintf(nick, sizeof(nick), "%s", name);
-	vigil_unlock(&lock);
-
-	if (len < 0)
-		return (-1);
-
-	if ((size_t)len >= sizeof(nick))
-		return (-1);
-
-	return (0);
-}
-
-/*
  * Set the avatar we send to our peers, if empty we have none.
  */
 void
@@ -2251,7 +2220,6 @@ vigil_chat_status(struct vigil_buf *buf)
 	struct vigil_config	*cfg;
 	size_t			queued;
 	int			first, online, p2p;
-	char			name[VIGIL_CHAT_NICK_MAX + 1];
 
 	PRECOND(buf != NULL);
 
@@ -2266,12 +2234,6 @@ vigil_chat_status(struct vigil_buf *buf)
 		return;
 	}
 
-	vigil_lock(&lock);
-	memcpy(name, nick, sizeof(name));
-	vigil_unlock(&lock);
-
-	vigil_buf_appendf(buf, ",\"nick\":");
-	vigil_buf_quote(buf, name);
 	vigil_safety_status(buf);
 
 	first = 1;
@@ -3693,7 +3655,7 @@ chat_avatar_check(struct chat_peer *peer, u_int8_t features)
 
 /*
  * Send a frame from the sendq to our peer, this can also be a heartbeat
- * with our nickname and typing state.
+ * with our typing state.
  */
 static void
 chat_frame_send(struct chat_tunnel *tun, struct chat_msg *msg)
@@ -3783,10 +3745,6 @@ chat_frame_send(struct chat_tunnel *tun, struct chat_msg *msg)
 		hb->typing_owner = tun->typed_owner;
 		hb->typing_group = htobe64(tun->typed_group);
 		hb->typing_topic = htobe64(tun->typed_topic);
-
-		vigil_lock(&lock);
-		memcpy(hb->name, nick, sizeof(hb->name));
-		vigil_unlock(&lock);
 
 		if (tun->peer == &companion)
 			chat_companion_heartbeat(tun, frame);
@@ -5956,15 +5914,14 @@ chat_events_free(void)
 }
 
 /*
- * Flag the given group message if it mentions us by our nickname, our
- * signed name or our id.
+ * Flag the given group message if it mentions us by our signed name or
+ * our id.
  */
 static void
 chat_mention_check(struct chat_event *evt)
 {
 	u_int8_t	slot;
 	char		id[3];
-	char		name[VIGIL_CHAT_NICK_MAX + 1];
 
 	PRECOND(evt != NULL);
 
@@ -5974,14 +5931,9 @@ chat_mention_check(struct chat_event *evt)
 	if (vigil_gospel_find(evt->flock, &slot) == -1)
 		return;
 
-	vigil_lock(&lock);
-	memcpy(name, nick, sizeof(name));
-	vigil_unlock(&lock);
-
 	(void)snprintf(id, sizeof(id), "%02x", gospels[slot].local);
 
-	if (chat_mention_name(evt->text, name) ||
-	    chat_mention_name(evt->text, id))
+	if (chat_mention_name(evt->text, id))
 		evt->mention = 1;
 
 	if (gospels[slot].named &&
@@ -6035,7 +5987,7 @@ chat_mention_char(char c)
 }
 
 /*
- * Check if the given nickname is one gospel accepts, returns -1 if not.
+ * Check if the given nickname is one we accept, returns -1 if not.
  */
 static int
 chat_nick_valid(const char *name)
@@ -7549,7 +7501,6 @@ chat_companion_load(void)
 	companion_turn = 0;
 	companion_attached = 0;
 
-	memset(companion_nick, 0, sizeof(companion_nick));
 	memset(&companion_phone, 0, sizeof(companion_phone));
 	memset(companion_phones, 0, sizeof(companion_phones));
 	memset(&companion_desktop, 0, sizeof(companion_desktop));
@@ -7928,7 +7879,7 @@ chat_companion_push(struct chat_blob *blob)
 
 /*
  * Send our desktop who we are once we heard from our desktop, and again
- * when our nickname or avatar changes.
+ * when our avatar changes.
  */
 static void
 chat_phone_self(void)
@@ -7941,7 +7892,6 @@ chat_phone_self(void)
 	int			ret, first;
 	u_int8_t		slot;
 	char			json[CHAT_EVENT_JSON_MAX];
-	char			name[VIGIL_CHAT_NICK_MAX + 1];
 
 	PRECOND(companion_role == VIGIL_COMPANION_PHONE);
 
@@ -7950,11 +7900,10 @@ chat_phone_self(void)
 
 	vigil_lock(&lock);
 	serial = avatar_serial;
-	memcpy(name, nick, sizeof(name));
 	vigil_unlock(&lock);
 
-	if (companion_told && !strcmp(name, companion_nick) &&
-	    serial == companion_avatar && attached == companion_attached)
+	if (companion_told && serial == companion_avatar &&
+	    attached == companion_attached)
 		return;
 
 	len = 0;
@@ -7972,9 +7921,7 @@ chat_phone_self(void)
 	}
 
 	vigil_buf_init(&out, json, sizeof(json));
-	vigil_buf_appendf(&out, "{\"op\":\"self\",\"nick\":");
-	vigil_buf_quote(&out, name);
-	vigil_buf_appendf(&out, ",\"gospels\":[");
+	vigil_buf_appendf(&out, "{\"op\":\"self\",\"gospels\":[");
 
 	first = 1;
 
@@ -8017,7 +7964,6 @@ chat_phone_self(void)
 	companion_told = 1;
 	companion_avatar = serial;
 	companion_attached = attached;
-	memcpy(companion_nick, name, sizeof(companion_nick));
 }
 
 /*

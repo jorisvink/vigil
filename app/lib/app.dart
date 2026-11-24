@@ -625,17 +625,14 @@ class PeerName extends StatelessWidget {
     final own = peer == selfPeer || vigil.mine(peer);
     final where = chat.isEmpty ? peer : chat;
     final shown = name ?? (own ? vigil.selfName(where) : vigil.name(peer));
-    final sealed = own
-        ? vigil.selfSigned(where)
-        : vigil.authenticated(peer) && shown == vigil.name(peer);
     final styled = peerStyle(
       style,
-      picked ?? (own ? vigil.selfPicked(where) : vigil.picked(peer)),
+      picked ?? (!own && vigil.picked(peer)),
     );
     final smallest = shrink;
 
     if (smallest == null) {
-      return _row(shown, styled, sealed);
+      return _text(shown, styled);
     }
 
     return LayoutBuilder(
@@ -647,13 +644,13 @@ class PeerName extends StatelessWidget {
           textScaler: MediaQuery.textScalerOf(context),
           maxLines: 1,
         )..layout();
-        final room = box.maxWidth - (sealed ? base * 0.95 * 1.4 : 0);
+        final room = box.maxWidth;
         final width = painter.width;
 
         painter.dispose();
 
         if (width <= room) {
-          return _row(shown, styled, sealed);
+          return _text(shown, styled);
         }
 
         final font = math.max(smallest, base * room / width);
@@ -662,33 +659,17 @@ class PeerName extends StatelessWidget {
           letterSpacing: (styled.letterSpacing ?? 0) * font / base,
         );
 
-        return _row(shown, fitted, sealed);
+        return _text(shown, fitted);
       },
     );
   }
 
-  Widget _row(String shown, TextStyle styled, bool sealed) {
-    final size = (styled.fontSize ?? 14) * 0.95;
-
-    return Row(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        Flexible(
-          child: Text(
-            shown,
-            style: styled,
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-          ),
-        ),
-        if (sealed) ...[
-          SizedBox(width: size * 0.4),
-          Semantics(
-            label: 'Signed by the flock',
-            child: Glyph(GlyphKind.seal, size: size, color: Palette.good),
-          ),
-        ],
-      ],
+  Widget _text(String shown, TextStyle styled) {
+    return Text(
+      shown,
+      style: styled,
+      maxLines: 1,
+      overflow: TextOverflow.ellipsis,
     );
   }
 }

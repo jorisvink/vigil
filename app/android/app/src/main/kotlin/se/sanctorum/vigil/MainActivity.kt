@@ -639,9 +639,7 @@ class MainActivity : FlutterActivity() {
                     ""
                 }
                 "chatSettings" -> result.success(
-                    Chats.settings(
-                        this, call.argument<String>("nick"), call.argument<Boolean>("preview")
-                    ).toString()
+                    Chats.settings(this, call.argument<Boolean>("preview")).toString()
                 )
                 "flag" -> {
                     val key = call.argument<String>("key")!!

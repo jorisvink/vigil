@@ -72,6 +72,10 @@ main(int argc, char **argv)
 	g_signal_connect(window, "destroy", G_CALLBACK(gtk_main_quit), NULL);
 
 	project = fl_dart_project_new();
+
+	/* Impeller has no anti-aliasing in the GTK embedder. */
+	fl_dart_project_set_enable_impeller(project, FALSE);
+
 	view = fl_view_new(project);
 	g_object_unref(project);
 

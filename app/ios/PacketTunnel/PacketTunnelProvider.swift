@@ -309,10 +309,6 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             }
         case "chat":
             submitOutbox()
-        case "chat-nick":
-            if vigil_chat_nick(ChatVault.defaults.string(forKey: "chatNick") ?? "") == -1 {
-                NSLog("vigil: our nickname was refused")
-            }
         case "chat-avatar":
             submitAvatar()
         case "chat-group-typing":
@@ -408,10 +404,7 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             if session != chatSession {
                 chatAsking.removeAll()
                 askingSave()
-                if vigil_chat_nick(defaults.string(forKey: "chatNick") ?? "") == -1 {
-                    NSLog("vigil: our nickname was refused")
-                }
-
+                defaults.removeObject(forKey: "chatNick")
                 submitAvatar()
                 _ = try? vault.expire()
             }
@@ -758,8 +751,6 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
                                      local: local))
         case "leave":
             drop(try vault.groupLeave(chat, local: local(chat)))
-        case "nick":
-            try ChatVault.setNick(ask["nick"] as? String ?? "")
         case "avatar":
             try vault.ownAvatar(try data.map { try Avatar.jpeg($0) })
             submitAvatar()
