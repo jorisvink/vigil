@@ -3195,12 +3195,13 @@ class _Member extends StatelessWidget {
                       ? vigil.name(member.id)
                       : chosen(member.nick),
                   picked: !named && member.nick.isNotEmpty,
+                  shrink: 12,
                 ),
                 const SizedBox(height: 2),
                 Text(
                   named && member.nick.isNotEmpty
                       ? '$label · ${chosen(member.nick)}'
-                      : '$label · peer ${member.id}',
+                      : label,
                   style: Styles.detail.copyWith(fontSize: 12.5, color: color),
                   overflow: TextOverflow.ellipsis,
                 ),
