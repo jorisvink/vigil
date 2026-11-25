@@ -814,6 +814,8 @@ final class VigilPlugin: NSObject, FlutterPlugin, UIDocumentPickerDelegate,
             manager.localizedDescription = "Vigil: \(tunnel.summary["instance"] as? String ?? id)"
             manager.protocolConfiguration = proto
             manager.isEnabled = true
+            manager.onDemandRules = Self.onDemandRules
+            manager.isOnDemandEnabled = true
 
             manager.saveToPreferences { error in
                 if let error {
@@ -854,6 +856,34 @@ final class VigilPlugin: NSObject, FlutterPlugin, UIDocumentPickerDelegate,
         if let at = list.firstIndex(where: { $0["id"] as? String == id }), at > 0 {
             list.insert(list.remove(at: at), at: 0)
             save(list)
+        }
+    }
+
+    private static var onDemandRules: [NEOnDemandRule] {
+        let rule = NEOnDemandRuleConnect()
+        rule.interfaceTypeMatch = .any
+
+        return [rule]
+    }
+
+    private func onDemand(_ manager: NETunnelProviderManager, _ on: Bool,
+                          _ done: @escaping () -> Void) {
+        guard manager.isOnDemandEnabled != on else {
+            done()
+            return
+        }
+
+        manager.isOnDemandEnabled = on
+
+        manager.saveToPreferences { error in
+            if let error {
+                NSLog("vigil: failed to turn on demand off: \(error.localizedDescription)")
+            }
+
+            DispatchQueue.main.async {
+                self.loaded = nil
+                done()
+            }
         }
     }
 
@@ -901,8 +931,15 @@ final class VigilPlugin: NSObject, FlutterPlugin, UIDocumentPickerDelegate,
                 return
             }
 
-            manager?.connection.stopVPNTunnel()
-            result("")
+            guard let manager else {
+                result("")
+                return
+            }
+
+            self.onDemand(manager, false) {
+                manager.connection.stopVPNTunnel()
+                result("")
+            }
         }
     }
 
@@ -926,7 +963,9 @@ final class VigilPlugin: NSObject, FlutterPlugin, UIDocumentPickerDelegate,
             }
 
             if self.tunnelId(manager) == voice.id {
-                if !on { session.stopVPNTunnel() }
+                if !on {
+                    self.onDemand(manager, false) { session.stopVPNTunnel() }
+                }
                 result("")
                 return
             }

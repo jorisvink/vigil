@@ -164,8 +164,8 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
                 self.watchCalls()
                 self.watchNetwork()
 
-                self.probe = WakeProbe.configured(self)
-                self.probe?.start()
+                //self.probe = WakeProbe.configured(self)
+                //self.probe?.start()
             }
 
             completionHandler(nil)
@@ -190,8 +190,8 @@ final class PacketTunnelProvider: NEPacketTunnelProvider {
             self.paths?.cancel()
             self.paths = nil
 
-            self.probe?.stop()
-            self.probe = nil
+            //self.probe?.stop()
+            //self.probe = nil
         }
 
         vigil_stop(run)
