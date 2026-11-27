@@ -81,6 +81,8 @@ final class VigilCall: NSObject, CXProviderDelegate {
 
     var busy: Bool { phase != nil }
 
+    func cathedral(_ flock: String) -> String? { cathedrals[flock] }
+
     func json() -> [String: Any]? {
         guard let phase else { return nil }
 
@@ -240,6 +242,10 @@ final class VigilCall: NSObject, CXProviderDelegate {
         } else {
             startVoice(mode)
         }
+    }
+
+    func provider(_ provider: CXProvider, didDeactivate audioSession: AVAudioSession) {
+        GroupVoice.shared.resume()
     }
 
     func provider(_ provider: CXProvider, perform action: CXEndCallAction) {

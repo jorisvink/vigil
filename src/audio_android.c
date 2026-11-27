@@ -38,6 +38,9 @@ static void				audio_error(AAudioStream *, void *,
 /* Set while we want audio, a restart only reopens the streams then. */
 static volatile int		running = 0;
 
+/* Set if we also want to capture, not only play. */
+static volatile int		recording = 0;
+
 /* Set while a restart is underway, and how many we did this call. */
 static volatile int		restarts = 0;
 static volatile int		restarting = 0;
@@ -50,17 +53,21 @@ static AAudioStream		*playback = NULL;
 static pthread_mutex_t		lock = PTHREAD_MUTEX_INITIALIZER;
 
 /*
- * Open and start our capture and playback streams for a call.
+ * Open and start our playback stream, and our capture stream if
+ * record is 1.
  */
 int
-vigil_platform_audio_start(void)
+vigil_platform_audio_start(int record)
 {
 	int		ret;
+
+	PRECOND(record == 0 || record == 1);
 
 	vigil_lock(&lock);
 
 	vigil_atomic_write(&restarts, 0);
 	vigil_atomic_write(&running, 1);
+	vigil_atomic_write(&recording, record);
 
 	ret = audio_open();
 	if (ret == -1) {
@@ -88,7 +95,7 @@ vigil_platform_audio_stop(void)
 }
 
 /*
- * Open both streams and start them, called with the lock held.
+ * Open our streams and start them, called with the lock held.
  */
 static int
 audio_open(void)
@@ -98,17 +105,20 @@ audio_open(void)
 	PRECOND(capture == NULL);
 	PRECOND(playback == NULL);
 
-	if (audio_stream(AAUDIO_DIRECTION_INPUT, &capture) == -1)
+	if (vigil_atomic_read(&recording) &&
+	    audio_stream(AAUDIO_DIRECTION_INPUT, &capture) == -1)
 		return (-1);
 
 	if (audio_stream(AAUDIO_DIRECTION_OUTPUT, &playback) == -1)
 		return (-1);
 
-	ret = AAudioStream_requestStart(capture);
-	if (ret != AAUDIO_OK) {
-		vigil_log(LOG_ERR, "[audio] capture start: %s",
-		    AAudio_convertResultToText(ret));
-		return (-1);
+	if (capture != NULL) {
+		ret = AAudioStream_requestStart(capture);
+		if (ret != AAUDIO_OK) {
+			vigil_log(LOG_ERR, "[audio] capture start: %s",
+			    AAudio_convertResultToText(ret));
+			return (-1);
+		}
 	}
 
 	ret = AAudioStream_requestStart(playback);
@@ -118,15 +128,15 @@ audio_open(void)
 		return (-1);
 	}
 
-	vigil_log(LOG_INFO, "[audio] running at %d/%d hz",
-	    AAudioStream_getSampleRate(capture),
-	    AAudioStream_getSampleRate(playback));
+	vigil_log(LOG_INFO, "[audio] running at %d hz%s",
+	    AAudioStream_getSampleRate(playback),
+	    capture != NULL ? " with capture" : "");
 
 	return (0);
 }
 
 /*
- * Stop and close both streams, called with the lock held.
+ * Stop and close our streams, called with the lock held.
  */
 static void
 audio_close(void)
@@ -250,7 +260,7 @@ audio_error(AAudioStream *stream, void *udata, aaudio_result_t error)
 	if (!vigil_atomic_read(&running))
 		return;
 
-	/* Both streams break together, one restart reopens them both. */
+	/* Our streams break together, one restart reopens them all. */
 	if (!vigil_atomic_cas_simple(&restarting, 0, 1))
 		return;
 

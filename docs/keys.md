@@ -120,6 +120,7 @@ Vigil uses domains to separate its different uses of the same keys:
 - domain `0x0b` for one-to-one chats
 - domain `0x0c` for the chat signaling liturgy
 - domain `0x0d` for the safety code exchange
+- domain `0x0e` for voice channels
 
 Because the domain is part of the derivation, a call tunnel and a chat
 tunnel between the same two devices never share keys.

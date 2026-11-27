@@ -1168,6 +1168,33 @@ class ChatVault(context: Context) {
     }
 
     @Synchronized
+    fun voice(): JSONObject {
+        val file = File(dir, VOICE)
+        if (!file.exists()) {
+            return JSONObject()
+        }
+
+        val plain = unwrap(outbox(), VOICE_AAD, file.readBytes())
+
+        try {
+            return JSONObject(String(plain))
+        } finally {
+            plain.fill(0)
+        }
+    }
+
+    @Synchronized
+    fun voiceSave(state: JSONObject) {
+        val plain = state.toString().toByteArray()
+
+        try {
+            write(File(dir, VOICE), wrap(outbox(), VOICE_AAD, plain))
+        } finally {
+            plain.fill(0)
+        }
+    }
+
+    @Synchronized
     fun ignored(): Set<String> {
         val file = File(dir, IGNORED)
         if (!file.exists()) {
@@ -3321,6 +3348,7 @@ class ChatVault(context: Context) {
         private const val GROUPS = "groups.box"
         private const val ACCEPTED = "accepted.box"
         private const val IGNORED = "ignored.box"
+        private const val VOICE = "voice.box"
         private const val ROSTER = 32
         private const val BATCH_MAX = 12 * 1024
         private const val GROUP_EXPIRE = 3 * 24 * 60 * 60 * 1000L
@@ -3344,6 +3372,7 @@ class ChatVault(context: Context) {
         private val GROUPS_AAD = "VIGIL.CHAT.GROUPS".toByteArray()
         private val ACCEPTED_AAD = "VIGIL.CHAT.ACCEPTED".toByteArray()
         private val IGNORED_AAD = "VIGIL.CHAT.IGNORED".toByteArray()
+        private val VOICE_AAD = "VIGIL.CHAT.VOICE".toByteArray()
         private val AVATAR_AAD = "VIGIL.CHAT.AVATAR".toByteArray()
         private val NAME_AAD = "VIGIL.CHAT.NAME".toByteArray()
         private val AMBRY_AAD = "VIGIL.CHAT.AMBRY".toByteArray()

@@ -335,7 +335,8 @@ vigil_run(u_int64_t id, int fd, const char *cfg, size_t cfglen,
 	while (running && (vigil->flags & VIGIL_FLAG_RUNNING)) {
 		vigil_status_update(0);
 
-		if (vigil_voice_busy() || vigil_chat_busy())
+		if (vigil_voice_busy() || vigil_chat_busy() ||
+		    vigil_channel_busy())
 			vigil_io_wait(VIGIL_IO_WAIT_BUSY);
 		else
 			vigil_io_wait(VIGIL_IO_WAIT_MAX);
@@ -352,6 +353,7 @@ vigil_run(u_int64_t id, int fd, const char *cfg, size_t cfglen,
 			vigil_call_rebind();
 			vigil_chat_rebind();
 			vigil_voice_rebind();
+			vigil_channel_rebind();
 		}
 
 		vigil_poke_handle();
@@ -364,6 +366,7 @@ vigil_run(u_int64_t id, int fd, const char *cfg, size_t cfglen,
 		vigil_call_update();
 		vigil_chat_update();
 		vigil_voice_update();
+		vigil_channel_update();
 
 		vigil_peer_prune();
 	}
@@ -1336,6 +1339,7 @@ vigil_gospel_detach(u_int8_t slot)
 	vigil_unlock(&flock_lock);
 
 	vigil_voice_detach(slot);
+	vigil_channel_detach(slot);
 	vigil_safety_detach(slot);
 	vigil_chat_detach(slot);
 	vigil_call_detach(slot);

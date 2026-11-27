@@ -119,6 +119,7 @@ final class ChatVault {
     private static let groupsAad = Data("VIGIL.CHAT.GROUPS".utf8)
     private static let acceptedAad = Data("VIGIL.CHAT.ACCEPTED".utf8)
     private static let ignoredAad = Data("VIGIL.CHAT.IGNORED".utf8)
+    private static let voiceAad = Data("VIGIL.CHAT.VOICE".utf8)
     private static let groupExpire: Int64 = 3 * 24 * 60 * 60 * 1000
     private static let dataAad = Data("VIGIL.CHAT.DATA".utf8)
     private static let avatarAad = Data("VIGIL.CHAT.AVATAR".utf8)
@@ -1379,6 +1380,26 @@ final class ChatVault {
             }
 
             return out.subtracting(try ignored())
+        }
+    }
+
+    func voice() throws -> [String: Any] {
+        return try mutex.withLock {
+            let file = try folder(dir).appendingPathComponent("voice.box")
+            guard FileManager.default.fileExists(atPath: file.path) else { return [:] }
+
+            let plain = try openBox(Data(contentsOf: file), key: outboxKey(), aad: Self.voiceAad)
+            return try JSONSerialization.jsonObject(with: plain) as? [String: Any] ?? [:]
+        }
+    }
+
+    func voiceSave(_ state: [String: Any]) throws {
+        try mutex.withLock {
+            try exclusive {
+                try write(try folder(dir).appendingPathComponent("voice.box"),
+                          sealBox(JSONSerialization.data(withJSONObject: state),
+                                  key: outboxKey(), aad: Self.voiceAad))
+            }
         }
     }
 

@@ -29,6 +29,7 @@ LDFLAGS+=$(KYRKA)/opus/lib/libopus.a -lm
 SRC=	src/vigil.c \
 	src/buf.c \
 	src/call.c \
+	src/channel.c \
 	src/chat.c \
 	src/config.c \
 	src/ether.c \
@@ -129,7 +130,7 @@ tests: $(KYRKA)/lib/libkyrka.a
 	$(MAKE) $(OBJDIR)
 	$(MAKE) $(LIB)
 	$(MAKE) $(TESTS) tests/pong tests/vigild tests/caller tests/chatter \
-	    tests/companion
+	    tests/companion tests/channeler
 
 tests-run: tests
 	@for t in $(TESTS); do \
@@ -180,7 +181,7 @@ clean: clean-objs
 clean-objs:
 	rm -f $(VERSION)
 	rm -rf $(OBJDIR) $(LIB) $(TESTS) tests/pong tests/vigild tests/caller \
-	    tests/chatter tests/companion
+	    tests/chatter tests/companion tests/channeler
 
 .PHONY: all clean clean-objs force deps tests tests-run version
 .PHONY: android android-deps android-run ios ios-deps linux

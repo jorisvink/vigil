@@ -158,6 +158,9 @@
 /* The buffer vigil_chat_events() needs at least. */
 #define VIGIL_CHAT_EVENTS_MAX		(64 * 1024)
 
+/* The buffer vigil_channel_status() needs at most. */
+#define VIGIL_CHANNEL_STATUS_MAX	(32 * 1024)
+
 /* The flock domain in which voice liturgies live. */
 #define VIGIL_CALL_FLOCK_DOMAIN		0x0a
 
@@ -192,6 +195,15 @@
 
 /* The flock domain for the safety code exchange. */
 #define VIGIL_SAFETY_FLOCK_DOMAIN	0x0d
+
+/* The flock domain for the voice of groups. */
+#define VIGIL_CHANNEL_FLOCK_DOMAIN	0x0e
+
+/* The frames on the tunnels of the voice of a group. */
+#define VIGIL_CHANNEL_TYPE_VOICE	1
+#define VIGIL_CHANNEL_TYPE_OVER		2
+#define VIGIL_CHANNEL_TYPE_HEARTBEAT	3
+#define VIGIL_CHANNEL_TYPE_LEAVE	4
 
 /* The liturgy group gospel signals in. */
 #define VIGIL_CHAT_SIGNAL_GROUP		0x0000
@@ -472,6 +484,19 @@ int	vigil_safety_code(const u_int8_t *, size_t, char *, size_t);
 int	vigil_safety_words(const u_int8_t *, size_t, char *, size_t);
 int	vigil_safety_start(u_int64_t, u_int8_t, const u_int8_t *,
 	    const u_int8_t *, size_t);
+
+/* src/channel.c */
+int	vigil_channel_ready(void);
+void	vigil_channel_mute(int);
+void	vigil_channel_talk(int);
+void	vigil_channel_leave(void);
+void	vigil_channel_stop(u_int64_t);
+size_t	vigil_channel_status(char *, size_t);
+int	vigil_channel_run(u_int64_t, const char *, size_t, const char *);
+void	vigil_channel_join(u_int64_t, u_int8_t, u_int64_t,
+	    const u_int8_t *);
+
+u_int64_t	vigil_channel_run_id(void);
 
 /* src/config.c */
 int	vigil_config_check(const char *, size_t, char *, size_t);

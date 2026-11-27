@@ -415,6 +415,21 @@ struct vigil_voice_hdr {
 	u_int16_t		length;
 } __attribute__((packed));
 
+/* The most frames a voice ring can hold, must be a power of 2. */
+#define VIGIL_VOICE_RING_FRAMES		64
+
+/*
+ * A single producer, single consumer ring of audio frames between the
+ * voice thread and the platform audio.
+ */
+struct vigil_voice_ring {
+	volatile u_int32_t	head;
+	volatile u_int32_t	tail;
+	u_int32_t		max;
+	int16_t			frames[VIGIL_VOICE_RING_FRAMES]
+				    [VIGIL_VOICE_SAMPLE_COUNT];
+};
+
 /*
  * Video frame header.
  */
@@ -792,8 +807,19 @@ void	vigil_ether_output(const u_int8_t *, size_t);
 void	vigil_ether_input(struct vigil_peer *, struct sockaddr_in *,
 	    const u_int8_t *, size_t);
 
+/* src/channel.c */
+int	vigil_channel_busy(void);
+int	vigil_channel_audio(void);
+void	vigil_channel_update(void);
+void	vigil_channel_rebind(void);
+void	vigil_channel_audio_drop(void);
+void	vigil_channel_detach(u_int8_t);
+void	vigil_channel_playback(int16_t *, size_t);
+void	vigil_channel_capture(const int16_t *, size_t);
+
 /* src/voice.c */
 int	vigil_voice_busy(void);
+int	vigil_voice_active(void);
 void	vigil_voice_relay_update(void);
 void	vigil_voice_detach(u_int8_t);
 int	vigil_voice_relay_answer(u_int64_t, u_int8_t);
@@ -812,7 +838,19 @@ void	vigil_voice_call(u_int64_t, u_int8_t, int);
 void	vigil_voice_playback(int16_t *, size_t);
 void	vigil_voice_capture(const int16_t *, size_t);
 
+size_t	vigil_voice_ring_pending(struct vigil_voice_ring *);
+void	vigil_voice_ring_produced(struct vigil_voice_ring *);
+void	vigil_voice_ring_consumed(struct vigil_voice_ring *);
+int16_t	*vigil_voice_ring_produce(struct vigil_voice_ring *);
+int16_t	*vigil_voice_ring_consume(struct vigil_voice_ring *);
+
 const char	*vigil_voice_end_name(int);
+
+#if defined(OPUS_H)
+void	vigil_voice_codec_open(OpusEncoder **, OpusDecoder **);
+void	vigil_voice_decode(struct vigil_voice_ring *, OpusDecoder *,
+	    u_int16_t *, const u_int8_t *);
+#endif
 
 /* src/ring.c */
 size_t	vigil_ring_pending(struct vigil_ring *);
@@ -934,7 +972,7 @@ void	vigil_platform_fatal(void) __attribute__((noreturn));
  * vigil_voice_capture() and vigil_voice_playback() from its own.
  */
 void	vigil_platform_audio_stop(void);
-int	vigil_platform_audio_start(void);
+int	vigil_platform_audio_start(int);
 
 /*
  * The video bits, implemented in src/video_<platform>.c.

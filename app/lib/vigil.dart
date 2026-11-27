@@ -375,6 +375,57 @@ class Chats {
   String? get openTopic => json['openTopic'] as String?;
 }
 
+class VoiceMember {
+  VoiceMember(this.json);
+
+  final Map<String, dynamic> json;
+
+  String get peer => json['peer'] as String? ?? '';
+  bool get online => json['online'] as bool? ?? false;
+  bool get talking => json['talking'] as bool? ?? false;
+}
+
+class GroupVoice {
+  GroupVoice(this.json);
+
+  final Map<String, dynamic> json;
+
+  static final GroupVoice none = GroupVoice(const {});
+
+  String get chat => json['chat'] as String? ?? '';
+  bool get muted => json['muted'] as bool? ?? false;
+
+  Map<String, dynamic> get _core =>
+      json['status'] as Map<String, dynamic>? ?? const {};
+
+  bool get joined =>
+      chat.isNotEmpty && _core['joined'] == true && _core['chat'] == chat;
+
+  bool get alive => joined && _core['alive'] == true;
+  bool get talking => joined && _core['talking'] == true;
+  bool get ready => joined && _core['ready'] == true;
+  bool get ducked => joined && _core['ducked'] == true;
+
+  bool on(String group) => chat.isNotEmpty && chat == group;
+
+  List<VoiceMember> get members {
+    if (!joined) {
+      return const [];
+    }
+
+    return (_core['members'] as List<dynamic>? ?? const [])
+        .map((m) => VoiceMember(m as Map<String, dynamic>))
+        .toList();
+  }
+
+  List<VoiceMember> get speakers => members.where((m) => m.talking).toList();
+
+  VoiceMember? member(String peer) =>
+      members.where((m) => m.peer == peer).firstOrNull;
+
+  bool get busy => talking || speakers.isNotEmpty;
+}
+
 class ChatMessage {
   ChatMessage(this.json);
 
@@ -491,7 +542,9 @@ class Status {
     this.background = true,
     this.linked = true,
     this.linking = false,
-  ]) : chats = chats ?? Chats.none;
+    GroupVoice? groupVoice,
+  ])  : chats = chats ?? Chats.none,
+        groupVoice = groupVoice ?? GroupVoice.none;
 
   final Map<String, dynamic> json;
 
@@ -506,6 +559,7 @@ class Status {
   final bool background;
   final bool linked;
   final bool linking;
+  final GroupVoice groupVoice;
 
   static final Status idle = Status(const {'running': false}, null);
 
@@ -803,6 +857,9 @@ class Vigil {
         json['background'] as bool? ?? true,
         json['link'] as bool? ?? true,
         json['linking'] as bool? ?? false,
+        json['groupVoice'] is Map<String, dynamic>
+            ? GroupVoice(json['groupVoice'] as Map<String, dynamic>)
+            : null,
       );
 
       final since = DateTime.now().difference(_connectingSince);
@@ -1265,6 +1322,28 @@ class Vigil {
     await refresh();
   }
 
+  Future<void> groupVoiceOn(String chat) async {
+    await _invoke('groupVoiceOn', chat);
+    await refresh();
+  }
+
+  Future<void> groupVoiceOff() async {
+    await _invoke('groupVoiceOff', null);
+    await refresh();
+  }
+
+  Future<void> groupVoiceMute(bool on) async {
+    await _invoke('groupVoiceMute', on);
+    await refresh();
+  }
+
+  Future<void> groupVoiceTalk(bool on) => _invoke('groupVoiceTalk', on);
+
+  Future<void> groupVoiceKeys(bool on) => _invoke('groupVoiceKeys', on);
+
+  Future<bool> groupVoiceReady() async =>
+      await _invoke('groupVoiceReady', null) == 'true';
+
   Future<void> deleteChat(String peer) async {
     await _invoke('chatDelete', peer);
     await refresh();
@@ -1441,6 +1520,7 @@ class Vigil {
       status.background,
       status.linked,
       status.linking,
+      status.groupVoice,
     );
 
     if (_last.chats.avatars != _avatarsSeen) {

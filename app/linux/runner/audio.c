@@ -62,9 +62,10 @@ runner_audio_busy(void)
  * Open our streams and start the threads that drive them for a call.
  */
 int
-vigil_platform_audio_start(void)
+vigil_platform_audio_start(int record)
 {
 	PRECOND(running == 0);
+	PRECOND(record == 1);
 
 	if ((capture = audio_open(PA_STREAM_RECORD)) == NULL)
 		return (-1);

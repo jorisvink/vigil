@@ -55,6 +55,14 @@ static char	*android_bytes_copy(JNIEnv *, jbyteArray, size_t, size_t *);
 static void	android_call_hangup(JNIEnv *, jclass);
 static void	android_call_dial(JNIEnv *, jclass, jlong, jint);
 
+static void	android_channel_leave(JNIEnv *, jclass);
+static jstring	android_channel_status(JNIEnv *, jclass);
+static void	android_channel_mute(JNIEnv *, jclass, jboolean);
+static void	android_channel_talk(JNIEnv *, jclass, jboolean);
+static jboolean	android_channel_ready(JNIEnv *, jclass);
+static void	android_channel_join(JNIEnv *, jclass, jlong, jint, jlong,
+		    jbyteArray);
+
 static void	android_voice_hangup(JNIEnv *, jclass);
 static void	android_voice_answer(JNIEnv *, jclass);
 static jstring	android_voice_status(JNIEnv *, jclass);
@@ -143,6 +151,13 @@ static JNINativeMethod	methods[] = {
 	{ "voiceMute", "(Z)V", (void *)android_voice_mute },
 	{ "voiceStatus", "()Ljava/lang/String;",
 	    (void *)android_voice_status },
+	{ "channelJoin", "(JIJ[B)V", (void *)android_channel_join },
+	{ "channelLeave", "()V", (void *)android_channel_leave },
+	{ "channelMute", "(Z)V", (void *)android_channel_mute },
+	{ "channelTalk", "(Z)V", (void *)android_channel_talk },
+	{ "channelReady", "()Z", (void *)android_channel_ready },
+	{ "channelStatus", "()Ljava/lang/String;",
+	    (void *)android_channel_status },
 	{ "chatSend", "(JIJ[BIJJ)Z", (void *)android_chat_send },
 	{ "chatTopic", "(JIJJI[B)Z", (void *)android_chat_topic },
 	{ "chatForget", "(JI)Z", (void *)android_chat_forget },
@@ -615,6 +630,99 @@ android_voice_status(JNIEnv *env, jclass cls)
 		(void)snprintf(buf, sizeof(buf), "{\"running\":false}");
 
 	return (android_string_new(env, buf));
+}
+
+/*
+ * Vigil.channelJoin(), turns on the voice of the given group, the roster
+ * holds who is in it.
+ */
+static void
+android_channel_join(JNIEnv *env, jclass cls, jlong flock, jint owner,
+    jlong group, jbyteArray roster)
+{
+	size_t		len;
+	char		*buf;
+
+	if (flock == 0 || group == 0 || roster == NULL)
+		return;
+
+	if (owner <= 0 || owner >= KYRKA_PEERS_PER_FLOCK)
+		return;
+
+	buf = android_bytes_copy(env, roster, VIGIL_CHAT_GROUP_ROSTER, &len);
+	if (buf == NULL)
+		return;
+
+	if (len == VIGIL_CHAT_GROUP_ROSTER) {
+		vigil_channel_join(flock, owner, group,
+		    (const u_int8_t *)buf);
+	}
+
+	android_bytes_free(buf, len);
+}
+
+/*
+ * Vigil.channelLeave(), turns off the voice we are in.
+ */
+static void
+android_channel_leave(JNIEnv *env, jclass cls)
+{
+	vigil_channel_leave();
+}
+
+/*
+ * Vigil.channelMute(), stops or starts playing the voice we are in.
+ */
+static void
+android_channel_mute(JNIEnv *env, jclass cls, jboolean on)
+{
+	vigil_channel_mute(on == JNI_TRUE);
+}
+
+/*
+ * Vigil.channelTalk(), starts or stops talking in the voice we are in.
+ */
+static void
+android_channel_talk(JNIEnv *env, jclass cls, jboolean on)
+{
+	vigil_channel_talk(on == JNI_TRUE);
+}
+
+/*
+ * Vigil.channelReady(), returns true once our microphone captures while
+ * we talk.
+ */
+static jboolean
+android_channel_ready(JNIEnv *env, jclass cls)
+{
+	if (vigil_channel_ready())
+		return (JNI_TRUE);
+
+	return (JNI_FALSE);
+}
+
+/*
+ * Vigil.channelStatus(), returns the state of the voice we are in as json.
+ */
+static jstring
+android_channel_status(JNIEnv *env, jclass cls)
+{
+	jstring		ret;
+	char		*buf;
+
+	buf = calloc(1, VIGIL_CHANNEL_STATUS_MAX);
+	if (buf == NULL)
+		return (NULL);
+
+	if (vigil_channel_status(buf, VIGIL_CHANNEL_STATUS_MAX) == 0) {
+		(void)snprintf(buf, VIGIL_CHANNEL_STATUS_MAX,
+		    "{\"joined\":false}");
+	}
+
+	ret = android_string_new(env, buf);
+	free(buf);
+
+	return (ret);
 }
 
 /*

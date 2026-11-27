@@ -50,6 +50,9 @@ static AudioUnit	unit = NULL;
 /* Are we actively running or not. */
 static volatile int	running = 0;
 
+/* Set if we also capture, not only play. */
+static volatile int	recording = 0;
+
 /* Where we render captured audio into. */
 static int16_t		captured[AUDIO_FRAMES_MAX];
 
@@ -57,15 +60,18 @@ static int16_t		captured[AUDIO_FRAMES_MAX];
 static pthread_mutex_t	lock = PTHREAD_MUTEX_INITIALIZER;
 
 /*
- * Create and start our audio unit for a call.
+ * Create and start our audio unit, it only captures if record is 1.
  */
 int
-vigil_platform_audio_start(void)
+vigil_platform_audio_start(int record)
 {
 	int		ret;
 
+	PRECOND(record == 0 || record == 1);
+
 	vigil_lock(&lock);
 	vigil_atomic_write(&running, 1);
+	vigil_atomic_write(&recording, record);
 
 	ret = audio_open();
 	if (ret == -1) {
@@ -153,8 +159,8 @@ audio_close(void)
 }
 
 /*
- * Create the audio unit with capture and playback enabled, both in
- * 16-bit mono at our sample rate.
+ * Create the audio unit with playback and, if we record, capture
+ * enabled, both in 16-bit mono at our sample rate.
  */
 static int
 audio_setup(void)
@@ -187,7 +193,7 @@ audio_setup(void)
 		return (-1);
 	}
 
-	on = 1;
+	on = vigil_atomic_read(&recording);
 
 	ret = AudioUnitSetProperty(unit,
 	    kAudioOutputUnitProperty_EnableIO, kAudioUnitScope_Input,
@@ -209,9 +215,9 @@ audio_setup(void)
 	fmt.mFormatFlags = kAudioFormatFlagIsSignedInteger |
 	    kAudioFormatFlagIsPacked;
 
-	if ((ret = AudioUnitSetProperty(unit, kAudioUnitProperty_StreamFormat,
-	    kAudioUnitScope_Output, AUDIO_BUS_INPUT, &fmt,
-	    sizeof(fmt))) != noErr) {
+	if (on && (ret = AudioUnitSetProperty(unit,
+	    kAudioUnitProperty_StreamFormat, kAudioUnitScope_Output,
+	    AUDIO_BUS_INPUT, &fmt, sizeof(fmt))) != noErr) {
 		vigil_log(LOG_ERR, "[audio] capture format: %d", (int)ret);
 		return (-1);
 	}
@@ -226,7 +232,7 @@ audio_setup(void)
 	cb.inputProcRefCon = NULL;
 	cb.inputProc = audio_capture;
 
-	if ((ret = AudioUnitSetProperty(unit,
+	if (on && (ret = AudioUnitSetProperty(unit,
 	    kAudioOutputUnitProperty_SetInputCallback, kAudioUnitScope_Global,
 	    AUDIO_BUS_INPUT, &cb, sizeof(cb))) != noErr) {
 		vigil_log(LOG_ERR, "[audio] capture callback: %d", (int)ret);

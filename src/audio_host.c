@@ -29,9 +29,6 @@
  * how loud the audio is that we get to play.
  */
 
-/* The frequency of the tone we send. */
-#define AUDIO_TONE_HZ		440
-
 /* The milliseconds between level reports. */
 #define AUDIO_REPORT_INTERVAL	2000
 
@@ -41,18 +38,29 @@ static void	*audio_thread(void *);
 static pthread_t		thread;
 static volatile int		running = 0;
 
+/* Set if we also capture, not only play. */
+static volatile int		recording = 0;
+
 /* The loudest playback level since the last report, for the tests. */
 volatile u_int32_t		host_audio_level = 0;
 
+/* The frequency of the tone we capture, the tests may change it. */
+volatile u_int32_t		host_audio_hz = 440;
+
+/* If set, gets every frame we play, for the tests. */
+void			(*host_audio_tap)(const int16_t *, size_t) = NULL;
+
 /*
- * Start our fake audio.
+ * Start our fake audio, we only capture our tone if record is 1.
  */
 int
-vigil_platform_audio_start(void)
+vigil_platform_audio_start(int record)
 {
 	PRECOND(running == 0);
+	PRECOND(record == 0 || record == 1);
 
 	vigil_atomic_write(&running, 1);
+	vigil_atomic_write(&recording, record);
 
 	if (pthread_create(&thread, NULL, audio_thread, NULL) != 0) {
 		vigil_atomic_write(&running, 0);
@@ -102,12 +110,18 @@ audio_thread(void *arg)
 
 	while (vigil_atomic_read(&running)) {
 		for (idx = 0; idx < VIGIL_VOICE_SAMPLE_COUNT; idx++) {
-			pcm[idx] = 8000 * sin(2 * M_PI * AUDIO_TONE_HZ *
+			pcm[idx] = 8000 * sin(2 * M_PI *
+			    vigil_atomic_read(&host_audio_hz) *
 			    phase++ / VIGIL_VOICE_SAMPLE_RATE);
 		}
 
-		vigil_voice_capture(pcm, VIGIL_VOICE_SAMPLE_COUNT);
+		if (vigil_atomic_read(&recording))
+			vigil_voice_capture(pcm, VIGIL_VOICE_SAMPLE_COUNT);
+
 		vigil_voice_playback(pcm, VIGIL_VOICE_SAMPLE_COUNT);
+
+		if (host_audio_tap != NULL)
+			host_audio_tap(pcm, VIGIL_VOICE_SAMPLE_COUNT);
 
 		sum = 0;
 		for (idx = 0; idx < VIGIL_VOICE_SAMPLE_COUNT; idx++)

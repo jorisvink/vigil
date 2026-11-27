@@ -357,6 +357,27 @@ final class VigilPlugin: NSObject, FlutterPlugin, UIDocumentPickerDelegate,
              "chatPin", "chatMute", "chatTopic", "groupCreate", "groupEdit", "groupLeave",
              "chatStar", "chatCompact", "chatOrder", "chatRetract", "chatAccept", "chatIgnore":
             result(Self.reply { try chat(call) })
+        case "groupVoiceOn":
+            result(Self.reply {
+                try GroupVoice.shared.on(call.arguments as? String ?? "")
+                return ""
+            })
+        case "groupVoiceOff":
+            result(Self.reply {
+                try GroupVoice.shared.off()
+                return ""
+            })
+        case "groupVoiceMute":
+            result(Self.reply {
+                try GroupVoice.shared.mute(call.arguments as? Bool == true)
+                return ""
+            })
+        case "groupVoiceKeys":
+            result("")
+        case "groupVoiceReady":
+            result(vigil_channel_ready() == 1 ? "true" : "false")
+        case "groupVoiceTalk":
+            groupVoiceTalk(call.arguments as? Bool == true, result: result)
         case "safetyCode":
             result(Self.reply { try safetyCode(call) })
         case "safetyBegin":
@@ -1347,6 +1368,7 @@ final class VigilPlugin: NSObject, FlutterPlugin, UIDocumentPickerDelegate,
                   [.connected, .connecting, .reasserting].contains(session.status) else {
                 CandleActivity.update(since: nil)
                 VigilCall.shared.update(nil)
+                GroupVoice.shared.poll()
                 VigilCall.shared.send = nil
                 self.last = nil
                 self.silent = nil
@@ -1403,6 +1425,7 @@ final class VigilPlugin: NSObject, FlutterPlugin, UIDocumentPickerDelegate,
 
                     VigilCall.shared.update(
                         (try? JSONSerialization.jsonObject(with: response)) as? [String: Any])
+                    GroupVoice.shared.poll()
 
                     result(self.combined(tunnel, status, linked: true, linking: false))
                 }
@@ -1422,7 +1445,34 @@ final class VigilPlugin: NSObject, FlutterPlugin, UIDocumentPickerDelegate,
         return "{\"tunnel\":\(tunnel),\"status\":\(status)," +
             "\"voice\":\(voice()),\"phone\":\(phone)," +
             "\"chats\":\(chats()),\"gospel\":\(Self.gospelEnabled)," +
+            "\"groupVoice\":\(json(GroupVoice.shared.json()))," +
             "\"link\":\(linked),\"linking\":\(linking)}"
+    }
+
+    private func groupVoiceTalk(_ on: Bool, result: @escaping FlutterResult) {
+        let session = AVAudioSession.sharedInstance()
+
+        guard on else {
+            GroupVoice.shared.talk(false)
+            result("")
+            return
+        }
+
+        if session.recordPermission == .undetermined {
+            session.requestRecordPermission { _ in }
+            result(FlutterError(code: "invalid", message: "Allow the microphone, then hold to talk.",
+                                details: nil))
+            return
+        }
+
+        guard session.recordPermission == .granted else {
+            result(FlutterError(code: "invalid", message: "Talking needs access to the microphone.",
+                                details: nil))
+            return
+        }
+
+        GroupVoice.shared.talk(true)
+        result("")
     }
 
     private func safetyCode(_ call: FlutterMethodCall) throws -> String {

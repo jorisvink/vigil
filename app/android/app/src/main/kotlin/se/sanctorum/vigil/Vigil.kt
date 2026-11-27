@@ -60,6 +60,24 @@ object Vigil {
     external fun voiceStatus(): String
 
     @JvmStatic
+    external fun channelJoin(flock: Long, owner: Int, group: Long, roster: ByteArray)
+
+    @JvmStatic
+    external fun channelLeave()
+
+    @JvmStatic
+    external fun channelMute(on: Boolean)
+
+    @JvmStatic
+    external fun channelTalk(on: Boolean)
+
+    @JvmStatic
+    external fun channelReady(): Boolean
+
+    @JvmStatic
+    external fun channelStatus(): String
+
+    @JvmStatic
     external fun kyrkaVersion(): String
 
     @JvmStatic

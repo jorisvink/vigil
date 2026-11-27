@@ -21,6 +21,7 @@ import android.os.Build
 import android.os.Bundle
 import android.os.PowerManager
 import android.util.Log
+import android.view.KeyEvent
 import android.view.Surface
 import android.view.WindowManager
 import io.flutter.embedding.android.FlutterActivity
@@ -166,6 +167,7 @@ class MainActivity : FlutterActivity() {
                         .put("status", status)
                         .put("voice", voice)
                         .put("phone", Calls.json() ?: JSONObject.NULL)
+                        .put("groupVoice", groupVoice())
                         .put("chats", Chats.json(this))
                         .put("gospel", store.gospel)
                         .put("background", background())
@@ -528,6 +530,37 @@ class MainActivity : FlutterActivity() {
                     val id = chat(call.argument<String>("peer")!!)
 
                     Chats.typing(this, id, call.argument<Boolean>("on")!!, topic(id, call.argument<String>("topic")))
+                    result.success("")
+                }
+                "groupVoiceOn" -> withMicrophone(
+                    service(VigilVpnService.ACTION_VOICE)
+                        .putExtra(VigilVpnService.EXTRA_PEER, chat(call.arguments as String)),
+                    result
+                )
+                "groupVoiceOff" -> {
+                    startService(service(VigilVpnService.ACTION_VOICE))
+                    result.success("")
+                }
+                "groupVoiceKeys" -> {
+                    GroupVoice.keys = call.arguments as Boolean
+
+                    if (!GroupVoice.keys) {
+                        talk(false)
+                    }
+
+                    result.success("")
+                }
+                "groupVoiceMute" -> {
+                    val on = call.arguments as Boolean
+
+                    background(result) {
+                        GroupVoice.mute(this, on)
+                        ""
+                    }
+                }
+                "groupVoiceReady" -> result.success(Vigil.channelReady().toString())
+                "groupVoiceTalk" -> {
+                    talk(call.arguments as Boolean)
                     result.success("")
                 }
                 "chatAccept" -> {
@@ -1219,6 +1252,38 @@ class MainActivity : FlutterActivity() {
     }
 
     private fun chat(id: String): String = Chats.checked(id)
+
+    override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        if (event.keyCode != KeyEvent.KEYCODE_VOLUME_DOWN || !GroupVoice.keys || !GroupVoice.active) {
+            return super.dispatchKeyEvent(event)
+        }
+
+        if (event.action == KeyEvent.ACTION_DOWN && event.repeatCount == 0) {
+            talk(true)
+        }
+
+        if (event.action == KeyEvent.ACTION_UP) {
+            talk(false)
+        }
+
+        return true
+    }
+
+    private fun groupVoice(): Any =
+        try {
+            GroupVoice.json(this)
+        } catch (e: Exception) {
+            JSONObject.NULL
+        }
+
+    private fun talk(on: Boolean) {
+        if (on && !granted(Manifest.permission.RECORD_AUDIO)) {
+            withMicrophone(service(VigilVpnService.ACTION_TALK).putExtra(VigilVpnService.EXTRA_ON, true), null)
+            return
+        }
+
+        GroupVoice.talk(on && GroupVoice.active && !Calls.busy)
+    }
 
     private fun topic(id: String, topic: String?): String {
         if (topic.isNullOrEmpty()) {

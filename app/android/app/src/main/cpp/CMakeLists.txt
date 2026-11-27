@@ -24,6 +24,7 @@ add_library(vigil SHARED
 	${VIGIL_ROOT}/src/vigil.c
 	${VIGIL_ROOT}/src/buf.c
 	${VIGIL_ROOT}/src/call.c
+	${VIGIL_ROOT}/src/channel.c
 	${VIGIL_ROOT}/src/chat.c
 	${VIGIL_ROOT}/src/config.c
 	${VIGIL_ROOT}/src/ether.c

@@ -19,6 +19,7 @@
 		3B3967161E833CAA004F5970 /* AppFrameworkInfo.plist in Resources */ = {isa = PBXBuildFile; fileRef = 3B3967151E833CAA004F5970 /* AppFrameworkInfo.plist */; };
 		5A0C0DE00000000000000001 /* VigilPlugin.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5A0C0DE0000000000000000C /* VigilPlugin.swift */; };
 		5A0C0DE000000000000000A1 /* VigilCall.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5A0C0DE000000000000000A2 /* VigilCall.swift */; };
+		5A0C0DE00000000000000160 /* GroupVoice.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5A0C0DE00000000000000161 /* GroupVoice.swift */; };
 		5A0C0DE000000000000000D1 /* VigilVideo.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5A0C0DE000000000000000D2 /* VigilVideo.swift */; };
 		5A0C0DE000000000000000F1 /* VigilVoice.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5A0C0DE000000000000000F2 /* VigilVoice.swift */; };
 		5A0C0DE00000000000000121 /* VigilScanner.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5A0C0DE00000000000000122 /* VigilScanner.swift */; };
@@ -112,6 +113,7 @@
 		3B3967151E833CAA004F5970 /* AppFrameworkInfo.plist */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text.plist.xml; name = AppFrameworkInfo.plist; path = Flutter/AppFrameworkInfo.plist; sourceTree = "<group>"; };
 		5A0C0DE0000000000000000C /* VigilPlugin.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VigilPlugin.swift; sourceTree = "<group>"; };
 		5A0C0DE000000000000000A2 /* VigilCall.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VigilCall.swift; sourceTree = "<group>"; };
+		5A0C0DE00000000000000161 /* GroupVoice.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GroupVoice.swift; sourceTree = "<group>"; };
 		5A0C0DE000000000000000D2 /* VigilVideo.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VigilVideo.swift; sourceTree = "<group>"; };
 		5A0C0DE000000000000000F2 /* VigilVoice.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VigilVoice.swift; sourceTree = "<group>"; };
 		5A0C0DE00000000000000122 /* VigilScanner.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VigilScanner.swift; sourceTree = "<group>"; };
@@ -278,6 +280,7 @@
 				7884E8672EC3CC0400C636F2 /* SceneDelegate.swift */,
 				5A0C0DE0000000000000000C /* VigilPlugin.swift */,
 				5A0C0DE000000000000000A2 /* VigilCall.swift */,
+				5A0C0DE00000000000000161 /* GroupVoice.swift */,
 				5A0C0DE000000000000000D2 /* VigilVideo.swift */,
 				5A0C0DE000000000000000F2 /* VigilVoice.swift */,
 				5A0C0DE00000000000000122 /* VigilScanner.swift */,
@@ -532,6 +535,7 @@
 				7884E8682EC3CC0700C636F2 /* SceneDelegate.swift in Sources */,
 				5A0C0DE00000000000000001 /* VigilPlugin.swift in Sources */,
 				5A0C0DE000000000000000A1 /* VigilCall.swift in Sources */,
+				5A0C0DE00000000000000160 /* GroupVoice.swift in Sources */,
 				5A0C0DE000000000000000D1 /* VigilVideo.swift in Sources */,
 				5A0C0DE000000000000000F1 /* VigilVoice.swift in Sources */,
 				5A0C0DE00000000000000121 /* VigilScanner.swift in Sources */,

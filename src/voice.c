@@ -89,9 +89,6 @@
 #define VOICE_DECLINE_LINGER		1000
 #define VOICE_DECLINE_INTERVAL		200
 
-/* The number of frames we queue up, must be a power of 2. */
-#define VOICE_RING_FRAMES		16
-
 /* The frames we let queue up before we start playing. */
 #define VOICE_PLAYBACK_PRIME		3
 
@@ -102,22 +99,14 @@
 #define VOICE_TONE_HZ			425
 #define VOICE_TONE_LEVEL		4000
 
+/* The frames we let queue up in a call. */
+#define VOICE_RING_FRAMES		16
+
 /* The milliseconds a tone is on and its period. */
 #define VOICE_RINGBACK_ON		1000
 #define VOICE_RINGBACK_PERIOD		5000
 #define VOICE_PIPS_ON			150
 #define VOICE_PIPS_PERIOD		1000
-
-/*
- * A single producer, single consumer ring of audio frames between the
- * voice thread and the platform audio.
- */
-struct voice_ring {
-	volatile u_int32_t	head;
-	volatile u_int32_t	tail;
-	int16_t			frames[VOICE_RING_FRAMES]
-				    [VIGIL_VOICE_SAMPLE_COUNT];
-};
 
 /*
  * A call of our phone that we hold as its desktop, we encode what we
@@ -206,9 +195,6 @@ static void		voice_p2p_abandon(struct voice_session *);
 static void		voice_socket_buffers(int);
 static void		voice_relay_stop(void);
 static void		voice_audio_send(struct voice_session *);
-static void		voice_codec_open(OpusEncoder **, OpusDecoder **);
-static void		voice_audio_recv(OpusDecoder *, u_int16_t *,
-			    const u_int8_t *);
 static void		voice_video_update(struct voice_session *);
 static void		voice_video_link(struct voice_session *,
 			    struct vigil_video_link *);
@@ -224,12 +210,6 @@ static void		voice_frame_send(struct voice_session *, u_int8_t,
 
 static void	voice_wake_init(void);
 static void	voice_wake_drain(void);
-
-static size_t	voice_ring_pending(struct voice_ring *);
-static void	voice_ring_produced(struct voice_ring *);
-static void	voice_ring_consumed(struct voice_ring *);
-static int16_t	*voice_ring_produce(struct voice_ring *);
-static int16_t	*voice_ring_consume(struct voice_ring *);
 
 /* Our wakeup pipe, created by the first session and never closed. */
 static volatile int		wake[2] = { -1, -1 };
@@ -293,10 +273,10 @@ static volatile int		relayed = 0;
 static struct voice_relay	held;
 
 /* The captured frames, filled by the platform audio. */
-static struct voice_ring	capture;
+static struct vigil_voice_ring	capture;
 
 /* The frames to play, filled by the voice thread. */
-static struct voice_ring	playback;
+static struct vigil_voice_ring	playback;
 
 /* Only touched by the platform audio capture. */
 static size_t			capture_offset = 0;
@@ -598,13 +578,15 @@ vigil_voice_relay(u_int64_t flock, u_int8_t peer, int sound, int live)
 		vigil_atomic_write(&peer_flock, flock);
 		vigil_atomic_write(&state, VIGIL_VOICE_STATE_CONNECTING);
 
-		if (vigil_platform_audio_start() == -1) {
+		vigil_channel_audio_drop();
+
+		if (vigil_platform_audio_start(1) == -1) {
 			vigil_log(LOG_ERR, "[voice] no audio");
 			vigil_atomic_write(&state, VIGIL_VOICE_STATE_IDLE);
 			return;
 		}
 
-		voice_codec_open(&held.encoder, &held.decoder);
+		vigil_voice_codec_open(&held.encoder, &held.decoder);
 
 		held.peer = peer;
 		held.flock = flock;
@@ -650,7 +632,7 @@ vigil_voice_relay_play(const u_int8_t *data, size_t len)
 		vigil_atomic_write(&state, VIGIL_VOICE_STATE_TALKING);
 	}
 
-	voice_audio_recv(held.decoder, &held.rx_seq, data);
+	vigil_voice_decode(&playback, held.decoder, &held.rx_seq, data);
 }
 
 /*
@@ -668,9 +650,9 @@ vigil_voice_relay_update(void)
 	if (held.peer == 0)
 		return;
 
-	while ((pcm = voice_ring_consume(&capture)) != NULL) {
+	while ((pcm = vigil_voice_ring_consume(&capture)) != NULL) {
 		if (!held.live) {
-			voice_ring_consumed(&capture);
+			vigil_voice_ring_consumed(&capture);
 			continue;
 		}
 
@@ -683,7 +665,7 @@ vigil_voice_relay_update(void)
 		len = opus_encode(held.encoder, pcm, VIGIL_VOICE_SAMPLE_COUNT,
 		    frame + sizeof(*hdr), VIGIL_VOICE_OPUS_MAX);
 
-		voice_ring_consumed(&capture);
+		vigil_voice_ring_consumed(&capture);
 
 		if (len < 0) {
 			vigil_log(LOG_NOTICE, "[voice] opus_encode: %d", len);
@@ -729,6 +711,15 @@ int
 vigil_voice_busy(void)
 {
 	return (embedded_open || held.peer != 0);
+}
+
+/*
+ * Returns 1 if any voice session runs or we hold a call of our phone.
+ */
+int
+vigil_voice_active(void)
+{
+	return (vigil_atomic_read(&active) || held.peer != 0);
 }
 
 /*
@@ -1044,10 +1035,15 @@ vigil_voice_capture(const int16_t *pcm, size_t samples)
 	PRECOND(capture_frame == NULL ||
 	    capture_offset < VIGIL_VOICE_SAMPLE_COUNT);
 
+	if (vigil_channel_audio()) {
+		vigil_channel_capture(pcm, samples);
+		return;
+	}
+
 	while (samples > 0) {
 		if (capture_frame == NULL) {
 			capture_offset = 0;
-			capture_frame = voice_ring_produce(&capture);
+			capture_frame = vigil_voice_ring_produce(&capture);
 			if (capture_frame == NULL)
 				return;
 		}
@@ -1065,7 +1061,7 @@ vigil_voice_capture(const int16_t *pcm, size_t samples)
 
 		if (capture_offset == VIGIL_VOICE_SAMPLE_COUNT) {
 			capture_frame = NULL;
-			voice_ring_produced(&capture);
+			vigil_voice_ring_produced(&capture);
 		}
 	}
 }
@@ -1083,6 +1079,11 @@ vigil_voice_playback(int16_t *pcm, size_t samples)
 	PRECOND(playback_frame == NULL ||
 	    playback_offset < VIGIL_VOICE_SAMPLE_COUNT);
 
+	if (vigil_channel_audio()) {
+		vigil_channel_playback(pcm, samples);
+		return;
+	}
+
 	if (vigil_atomic_read(&state) != VIGIL_VOICE_STATE_TALKING &&
 	    vigil_atomic_read(&tone) != VIGIL_VOICE_TONE_NONE) {
 		voice_tone_fill(pcm, samples);
@@ -1091,12 +1092,12 @@ vigil_voice_playback(int16_t *pcm, size_t samples)
 
 	while (samples > 0) {
 		if (playback_frame == NULL) {
-			pending = voice_ring_pending(&playback);
+			pending = vigil_voice_ring_pending(&playback);
 			if (!playback_primed && pending < VOICE_PLAYBACK_PRIME)
 				break;
 
 			playback_offset = 0;
-			playback_frame = voice_ring_consume(&playback);
+			playback_frame = vigil_voice_ring_consume(&playback);
 			if (playback_frame == NULL) {
 				playback_primed = 0;
 				break;
@@ -1118,7 +1119,7 @@ vigil_voice_playback(int16_t *pcm, size_t samples)
 
 		if (playback_offset == VIGIL_VOICE_SAMPLE_COUNT) {
 			playback_frame = NULL;
-			voice_ring_consumed(&playback);
+			vigil_voice_ring_consumed(&playback);
 		}
 	}
 
@@ -1249,7 +1250,9 @@ voice_session_setup(struct voice_session *s)
 
 	if (!s->relay && (s->mode == VIGIL_VOICE_MODE_CALL ||
 	    s->mode == VIGIL_VOICE_MODE_ANSWER)) {
-		if (vigil_platform_audio_start() == -1) {
+		vigil_channel_audio_drop();
+
+		if (vigil_platform_audio_start(1) == -1) {
 			vigil_log(LOG_ERR, "[voice] no audio");
 			return (-1);
 		}
@@ -1257,7 +1260,7 @@ voice_session_setup(struct voice_session *s)
 		s->audio = 1;
 	}
 
-	voice_codec_open(&s->encoder, &s->decoder);
+	vigil_voice_codec_open(&s->encoder, &s->decoder);
 
 	memcpy(&s->addr, &s->cathedral, sizeof(s->cathedral));
 	voice_path_publish(s);
@@ -1289,7 +1292,9 @@ voice_session_answer(struct voice_session *s)
 	if (s->relay)
 		return;
 
-	if (vigil_platform_audio_start() == -1) {
+	vigil_channel_audio_drop();
+
+	if (vigil_platform_audio_start(1) == -1) {
 		vigil_log(LOG_ERR, "[voice] no audio");
 		s->end = VIGIL_VOICE_END_ERROR;
 		return;
@@ -1751,25 +1756,25 @@ voice_audio_send(struct voice_session *s)
 	PRECOND(s != NULL);
 	PRECOND(s->encoder != NULL);
 
-	while ((pcm = voice_ring_consume(&capture)) != NULL) {
+	while ((pcm = vigil_voice_ring_consume(&capture)) != NULL) {
 		if (vigil_atomic_read(&muted))
 			memset(pcm, 0, VIGIL_VOICE_SAMPLE_COUNT * sizeof(*pcm));
 
 		if (s->online == 0 || s->mode == VIGIL_VOICE_MODE_DECLINE) {
-			voice_ring_consumed(&capture);
+			vigil_voice_ring_consumed(&capture);
 			continue;
 		}
 
 		if (s->mode != VIGIL_VOICE_MODE_ANSWER &&
 		    vigil_atomic_read(&state) != VIGIL_VOICE_STATE_TALKING) {
-			voice_ring_consumed(&capture);
+			vigil_voice_ring_consumed(&capture);
 			continue;
 		}
 
 		len = opus_encode(s->encoder, pcm, VIGIL_VOICE_SAMPLE_COUNT,
 		    opus, sizeof(opus));
 
-		voice_ring_consumed(&capture);
+		vigil_voice_ring_consumed(&capture);
 
 		if (len < 0) {
 			vigil_log(LOG_NOTICE, "[voice] opus_encode: %d", len);
@@ -2103,16 +2108,16 @@ voice_heaven_input(struct kyrka_packet *pkt, u_int64_t seq, void *udata)
 		return;
 	}
 
-	voice_audio_recv(s->decoder, &s->rx_seq, data);
+	vigil_voice_decode(&playback, s->decoder, &s->rx_seq, data);
 }
 
 /*
- * Decode the voice frame in data into the playback ring, conceal what
+ * Decode the voice frame in data into the given ring, conceal what
  * went missing since the frame we got before it.
  */
-static void
-voice_audio_recv(OpusDecoder *decoder, u_int16_t *rx_seq,
-    const u_int8_t *data)
+void
+vigil_voice_decode(struct vigil_voice_ring *ring, OpusDecoder *decoder,
+    u_int16_t *rx_seq, const u_int8_t *data)
 {
 	u_int16_t			len;
 	int16_t				*pcm;
@@ -2120,6 +2125,7 @@ voice_audio_recv(OpusDecoder *decoder, u_int16_t *rx_seq,
 	u_int16_t			gap, frame;
 	const struct vigil_voice_hdr	*hdr;
 
+	PRECOND(ring != NULL);
 	PRECOND(decoder != NULL);
 	PRECOND(rx_seq != NULL);
 	PRECOND(data != NULL);
@@ -2144,25 +2150,25 @@ voice_audio_recv(OpusDecoder *decoder, u_int16_t *rx_seq,
 
 	/* More than one went missing, conceal the oldest of them. */
 	if (gap > 2) {
-		pcm = voice_ring_produce(&playback);
+		pcm = vigil_voice_ring_produce(ring);
 		if (pcm != NULL) {
 			if (opus_decode(decoder, NULL, 0, pcm,
 			    VIGIL_VOICE_SAMPLE_COUNT, 0) > 0)
-				voice_ring_produced(&playback);
+				vigil_voice_ring_produced(ring);
 		}
 	}
 
 	/* The one right before this frame we get back from its FEC. */
 	if (gap > 1) {
-		pcm = voice_ring_produce(&playback);
+		pcm = vigil_voice_ring_produce(ring);
 		if (pcm != NULL) {
 			if (opus_decode(decoder, data + sizeof(*hdr), len,
 			    pcm, VIGIL_VOICE_SAMPLE_COUNT, 1) > 0)
-				voice_ring_produced(&playback);
+				vigil_voice_ring_produced(ring);
 		}
 	}
 
-	pcm = voice_ring_produce(&playback);
+	pcm = vigil_voice_ring_produce(ring);
 	if (pcm == NULL)
 		return;
 
@@ -2175,23 +2181,29 @@ voice_audio_recv(OpusDecoder *decoder, u_int16_t *rx_seq,
 		return;
 	}
 
-	voice_ring_produced(&playback);
+	vigil_voice_ring_produced(ring);
 }
 
 /*
- * Create an opus encoder and decoder for a call.
+ * Create an opus encoder and decoder for a call, either may be NULL
+ * if it is not wanted.
  */
-static void
-voice_codec_open(OpusEncoder **encoder, OpusDecoder **decoder)
+void
+vigil_voice_codec_open(OpusEncoder **encoder, OpusDecoder **decoder)
 {
 	int		err;
 
-	PRECOND(encoder != NULL);
-	PRECOND(decoder != NULL);
+	PRECOND(encoder != NULL || decoder != NULL);
 
-	*decoder = opus_decoder_create(VIGIL_VOICE_SAMPLE_RATE, 1, &err);
-	if (err != OPUS_OK)
-		fatal("failed to create opus decoder: %d", err);
+	if (decoder != NULL) {
+		*decoder = opus_decoder_create(VIGIL_VOICE_SAMPLE_RATE,
+		    1, &err);
+		if (err != OPUS_OK)
+			fatal("failed to create opus decoder: %d", err);
+	}
+
+	if (encoder == NULL)
+		return;
 
 	*encoder = opus_encoder_create(VIGIL_VOICE_SAMPLE_RATE, 1,
 	    OPUS_APPLICATION_VOIP, &err);
@@ -2316,6 +2328,9 @@ voice_rings_reset(void)
 	vigil_atomic_write(&capture.tail, 0);
 	vigil_atomic_write(&playback.head, 0);
 	vigil_atomic_write(&playback.tail, 0);
+
+	capture.max = VOICE_RING_FRAMES;
+	playback.max = VOICE_RING_FRAMES;
 
 	capture_frame = NULL;
 	capture_offset = 0;
@@ -2521,8 +2536,8 @@ voice_stop_check(void)
 /*
  * Returns the number of frames waiting in the given ring.
  */
-static size_t
-voice_ring_pending(struct voice_ring *ring)
+size_t
+vigil_voice_ring_pending(struct vigil_voice_ring *ring)
 {
 	PRECOND(ring != NULL);
 
@@ -2532,28 +2547,29 @@ voice_ring_pending(struct voice_ring *ring)
 
 /*
  * Returns the next free frame in the ring, or NULL if it is full.
- * The frame is queued once voice_ring_produced() is called.
+ * The frame is queued once vigil_voice_ring_produced() is called.
  */
-static int16_t *
-voice_ring_produce(struct voice_ring *ring)
+int16_t *
+vigil_voice_ring_produce(struct vigil_voice_ring *ring)
 {
 	u_int32_t	head;
 
 	PRECOND(ring != NULL);
+	PRECOND(ring->max > 0 && ring->max <= VIGIL_VOICE_RING_FRAMES);
 
 	head = vigil_atomic_read(&ring->head);
 
-	if (head - vigil_atomic_read(&ring->tail) == VOICE_RING_FRAMES)
+	if (head - vigil_atomic_read(&ring->tail) == ring->max)
 		return (NULL);
 
-	return (ring->frames[head & (VOICE_RING_FRAMES - 1)]);
+	return (ring->frames[head & (VIGIL_VOICE_RING_FRAMES - 1)]);
 }
 
 /*
- * Queue the frame we got from voice_ring_produce().
+ * Queue the frame we got from vigil_voice_ring_produce().
  */
-static void
-voice_ring_produced(struct voice_ring *ring)
+void
+vigil_voice_ring_produced(struct vigil_voice_ring *ring)
 {
 	PRECOND(ring != NULL);
 
@@ -2562,10 +2578,10 @@ voice_ring_produced(struct voice_ring *ring)
 
 /*
  * Returns the oldest frame in the ring, or NULL if it is empty.
- * The frame is released once voice_ring_consumed() is called.
+ * The frame is released once vigil_voice_ring_consumed() is called.
  */
-static int16_t *
-voice_ring_consume(struct voice_ring *ring)
+int16_t *
+vigil_voice_ring_consume(struct vigil_voice_ring *ring)
 {
 	u_int32_t	tail;
 
@@ -2576,14 +2592,14 @@ voice_ring_consume(struct voice_ring *ring)
 	if (tail == vigil_atomic_read(&ring->head))
 		return (NULL);
 
-	return (ring->frames[tail & (VOICE_RING_FRAMES - 1)]);
+	return (ring->frames[tail & (VIGIL_VOICE_RING_FRAMES - 1)]);
 }
 
 /*
- * Release the frame we got from voice_ring_consume().
+ * Release the frame we got from vigil_voice_ring_consume().
  */
-static void
-voice_ring_consumed(struct voice_ring *ring)
+void
+vigil_voice_ring_consumed(struct vigil_voice_ring *ring)
 {
 	PRECOND(ring != NULL);
 

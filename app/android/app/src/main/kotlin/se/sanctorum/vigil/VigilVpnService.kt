@@ -8,12 +8,15 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.graphics.drawable.Icon
+import android.media.session.MediaSession
+import android.media.session.PlaybackState
 import android.net.VpnService
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.system.OsConstants
 import android.util.Log
+import android.view.KeyEvent
 import org.json.JSONObject
 
 /**
@@ -25,6 +28,8 @@ class VigilVpnService : VpnService() {
     private val refresh = Runnable { refresh() }
     private var summary: JSONObject? = null
     private var shown: String? = null
+    private var buttons: MediaSession? = null
+    private var voiced = false
 
     override fun onCreate() {
         super.onCreate()
@@ -63,6 +68,39 @@ class VigilVpnService : VpnService() {
 
                 return START_STICKY
             }
+            ACTION_TALK -> {
+                if (active == null) {
+                    idle()
+                    return START_NOT_STICKY
+                }
+
+                talk(intent.getBooleanExtra(EXTRA_ON, false))
+
+                return START_STICKY
+            }
+            ACTION_VOICE -> {
+                if (active == null) {
+                    idle()
+                    return START_NOT_STICKY
+                }
+
+                val chat = intent.getStringExtra(EXTRA_PEER)
+
+                try {
+                    if (chat != null) {
+                        GroupVoice.on(this, chat)
+                    } else {
+                        talk(false)
+                        GroupVoice.off(this)
+                    }
+                } catch (e: Exception) {
+                    Log.w(TAG, "failed to change our group voice", e)
+                }
+
+                voiceChanged()
+
+                return START_STICKY
+            }
             ACTION_DISCONNECT -> {
                 val voice = store.voice()
 
@@ -93,10 +131,64 @@ class VigilVpnService : VpnService() {
 
     override fun onDestroy() {
         handler.removeCallbacks(refresh)
+        buttons?.release()
+        buttons = null
         Calls.detach(this)
         Chats.detach(this)
         disconnect()
         super.onDestroy()
+    }
+
+    private fun talk(on: Boolean) {
+        GroupVoice.talk(on && !Calls.busy) { callChanged() }
+    }
+
+    private fun voiceChanged() {
+        voiced = GroupVoice.active
+        callChanged()
+
+        if (voiced && buttons == null) {
+            buttons = MediaSession(this, "vigil-voice").apply {
+                setCallback(object : MediaSession.Callback() {
+                    override fun onMediaButtonEvent(intent: Intent): Boolean = press(intent)
+                })
+                setPlaybackState(
+                    PlaybackState.Builder()
+                        .setState(PlaybackState.STATE_PLAYING, 0, 1f)
+                        .setActions(PlaybackState.ACTION_PLAY_PAUSE)
+                        .build()
+                )
+                isActive = true
+            }
+        }
+
+        if (!voiced) {
+            buttons?.release()
+            buttons = null
+        }
+    }
+
+    @Suppress("DEPRECATION")
+    private fun press(intent: Intent): Boolean {
+        val event = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            intent.getParcelableExtra(Intent.EXTRA_KEY_EVENT, KeyEvent::class.java)
+        } else {
+            intent.getParcelableExtra(Intent.EXTRA_KEY_EVENT)
+        } ?: return false
+
+        if (event.keyCode !in TALK_KEYS) {
+            return false
+        }
+
+        if (event.action == KeyEvent.ACTION_DOWN && event.repeatCount == 0) {
+            talk(true)
+        }
+
+        if (event.action == KeyEvent.ACTION_UP) {
+            talk(false)
+        }
+
+        return true
     }
 
     fun callChanged() {
@@ -266,7 +358,7 @@ class VigilVpnService : VpnService() {
         handler.postDelayed(refresh, REFRESH_MS)
     }
 
-    private fun startForeground(notification: Notification, call: Boolean) {
+    private fun startForeground(notification: Notification, call: Boolean, voice: Boolean = GroupVoice.active) {
         var type = 0
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
@@ -277,7 +369,7 @@ class VigilVpnService : VpnService() {
             type = type or ServiceInfo.FOREGROUND_SERVICE_TYPE_PHONE_CALL
         }
 
-        if (call && Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+        if ((call || voice) && Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
             type = type or ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
         }
 
@@ -294,8 +386,8 @@ class VigilVpnService : VpnService() {
         } catch (e: Exception) {
             Log.w(TAG, "failed to start as foreground service ($type)", e)
 
-            if (call) {
-                startForeground(notification, false)
+            if (call || voice) {
+                startForeground(notification, false, false)
             }
         }
     }
@@ -309,6 +401,11 @@ class VigilVpnService : VpnService() {
         val status = status()
         Calls.update(status, voice())
         Chats.poll(this, status)
+        GroupVoice.poll(this)
+
+        if (GroupVoice.active != voiced) {
+            voiceChanged()
+        }
 
         if (Calls.notification(this) == null) {
             val text = state(status)
@@ -470,6 +567,8 @@ class VigilVpnService : VpnService() {
         const val ACTION_CAMERA = "se.sanctorum.vigil.CAMERA"
         const val ACTION_SHOW = "se.sanctorum.vigil.SHOW"
         const val ACTION_GOSPEL = "se.sanctorum.vigil.GOSPEL"
+        const val ACTION_TALK = "se.sanctorum.vigil.TALK"
+        const val ACTION_VOICE = "se.sanctorum.vigil.VOICE"
         const val EXTRA_ID = "id"
         const val EXTRA_PEER = "peer"
         const val EXTRA_ON = "on"
@@ -480,6 +579,10 @@ class VigilVpnService : VpnService() {
         private const val CHANNEL = "tunnel"
         private const val NOTIFICATION = 1
         private const val REFRESH_MS = 1000L
+        private val TALK_KEYS = setOf(
+            KeyEvent.KEYCODE_HEADSETHOOK, KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE,
+            KeyEvent.KEYCODE_MEDIA_PLAY, KeyEvent.KEYCODE_MEDIA_PAUSE
+        )
         private const val IPV6_SINK = "fd70:6172:6973:6800::1"
         private const val GOSPEL_ADDRESS = "169.254.86.1"
 

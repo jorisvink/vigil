@@ -20,6 +20,7 @@ import '../widgets/marks.dart';
 import '../widgets/ui.dart';
 import 'avatar.dart';
 import 'call.dart';
+import 'voice.dart';
 
 const _messageMax = 512;
 const _replyMax = _messageMax - 9;
@@ -901,6 +902,10 @@ class ChatRow extends StatelessWidget {
                           size: 13,
                           color: Palette.amber,
                         ),
+                      ],
+                      if (status.groupVoice.on(chat.peer)) ...[
+                        const SizedBox(width: 6),
+                        VoiceMark(voice: status.groupVoice),
                       ],
                     ],
                   ),
@@ -2240,6 +2245,9 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
                           padding: const EdgeInsets.only(bottom: 8),
                           child: _Member(
                             member: member,
+                            voice: status.groupVoice.on(peer)
+                                ? status.groupVoice.member(member.id)
+                                : null,
                             owner: member.id == group?.owner,
                             onTap: () => Navigator.of(context).pop(member.id),
                           ),
@@ -2601,6 +2609,15 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
               ),
             ),
           ),
+          if (group && (vigil.group(peer)?.open ?? false))
+            GlyphBtn(
+              GlyphKind.channel,
+              label: status.groupVoice.on(peer)
+                  ? 'Turn off voice'
+                  : 'Turn on voice',
+              color: status.groupVoice.on(peer) ? Palette.good : Palette.fg2,
+              onTap: () => toggleVoice(peer),
+            ),
           if (group)
             GlyphBtn(GlyphKind.group, label: 'Members', onTap: _members),
           if (group)
@@ -2841,6 +2858,24 @@ class _ChatPageState extends State<ChatPage> with WidgetsBindingObserver {
                           chat: peer,
                           message: _replying!,
                           onClose: () => setState(() => _replying = null),
+                        ),
+                      if (group && joined && status.groupVoice.on(peer))
+                        Container(
+                          decoration: const BoxDecoration(
+                            border: Border(
+                              top: BorderSide(color: Palette.line),
+                            ),
+                          ),
+                          padding: const EdgeInsets.fromLTRB(
+                            Metrics.edge - 12,
+                            4,
+                            Metrics.edge - 12,
+                            0,
+                          ),
+                          child: VoiceBar(
+                            chat: peer,
+                            voice: status.groupVoice,
+                          ),
                         ),
                       Container(
                         decoration: const BoxDecoration(
@@ -3137,11 +3172,13 @@ class _Member extends StatelessWidget {
     required this.member,
     required this.owner,
     required this.onTap,
+    this.voice,
   });
 
   final ChatMember member;
   final bool owner;
   final VoidCallback onTap;
+  final VoiceMember? voice;
 
   @override
   Widget build(BuildContext context) {
@@ -3208,6 +3245,21 @@ class _Member extends StatelessWidget {
               ],
             ),
           ),
+          if (voice case final voice?) ...[
+            Semantics(
+              label: voice.talking ? 'Talking' : 'In voice',
+              child: Glyph(
+                voice.talking ? GlyphKind.mic : GlyphKind.channel,
+                size: 18,
+                color: voice.talking
+                    ? Palette.amber
+                    : voice.online
+                    ? Palette.good
+                    : Palette.dim,
+              ),
+            ),
+            const SizedBox(width: 12),
+          ],
           const Glyph(GlyphKind.chat, color: Palette.amber),
         ],
       ),
