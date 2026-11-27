@@ -372,6 +372,11 @@ final class VigilPlugin: NSObject, FlutterPlugin, UIDocumentPickerDelegate,
                 try GroupVoice.shared.mute(call.arguments as? Bool == true)
                 return ""
             })
+        case "groupVoiceEarpiece":
+            result(Self.reply {
+                try GroupVoice.shared.earpiece(call.arguments as? Bool == true)
+                return ""
+            })
         case "groupVoiceKeys":
             result("")
         case "groupVoiceReady":

@@ -9,6 +9,7 @@ final class GroupVoice {
     private var run: UInt64 = 0
     private var running = ""
     private var sent = ""
+    private var earpiece = false
 
     private(set) var talking = false
 
@@ -28,14 +29,24 @@ final class GroupVoice {
             throw ChatVault.Failure(description: "This group has ended.")
         }
 
-        if try ChatVault.shared.voice()["chat"] as? String != chat {
-            try save(["chat": chat, "muted": false])
+        let state = try ChatVault.shared.voice()
+
+        if state["chat"] as? String != chat {
+            try save(kept(state).merging(["chat": chat, "muted": false]) { $1 })
         }
     }
 
     func off() throws {
         talk(false)
-        try save([:])
+        try save(kept(try ChatVault.shared.voice()))
+    }
+
+    func earpiece(_ on: Bool) throws {
+        var state = try ChatVault.shared.voice()
+
+        state["earpiece"] = on
+        try save(state)
+        resume()
     }
 
     func mute(_ on: Bool) throws {
@@ -58,6 +69,8 @@ final class GroupVoice {
         return [
             "chat": state["chat"] as? String ?? "",
             "muted": state["muted"] as? Bool ?? false,
+            "earpiece": state["earpiece"] as? Bool ?? false,
+            "output": output(),
             "status": status(),
         ]
     }
@@ -65,13 +78,15 @@ final class GroupVoice {
     func poll() {
         guard let state = try? ChatVault.shared.voice() else { return }
 
+        earpiece = state["earpiece"] as? Bool == true
+
         let chat = state["chat"] as? String ?? ""
         let group = ChatVault.group(chat)
         let info = group == nil ? nil : (try? ChatVault.shared.groupInfo(chat)) ?? nil
         let open = info?["state"] as? String == "open"
 
         if !chat.isEmpty && info != nil && !open {
-            try? ChatVault.shared.voiceSave([:])
+            try? ChatVault.shared.voiceSave(kept(state))
         }
 
         guard let group, let info, open, VigilCall.shared.cathedral(group.flock) != nil else {
@@ -171,6 +186,21 @@ final class GroupVoice {
         return status
     }
 
+    private func kept(_ state: [String: Any]) -> [String: Any] {
+        return ["earpiece": state["earpiece"] as? Bool ?? false]
+    }
+
+    private func output() -> String {
+        let outputs = AVAudioSession.sharedInstance().currentRoute.outputs
+
+        guard run != 0, !outputs.isEmpty,
+              !outputs.contains(where: { $0.portType == .builtInSpeaker || $0.portType == .builtInReceiver }) else {
+            return earpiece ? "earpiece" : "speaker"
+        }
+
+        return "headset"
+    }
+
     private func save(_ state: [String: Any]) throws {
         try ChatVault.shared.voiceSave(state)
         poll()
@@ -179,8 +209,13 @@ final class GroupVoice {
     private func audioSession() {
         let session = AVAudioSession.sharedInstance()
 
-        try? session.setCategory(.playAndRecord, mode: .videoChat,
-                                 options: [.allowBluetooth, .defaultToSpeaker])
+        if earpiece {
+            try? session.setCategory(.playAndRecord, mode: .voiceChat, options: [.allowBluetooth])
+        } else {
+            try? session.setCategory(.playAndRecord, mode: .videoChat,
+                                     options: [.allowBluetooth, .defaultToSpeaker])
+        }
+
         try? session.setActive(true)
 
         speaker()
@@ -189,11 +224,17 @@ final class GroupVoice {
     private func speaker() {
         let session = AVAudioSession.sharedInstance()
 
-        guard run != 0, !VigilCall.shared.busy,
-              session.currentRoute.outputs.contains(where: { $0.portType == .builtInReceiver }) else {
+        guard run != 0, !VigilCall.shared.busy else { return }
+
+        if earpiece {
+            if session.currentRoute.outputs.contains(where: { $0.portType == .builtInSpeaker }) {
+                try? session.overrideOutputAudioPort(.none)
+            }
             return
         }
 
-        try? session.overrideOutputAudioPort(.speaker)
+        if session.currentRoute.outputs.contains(where: { $0.portType == .builtInReceiver }) {
+            try? session.overrideOutputAudioPort(.speaker)
+        }
     }
 }

@@ -31,6 +31,14 @@ Future<void> _mute(bool on) async {
   }
 }
 
+Future<void> _earpiece(bool on) async {
+  try {
+    await Vigil.instance.groupVoiceEarpiece(on);
+  } on VigilError catch (e) {
+    notify(e.message);
+  }
+}
+
 String voiceLine(GroupVoice voice, {bool? talking}) {
   final vigil = Vigil.instance;
 
@@ -135,7 +143,7 @@ class _VoiceMarkState extends State<VoiceMark>
       child: FadeTransition(
         opacity: Tween(begin: 0.35, end: 1.0).animate(_beat),
         child: Glyph(
-          widget.voice.muted ? GlyphKind.quiet : GlyphKind.channel,
+          widget.voice.muted ? GlyphKind.channelOff : GlyphKind.channel,
           size: widget.size,
           color: tint,
         ),
@@ -290,8 +298,9 @@ class _VoiceBarState extends State<VoiceBar> with WidgetsBindingObserver {
                   overflow: TextOverflow.ellipsis,
                 ),
               ),
+              _output(voice),
               GlyphBtn(
-                voice.muted ? GlyphKind.quiet : GlyphKind.speaker,
+                voice.muted ? GlyphKind.channelOff : GlyphKind.channel,
                 label: voice.muted ? 'Unmute voice' : 'Mute voice',
                 color: voice.muted ? Palette.bad : Palette.fg2,
                 onTap: () => _mute(!voice.muted),
@@ -325,6 +334,29 @@ class _VoiceBarState extends State<VoiceBar> with WidgetsBindingObserver {
           ),
         ],
       ),
+    );
+  }
+
+  Widget _output(GroupVoice voice) {
+    if (voice.output == 'headset') {
+      return const GlyphBtn(
+        GlyphKind.headset,
+        label: 'Voice plays on your headset',
+      );
+    }
+
+    if (voice.earpiece) {
+      return GlyphBtn(
+        GlyphKind.earpiece,
+        label: 'Voice plays on the earpiece, switch to the speaker',
+        onTap: () => _earpiece(false),
+      );
+    }
+
+    return GlyphBtn(
+      GlyphKind.speaker,
+      label: 'Voice plays on the speaker, switch to the earpiece',
+      onTap: () => _earpiece(true),
     );
   }
 

@@ -394,6 +394,8 @@ class GroupVoice {
 
   String get chat => json['chat'] as String? ?? '';
   bool get muted => json['muted'] as bool? ?? false;
+  bool get earpiece => json['earpiece'] as bool? ?? false;
+  String get output => json['output'] as String? ?? 'speaker';
 
   Map<String, dynamic> get _core =>
       json['status'] as Map<String, dynamic>? ?? const {};
@@ -1334,6 +1336,11 @@ class Vigil {
 
   Future<void> groupVoiceMute(bool on) async {
     await _invoke('groupVoiceMute', on);
+    await refresh();
+  }
+
+  Future<void> groupVoiceEarpiece(bool on) async {
+    await _invoke('groupVoiceEarpiece', on);
     await refresh();
   }
 

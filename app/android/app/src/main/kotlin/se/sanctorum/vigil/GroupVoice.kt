@@ -21,7 +21,11 @@ object GroupVoice {
 
     private var sent = ""
 
-    private var speaker = false
+    private var routed = false
+
+    private var earpiece = false
+
+    private var headset = false
 
     @Synchronized
     fun on(context: Context, chat: String) {
@@ -30,14 +34,21 @@ object GroupVoice {
         require(ChatVault.group(chat) != null) { "Voice is only for groups." }
         require(vault.groupInfo(chat)?.optString("state") == "open") { "This group has ended." }
 
-        if (vault.voice().optString("chat") != chat) {
-            save(context, JSONObject().put("chat", chat).put("muted", false))
+        val state = vault.voice()
+
+        if (state.optString("chat") != chat) {
+            save(context, kept(state).put("chat", chat).put("muted", false))
         }
     }
 
     @Synchronized
     fun off(context: Context) {
-        save(context, JSONObject())
+        save(context, kept(Chats.vault(context).voice()))
+    }
+
+    @Synchronized
+    fun earpiece(context: Context, on: Boolean) {
+        save(context, Chats.vault(context).voice().put("earpiece", on))
     }
 
     @Synchronized
@@ -62,6 +73,8 @@ object GroupVoice {
         return JSONObject()
             .put("chat", state.optString("chat"))
             .put("muted", state.optBoolean("muted"))
+            .put("earpiece", state.optBoolean("earpiece"))
+            .put("output", if (headset) "headset" else if (state.optBoolean("earpiece")) "earpiece" else "speaker")
             .put("status", JSONObject(Vigil.channelStatus()))
     }
 
@@ -74,6 +87,8 @@ object GroupVoice {
             Log.w(TAG, "failed to read our group voice", e)
             return
         }
+
+        earpiece = state.optBoolean("earpiece")
 
         val chat = state.optString("chat")
         val group = ChatVault.group(chat)
@@ -95,7 +110,7 @@ object GroupVoice {
             }
 
             if (chat.isNotEmpty() && (info == null || info.optString("state") != "open")) {
-                vault.voiceSave(JSONObject())
+                vault.voiceSave(kept(state))
             }
 
             sent = ""
@@ -127,29 +142,32 @@ object GroupVoice {
     @Suppress("DEPRECATION")
     private fun route(context: Context) {
         val audio = context.getSystemService(AudioManager::class.java) ?: return
-        val headset = audio.getDevices(AudioManager.GET_DEVICES_OUTPUTS).any { it.type in HEADSETS }
+
+        headset = audio.getDevices(AudioManager.GET_DEVICES_OUTPUTS).any { it.type in HEADSETS }
 
         if (active && !headset && !Calls.busy && !Voice.earpiece) {
+            val want = if (earpiece) AudioDeviceInfo.TYPE_BUILTIN_EARPIECE else AudioDeviceInfo.TYPE_BUILTIN_SPEAKER
+
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                if (audio.communicationDevice?.type != AudioDeviceInfo.TYPE_BUILTIN_SPEAKER) {
+                if (audio.communicationDevice?.type != want) {
                     audio.availableCommunicationDevices
-                        .firstOrNull { it.type == AudioDeviceInfo.TYPE_BUILTIN_SPEAKER }
+                        .firstOrNull { it.type == want }
                         ?.let { audio.setCommunicationDevice(it) }
                 }
-            } else if (!audio.isSpeakerphoneOn) {
+            } else if (!routed || audio.isSpeakerphoneOn == earpiece) {
                 audio.mode = AudioManager.MODE_IN_COMMUNICATION
-                audio.isSpeakerphoneOn = true
+                audio.isSpeakerphoneOn = !earpiece
             }
 
-            speaker = true
+            routed = true
             return
         }
 
-        if (!speaker) {
+        if (!routed) {
             return
         }
 
-        speaker = false
+        routed = false
 
         if (Calls.busy || Voice.earpiece) {
             return
@@ -162,6 +180,9 @@ object GroupVoice {
             audio.mode = AudioManager.MODE_NORMAL
         }
     }
+
+    private fun kept(state: JSONObject): JSONObject =
+        JSONObject().put("earpiece", state.optBoolean("earpiece"))
 
     private fun save(context: Context, state: JSONObject) {
         Chats.vault(context).voiceSave(state)

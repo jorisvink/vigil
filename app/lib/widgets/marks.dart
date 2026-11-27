@@ -178,7 +178,9 @@ enum GlyphKind {
   person,
   desktop,
   channel,
-  quiet,
+  channelOff,
+  earpiece,
+  headset,
 }
 
 class Glyph extends StatelessWidget {
@@ -405,16 +407,33 @@ class _GlyphPainter extends CustomPainter {
         poly([3, 9, 7, 9, 12, 5, 12, 19, 7, 15, 3, 15], close: true);
         poly([15, 9, 17, 12, 15, 15]);
         poly([18, 6, 21, 12, 18, 18]);
-      case GlyphKind.quiet:
-        poly([3, 9, 7, 9, 12, 5, 12, 19, 7, 15, 3, 15], close: true);
-        poly([15, 9, 21, 15]);
-        poly([21, 9, 15, 15]);
       case GlyphKind.channel:
+      case GlyphKind.channelOff:
         canvas.drawCircle(const Offset(12, 12), 2.2, solid);
         poly([8, 8, 6.5, 12, 8, 16]);
         poly([16, 8, 17.5, 12, 16, 16]);
         poly([5, 5, 2.5, 12, 5, 19]);
         poly([19, 5, 21.5, 12, 19, 19]);
+
+        if (kind == GlyphKind.channelOff) {
+          poly([3, 3, 21, 21]);
+        }
+      case GlyphKind.earpiece:
+        canvas.drawRRect(
+          RRect.fromLTRBR(7, 2, 17, 22, const Radius.circular(2)),
+          line,
+        );
+        canvas.drawRect(const Rect.fromLTWH(10, 4.5, 4, 1.6), solid);
+      case GlyphKind.headset:
+        canvas.drawArc(
+          const Rect.fromLTWH(4, 3, 16, 16),
+          3.1416,
+          3.1416,
+          false,
+          line,
+        );
+        canvas.drawRect(const Rect.fromLTWH(3, 12, 4, 8), solid);
+        canvas.drawRect(const Rect.fromLTWH(17, 12, 4, 8), solid);
       case GlyphKind.video:
         canvas.drawRect(const Rect.fromLTWH(2, 6, 14, 12), line);
         poly([16, 10, 22, 7, 22, 17, 16, 14]);

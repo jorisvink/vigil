@@ -558,6 +558,14 @@ class MainActivity : FlutterActivity() {
                         ""
                     }
                 }
+                "groupVoiceEarpiece" -> {
+                    val on = call.arguments as Boolean
+
+                    background(result) {
+                        GroupVoice.earpiece(this, on)
+                        ""
+                    }
+                }
                 "groupVoiceReady" -> result.success(Vigil.channelReady().toString())
                 "groupVoiceTalk" -> {
                     talk(call.arguments as Boolean)
