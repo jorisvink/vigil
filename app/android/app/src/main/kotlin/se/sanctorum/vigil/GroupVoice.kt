@@ -1,6 +1,9 @@
 package se.sanctorum.vigil
 
 import android.content.Context
+import android.media.AudioDeviceInfo
+import android.media.AudioManager
+import android.os.Build
 import android.util.Log
 import org.json.JSONObject
 
@@ -17,6 +20,8 @@ object GroupVoice {
     var keys = false
 
     private var sent = ""
+
+    private var speaker = false
 
     @Synchronized
     fun on(context: Context, chat: String) {
@@ -94,6 +99,7 @@ object GroupVoice {
             }
 
             sent = ""
+            route(context)
             return
         }
 
@@ -114,12 +120,62 @@ object GroupVoice {
         if (core.optBoolean("muted") != state.optBoolean("muted")) {
             Vigil.channelMute(state.optBoolean("muted"))
         }
+
+        route(context)
+    }
+
+    @Suppress("DEPRECATION")
+    private fun route(context: Context) {
+        val audio = context.getSystemService(AudioManager::class.java) ?: return
+        val headset = audio.getDevices(AudioManager.GET_DEVICES_OUTPUTS).any { it.type in HEADSETS }
+
+        if (active && !headset && !Calls.busy && !Voice.earpiece) {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                if (audio.communicationDevice?.type != AudioDeviceInfo.TYPE_BUILTIN_SPEAKER) {
+                    audio.availableCommunicationDevices
+                        .firstOrNull { it.type == AudioDeviceInfo.TYPE_BUILTIN_SPEAKER }
+                        ?.let { audio.setCommunicationDevice(it) }
+                }
+            } else if (!audio.isSpeakerphoneOn) {
+                audio.mode = AudioManager.MODE_IN_COMMUNICATION
+                audio.isSpeakerphoneOn = true
+            }
+
+            speaker = true
+            return
+        }
+
+        if (!speaker) {
+            return
+        }
+
+        speaker = false
+
+        if (Calls.busy || Voice.earpiece) {
+            return
+        }
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            audio.clearCommunicationDevice()
+        } else {
+            audio.isSpeakerphoneOn = false
+            audio.mode = AudioManager.MODE_NORMAL
+        }
     }
 
     private fun save(context: Context, state: JSONObject) {
         Chats.vault(context).voiceSave(state)
         poll(context)
     }
+
+    private val HEADSETS = setOf(
+        AudioDeviceInfo.TYPE_WIRED_HEADSET,
+        AudioDeviceInfo.TYPE_WIRED_HEADPHONES,
+        AudioDeviceInfo.TYPE_USB_HEADSET,
+        AudioDeviceInfo.TYPE_BLUETOOTH_SCO,
+        AudioDeviceInfo.TYPE_BLUETOOTH_A2DP,
+        AudioDeviceInfo.TYPE_BLE_HEADSET,
+    )
 
     private const val TAG = "vigil"
 }

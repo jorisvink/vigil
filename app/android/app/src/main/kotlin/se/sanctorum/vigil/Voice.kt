@@ -29,6 +29,9 @@ object Voice {
     private var rate = 1f
     private var ear = false
 
+    val earpiece: Boolean
+        get() = player != null && ear
+
     fun name(): String = "voice-%tY%<tm%<td-%<tH%<tM%<tS.aac".format(System.currentTimeMillis())
 
     @Synchronized
