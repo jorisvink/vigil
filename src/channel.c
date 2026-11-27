@@ -1118,8 +1118,8 @@ channel_audio_update(void)
 }
 
 /*
- * Run the platform audio if play is 1, with capture if rec is 1. We leave
- * it alone while a call runs.
+ * Run the platform audio if play is 1, with capture if rec is 1. We do
+ * not start it while a call runs.
  */
 static void
 channel_audio_want(int play, int rec)
@@ -1132,11 +1132,6 @@ channel_audio_want(int play, int rec)
 
 	vigil_lock(&audio_lock);
 
-	if (vigil_voice_active()) {
-		vigil_unlock(&audio_lock);
-		return;
-	}
-
 	if (vigil_atomic_read(&audio_on)) {
 		if (play && audio_recording == rec) {
 			vigil_unlock(&audio_lock);
@@ -1148,7 +1143,7 @@ channel_audio_want(int play, int rec)
 		audio_recording = 0;
 	}
 
-	if (play == 0) {
+	if (play == 0 || vigil_voice_active()) {
 		vigil_unlock(&audio_lock);
 		return;
 	}
